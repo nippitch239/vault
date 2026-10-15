@@ -207,6 +207,11 @@ export async function deleteItemLink(db, collectionId, itemId) {
   await db.query('DELETE FROM collection_items WHERE collection_id = $1 AND item_id = $2', [collectionId, itemId]);
 }
 
+export async function listCollectionIdsForItem(db, itemId) {
+  const res = await db.query('SELECT collection_id FROM collection_items WHERE item_id = $1', [itemId]);
+  return res.rows.map((r) => r.collection_id);
+}
+
 export async function listCollectionVaultItems(db, collectionId) {
   const res = await db.query(
     `SELECT vi.* FROM vault_items vi

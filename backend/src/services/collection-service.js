@@ -166,6 +166,20 @@ export async function removeItem(db, user, collectionId, itemId) {
 }
 
 /**
+ * Highest permission the user has on any collection that contains the item, or null.
+ * Collection members can read items with 'read' and edit them with 'write' (decision D3);
+ * deleting an item stays owner-only.
+ */
+export async function permissionOnItemViaCollections(db, user, itemId) {
+  let best = null;
+  for (const collectionId of await repo.listCollectionIdsForItem(db, itemId)) {
+    const permission = await getEffectiveCollectionPermission(db, collectionId, user);
+    if (permission && (!best || hasRequiredPermission(permission, best))) best = permission;
+  }
+  return best;
+}
+
+/**
  * Called after a member leaves a group: drop keys of collections the group had access to.
  */
 export async function pruneKeysForGroup(db, groupId) {

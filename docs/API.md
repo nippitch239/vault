@@ -411,6 +411,8 @@ All ids in paths and bodies must be UUIDs → otherwise `400 INVALID_ID`. Invali
 | `POST /collections/{collectionId}/items` | write | `{ itemId: uuid }` — caller must **own** the item | `201 { collectionItem }` | `400 BAD_REQUEST`, `403 ITEM_NOT_OWNED`, `404 NOT_FOUND` (item), `409 CONFLICT` |
 | `DELETE /collections/{collectionId}/items/{itemId}` | write | — | `200 { message }` (vault item stays) | `404 NOT_FOUND` (link) |
 
+Items in a collection: members with **read** can `GET /items/{itemId}` (response includes `collection_permission`), members with **write** can `PUT /items/{itemId}` (the item keeps its collection; only the owner can move it). Deleting and sharing an item stay owner-only.
+
 Group membership changes (`DELETE /groups/{groupId}/members/{userId}`) also delete the removed member's wrapped keys for collections that the group had access to. Group managers can only assign/remove the roles `member` and `manager`.
 
 `AccessEntry = { id, access_id, collectionId, targetType, targetId, permission, createdAt, updatedAt }` (snake_case duplicates included).

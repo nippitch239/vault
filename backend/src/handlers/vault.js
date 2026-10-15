@@ -12,7 +12,8 @@
  */
 
 import { getDatabase } from '../db/adapter.js';
-import { authenticate } from '../middleware/auth-guard.js';
+import { authenticate, hasRequiredPermission } from '../middleware/auth-guard.js';
+import { permissionOnItemViaCollections } from '../services/collection-service.js';
 
 function jsonResponse(statusCode, data) {
   return {
@@ -196,14 +197,16 @@ export async function getVaultItemHandler(event) {
 
   const item = itemResult.rows[0];
 
-  // Access check: User must be owner OR recipient of a share
+  // Access check: owner, share recipient, or member of a collection containing the item
   if (item.user_id !== user.user_id) {
     const shareCheck = await db.query(
       'SELECT share_id, permission_level, encrypted_key_for_recipient FROM share_permissions WHERE item_id = $1 AND shared_with_user_id = $2',
       [itemId, user.user_id]
     );
+    const collectionPermission = await permissionOnItemViaCollections(db, user, itemId);
+    if (collectionPermission) item.collection_permission = collectionPermission;
 
-    if (shareCheck.rows.length === 0) {
+    if (shareCheck.rows.length === 0 && !collectionPermission) {
       return jsonResponse(403, {
         status: 'fail',
         error: 'FORBIDDEN',
@@ -211,7 +214,7 @@ export async function getVaultItemHandler(event) {
       });
     }
 
-    item.share_info = shareCheck.rows[0];
+    if (shareCheck.rows.length) item.share_info = shareCheck.rows[0];
   }
 
   return jsonResponse(200, {
@@ -344,16 +347,19 @@ export async function updateVaultItemHandler(event) {
 
   const existingItem = existingResult.rows[0];
 
-  // Authorization check: User must be owner OR have 'modify' permission
+  // Authorization: owner, 'modify' share, or 'write' on a collection containing the item
   const isOwner = existingItem.user_id === user.user_id;
+  let viaCollection = false;
   if (!isOwner) {
     const shareCheck = await db.query(
       `SELECT permission_level FROM share_permissions
        WHERE item_id = $1 AND shared_with_user_id = $2`,
       [itemId, user.user_id]
     );
+    const canModifyViaShare = shareCheck.rows.length > 0 && shareCheck.rows[0].permission_level === 'modify';
+    viaCollection = !canModifyViaShare && hasRequiredPermission(await permissionOnItemViaCollections(db, user, itemId), 'write');
 
-    if (shareCheck.rows.length === 0 || shareCheck.rows[0].permission_level !== 'modify') {
+    if (!canModifyViaShare && !viaCollection) {
       return jsonResponse(403, {
         status: 'fail',
         error: 'FORBIDDEN',
@@ -388,7 +394,14 @@ export async function updateVaultItemHandler(event) {
   const newEncryptedData = encryptedData
     ? normalizeEncryptedData(encryptedData)
     : existingItem.encrypted_data;
-  const newMetadata = body.metadata || existingItem.metadata;
+  let newMetadata = body.metadata || existingItem.metadata;
+  if (!isOwner) {
+    // Only the owner decides which collection an item belongs to.
+    const { collection_id: existingCollection } = existingItem.metadata || {};
+    newMetadata = { ...newMetadata };
+    if (existingCollection) newMetadata.collection_id = existingCollection;
+    else delete newMetadata.collection_id;
+  }
   const newVersion = existingItem.version + 1;
 
   // 1. Archive prior version snapshot into password_history table (UC-11)

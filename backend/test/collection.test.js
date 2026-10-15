@@ -343,3 +343,45 @@ test('D4: admins can list members who have access but no wrapped key yet', async
   const forbidden = await callRouter({ method: 'GET', path: `/api/v1/collections/${collectionId}/keys/pending`, claims: direct });
   assert.equal(forbidden.statusCode, 403);
 });
+
+test('D3: collection writers can edit (not delete) items in the collection; readers can view', async () => {
+  await resetDatabase();
+  const owner = await registerProfile('d3owner');
+  const writer = await registerProfile('d3writer');
+  const reader = await registerProfile('d3reader');
+  const outsider = await registerProfile('d3outsider');
+  const collectionId = await createCollection(owner);
+  await grant(owner, collectionId, writer.sub, 'write');
+  await grant(owner, collectionId, reader.sub, 'read');
+
+  const created = await callRouter({
+    method: 'POST',
+    path: '/api/v1/items',
+    claims: owner,
+    body: { encrypted_data: TEST_ENCRYPTED_PAYLOAD, metadata: { collection_id: collectionId } },
+  });
+  const itemId = created.data.data.item_id;
+  await callRouter({ method: 'POST', path: `/api/v1/collections/${collectionId}/items`, claims: owner, body: { itemId } });
+
+  const edited = { ...TEST_ENCRYPTED_PAYLOAD, ciphertext: 'ZWRpdGVkLWJ5LXdyaXRlcg==' };
+  const byWriter = await callRouter({
+    method: 'PUT',
+    path: `/api/v1/items/${itemId}`,
+    claims: writer,
+    body: { version: 1, encrypted_data: edited, metadata: { favorite: true } },
+  });
+  assert.equal(byWriter.statusCode, 200, JSON.stringify(byWriter.data));
+
+  const view = await callRouter({ method: 'GET', path: `/api/v1/items/${itemId}`, claims: reader });
+  assert.equal(view.statusCode, 200);
+  assert.equal(view.data.data.encrypted_data.ciphertext, edited.ciphertext);
+  assert.equal(view.data.data.collection_permission, 'read');
+  assert.equal(view.data.data.metadata.collection_id, collectionId, 'non-owner edit keeps the collection');
+
+  const byReader = await callRouter({ method: 'PUT', path: `/api/v1/items/${itemId}`, claims: reader, body: { version: 2, encrypted_data: edited } });
+  assert.equal(byReader.statusCode, 403);
+  const deleteByWriter = await callRouter({ method: 'DELETE', path: `/api/v1/items/${itemId}`, claims: writer });
+  assert.equal(deleteByWriter.statusCode, 403);
+  const outsiderView = await callRouter({ method: 'GET', path: `/api/v1/items/${itemId}`, claims: outsider });
+  assert.equal(outsiderView.statusCode, 403);
+});

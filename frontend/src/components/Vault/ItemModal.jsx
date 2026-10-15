@@ -10,10 +10,12 @@ import { Input } from '../ui/Input.jsx';
 import { Badge } from '../ui/Badge.jsx';
 
 export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
-  const { mek, privateKey } = useAuth();
+  const { mek, privateKey, user } = useAuth();
   const { addToast } = useToast();
 
   const isEditing = Boolean(item);
+  // Collection members with 'write' may edit an item, but only its owner may move it.
+  const isOwner = !isEditing || !item.user_id || item.user_id === user?.user_id;
 
   const [collections, setCollections] = useState([]);
   const [selectedCollectionId, setSelectedCollectionId] = useState('');
@@ -342,6 +344,8 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
                 id="item-collection"
                 value={selectedCollectionId}
                 onChange={(e) => setSelectedCollectionId(e.target.value)}
+                disabled={!isOwner}
+                title={isOwner ? undefined : 'เฉพาะเจ้าของรายการเท่านั้นที่ย้ายคอลเลกชันได้'}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring text-foreground"
               >
                 <option value="">คลังส่วนตัว (Personal Vault)</option>
