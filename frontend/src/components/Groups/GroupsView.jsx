@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
 import {
   PlusIcon,
@@ -9,7 +8,6 @@ import {
   CloseIcon,
   CheckIcon,
   RefreshIcon,
-  KeyIcon,
 } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 
@@ -39,7 +37,6 @@ function UserPlusIcon({ className = 'w-5 h-5' }) {
 }
 
 export function GroupsView() {
-  const { user } = useAuth();
   const { addToast } = useToast();
 
   const [groups, setGroups] = useState([]);
@@ -324,7 +321,6 @@ export function GroupsView() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredGroups.map((grp) => {
             const id = grp.group_id || grp.id;
-            const isCreator = grp.created_by === user?.user_id;
 
             return (
               <div
@@ -478,7 +474,7 @@ export function GroupsView() {
             </div>
             <h3 className="text-lg font-bold text-white text-center mb-1">ยืนยันการลบกลุ่ม</h3>
             <p className="text-xs text-slate-300 text-center mb-6">
-              คุณแน่ใจหรือไม่ว่าต้องการลบกลุ่ม <span className="font-semibold text-rose-300">"{selectedGroup.name}"</span>?
+              คุณแน่ใจหรือไม่ว่าต้องการลบกลุ่ม <span className="font-semibold text-rose-300">“{selectedGroup.name}”</span>?
               สมาชิกทั้งหมดจะหลุดจากกลุ่มและสูญเสียสิทธิ์ที่สืบทอด
             </p>
 

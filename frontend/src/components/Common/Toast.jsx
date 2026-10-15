@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import { CheckIcon, CloseIcon, ShieldIcon, LockIcon, KeyIcon } from './Icons.jsx';
+import { CheckIcon, CloseIcon, ShieldIcon } from './Icons.jsx';
 
 const ToastContext = createContext(null);
 

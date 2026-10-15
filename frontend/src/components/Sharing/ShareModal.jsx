@@ -6,7 +6,7 @@ import { ShareIcon, CloseIcon, CheckIcon, KeyIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Input } from '../ui/Input.jsx';
-import { Badge } from '../ui/Badge.jsx';
+
 
 export function ShareModal({ isOpen, item, onClose, onSuccess }) {
   const { mek } = useAuth();

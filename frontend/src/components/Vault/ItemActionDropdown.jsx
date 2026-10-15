@@ -9,7 +9,6 @@ import {
 } from '../ui/DropdownMenu.jsx';
 import { Button } from '../ui/Button.jsx';
 import {
-  CopyIcon,
   KeyIcon,
   EyeIcon,
   EyeOffIcon,

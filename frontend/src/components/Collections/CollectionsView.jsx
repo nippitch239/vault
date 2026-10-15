@@ -10,7 +10,6 @@ import {
   CloseIcon,
   CheckIcon,
   RefreshIcon,
-  KeyIcon,
   ShieldIcon,
 } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
@@ -664,7 +663,7 @@ export function CollectionsView() {
             <h3 className="text-lg font-bold text-white text-center mb-1">ยืนยันการลบคอลเลกชัน</h3>
             <p className="text-xs text-slate-300 text-center mb-6">
               คุณแน่ใจหรือไม่ว่าต้องการลบคอลเลกชัน{' '}
-              <span className="font-semibold text-rose-300">"{selectedCollection.name}"</span>?
+              <span className="font-semibold text-rose-300">“{selectedCollection.name}”</span>?
               สิทธิ์การเข้าถึงทั้งหมดจะถูกยกเลิก (Admin Only)
             </p>
 

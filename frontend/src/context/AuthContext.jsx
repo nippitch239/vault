@@ -1,251 +1,372 @@
 /**
  * SecureVault Cloud — AuthContext
  *
- * Implements Zero-Knowledge Session & Volatile Cryptographic Key Management.
- * Master Encryption Key (MEK) and decrypted RSA Private Key are STRICTLY retained
- * in volatile memory (React State) and NEVER written to localStorage, sessionStorage, or cookies.
+ * Sign-in is done against Amazon Cognito (services/auth). Key hierarchy, all client side:
+ *
+ *   master password + kdf_salt --Argon2id--> Master Key --HKDF--> KEK + Authentication Key
+ *   Authentication Key -> Cognito password (server never sees the master password)
+ *   KEK --unwraps--> random Vault Key (users.encrypted_vault_key)
+ *   Vault Key --decrypts--> RSA private key and personal vault items
+ *
+ * The KEK, Vault Key and private key live only in React state / refs (memory) and are
+ * never written to localStorage, sessionStorage or cookies. The non-secret profile
+ * (salt, encrypted keys, username) is cached in sessionStorage so a page reload shows the
+ * "vault locked" screen instead of logging the user out.
  */
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import api, { setAuthToken } from '../services/api.js';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import api, { setUnauthorizedHandler } from '../services/api.js';
 import ClientCrypto from '../services/crypto.js';
+import { getAuth, describeAuthError } from '../services/auth/index.js';
+import { config } from '../config.js';
 
 const AuthContext = createContext(null);
+const PROFILE_CACHE_KEY = 'securevault_user';
+
+function readCachedProfile() {
+  try {
+    const saved = sessionStorage.getItem(PROFILE_CACHE_KEY);
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    return null;
+  }
+}
+
+function cacheProfile(profile) {
+  try {
+    if (profile) sessionStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(profile));
+    else sessionStorage.removeItem(PROFILE_CACHE_KEY);
+  } catch {
+    // storage unavailable: the user will simply need to sign in again after a reload
+  }
+}
+
+function friendlyError(err) {
+  if (err?.name === 'ApiError') return err.message;
+  if (err?.code === 'DECRYPT_FAILED') {
+    return 'ไม่สามารถถอดรหัสคลังรหัสผ่านได้ รหัสผ่านหลักไม่ถูกต้อง หรือคีย์ของบัญชีถูกรีเซ็ตแล้ว';
+  }
+  return describeAuthError(err);
+}
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(() => {
-    try {
-      const saved = sessionStorage.getItem('securevault_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
-
-  // Volatile cryptographic material — STRICTLY IN MEMORY
-  const [mek, setMek] = useState(null);
+  const [user, setUser] = useState(readCachedProfile);
+  const [vaultKey, setVaultKey] = useState(null);
   const [privateKey, setPrivateKey] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Helper to zero out memory when locking or logging out
-  const wipeMemoryKeys = useCallback(() => {
-    if (mek && mek instanceof Uint8Array) {
-      mek.fill(0); // Zeroize buffer
-    }
-    setMek(null);
-    setPrivateKey(null);
-  }, [mek]);
+  // Holds the KEK + context between sign-in and the TOTP challenge (memory only).
+  const pendingLoginRef = useRef(null);
+  // Full name typed at sign-up, used to create the vault profile on first sign-in.
+  const pendingFullNameRef = useRef(new Map());
 
-  // Logout clears all credentials and wipes memory
-  const logout = useCallback(() => {
+  const wipeMemoryKeys = useCallback(() => {
+    setVaultKey((current) => {
+      if (current instanceof Uint8Array) current.fill(0);
+      return null;
+    });
+    setPrivateKey(null);
+    pendingLoginRef.current = null;
+  }, []);
+
+  const logout = useCallback(async () => {
     wipeMemoryKeys();
     setUser(null);
-    setAuthToken(null);
-    sessionStorage.removeItem('securevault_user');
-    sessionStorage.removeItem('securevault_jwt');
+    cacheProfile(null);
+    try {
+      const auth = await getAuth();
+      await auth.signOut();
+    } catch {
+      // already signed out
+    }
   }, [wipeMemoryKeys]);
 
-  // Lock vault keeps session but clears MEK from memory
   const lockVault = useCallback(() => {
     wipeMemoryKeys();
   }, [wipeMemoryKeys]);
 
-  // Unlock vault using Master Password
-  const unlockVault = useCallback(async (masterPassword) => {
-    if (!user || !user.auth_salt) {
-      throw new Error('User salt not available to unlock vault');
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const { mek: derivedMek } = await ClientCrypto.deriveKeys(masterPassword, user.auth_salt);
-      setMek(derivedMek);
+  // Expired / revoked Cognito session -> back to the sign-in screen.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      logout();
+      setError('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [logout]);
 
-      if (user.encrypted_private_key) {
-        try {
-          const privKey = await ClientCrypto.unprotectPrivateKey(user.encrypted_private_key, derivedMek);
-          setPrivateKey(privKey);
-        } catch (e) {
-          console.warn('Could not decrypt private key with derived MEK:', e);
-        }
+  // On reload: keep the cached profile only if the Cognito session is still valid.
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) return undefined;
+    (async () => {
+      const auth = await getAuth();
+      const token = await auth.getIdToken().catch(() => null);
+      if (!token && !cancelled) {
+        setUser(null);
+        cacheProfile(null);
       }
-      return true;
-    } catch (err) {
-      setError(err.message || 'Failed to unlock vault');
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Only on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Registration flow (UC-1)
-  const register = useCallback(async ({ username, email, fullName, masterPassword, role = 'user' }) => {
+  /**
+   * Opens the vault after Cognito accepted the Authentication Key:
+   * loads (or, on first sign-in, creates) the profile and unwraps the Vault Key.
+   */
+  const openVault = useCallback(async ({ kek, salt, identifier }) => {
+    let profile;
+    try {
+      profile = (await api.users.me()).data;
+    } catch (err) {
+      if (err?.code !== 'PROFILE_NOT_FOUND') throw err;
+      profile = null;
+    }
+
+    let unlockedVaultKey;
+    let unlockedPrivateKey;
+    if (!profile) {
+      // First sign-in after sign-up: create the key hierarchy.
+      unlockedVaultKey = ClientCrypto.createVaultKey();
+      const keyPair = await ClientCrypto.createKeyPair();
+      unlockedPrivateKey = keyPair.privateKey;
+      const fullName = pendingFullNameRef.current.get(identifier.toLowerCase()) || identifier;
+      profile = (
+        await api.users.createMe({
+          full_name: fullName,
+          kdf_salt: salt,
+          public_key: keyPair.publicKey,
+          encrypted_private_key: await ClientCrypto.protectPrivateKey(keyPair.privateKey, unlockedVaultKey),
+          encrypted_vault_key: await ClientCrypto.wrapVaultKey(unlockedVaultKey, kek),
+        })
+      ).data;
+      pendingFullNameRef.current.delete(identifier.toLowerCase());
+    } else {
+      unlockedVaultKey = await ClientCrypto.unwrapVaultKey(profile.encrypted_vault_key, kek);
+      unlockedPrivateKey = await ClientCrypto.unprotectPrivateKey(profile.encrypted_private_key, unlockedVaultKey);
+    }
+
+    setVaultKey(unlockedVaultKey);
+    setPrivateKey(unlockedPrivateKey);
+    setUser(profile);
+    cacheProfile(profile);
+    api.auth.recordSession().catch(() => {});
+    return profile;
+  }, []);
+
+  // UC-1: sign-up. The vault profile is created on the first successful sign-in.
+  const register = useCallback(async ({ username, email, fullName, masterPassword }) => {
     setLoading(true);
     setError(null);
     try {
-      // 1. Generate account salt
-      const salt = ClientCrypto.createSalt(16);
-
-      // 2. Derive dual keys: authHash for TLS authentication and MEK for local vault encryption
-      const { mek: derivedMek, authHash } = await ClientCrypto.deriveKeys(masterPassword, salt);
-
-      // 3. Generate RSA-OAEP Key Pair for UC-10 Zero-Knowledge sharing
-      const keyPair = await ClientCrypto.createKeyPair();
-
-      // 4. Encrypt RSA private key using MEK before storing on server
-      const encryptedPrivKey = await ClientCrypto.protectPrivateKey(keyPair.privateKey, derivedMek);
-
-      // 5. Send registration payload to backend
-      const response = await api.auth.register({
+      const salt = (await api.auth.getSalt(username)).data.salt;
+      const { authHash } = await ClientCrypto.deriveKeys(masterPassword, salt);
+      const auth = await getAuth();
+      const res = await auth.signUp({
         username,
         email,
-        fullName,
-        authHash,
-        authSalt: salt,
-        publicKey: keyPair.publicKey,
-        encryptedPrivateKey: encryptedPrivKey,
-        role,
+        name: fullName,
+        password: ClientCrypto.toCognitoPassword(authHash),
       });
-
-      return response;
+      pendingFullNameRef.current.set(username.toLowerCase(), fullName);
+      return res;
     } catch (err) {
-      setError(err.message || 'Registration failed');
+      setError(friendlyError(err));
       throw err;
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // Login flow (UC-2)
-  const login = useCallback(async ({ identifier, masterPassword }) => {
+  const confirmRegistration = useCallback(async ({ username, code }) => {
     setLoading(true);
     setError(null);
     try {
-      // 1. Fetch user's public salt
-      const saltRes = await api.auth.getSalt(identifier);
-      const salt = saltRes?.data?.salt;
-      if (!salt) {
-        throw new Error('Could not retrieve user salt');
-      }
-
-      // 2. Derive MEK and authHash locally in browser
-      const { mek: derivedMek, authHash } = await ClientCrypto.deriveKeys(masterPassword, salt);
-
-      // 3. Authenticate with server using authHash
-      const loginRes = await api.auth.login({ identifier, authHash });
-
-      // Handle MFA Challenge (UC-3)
-      if (loginRes.status === 'mfa_required') {
-        return {
-          mfaRequired: true,
-          mfaSessionToken: loginRes.mfa_session_token,
-          mfaType: loginRes.mfa_type,
-          pendingMek: derivedMek,
-          identifier,
-        };
-      }
-
-      // Success without MFA
-      const token = loginRes.token;
-      const userData = { ...loginRes.user, auth_salt: salt };
-
-      setAuthToken(token);
-      setUser(userData);
-      sessionStorage.setItem('securevault_user', JSON.stringify(userData));
-
-      // Retain MEK in volatile memory
-      setMek(derivedMek);
-
-      // Decrypt private key if available
-      if (userData.encrypted_private_key) {
-        try {
-          const privKey = await ClientCrypto.unprotectPrivateKey(userData.encrypted_private_key, derivedMek);
-          setPrivateKey(privKey);
-        } catch (e) {
-          console.warn('Failed to decrypt user private key:', e);
-        }
-      }
-
-      return { success: true, user: userData };
+      const auth = await getAuth();
+      await auth.confirmSignUp({ username, code });
     } catch (err) {
-      setError(err.message || 'Login failed');
+      setError(friendlyError(err));
       throw err;
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // Complete MFA Login (UC-3)
-  const completeMfaLogin = useCallback(async ({ mfaSessionToken, code, pendingMek, identifier }) => {
-    setLoading(true);
-    setError(null);
+  const resendConfirmation = useCallback(async ({ username }) => {
+    const auth = await getAuth();
+    return auth.resendSignUpCode({ username });
+  }, []);
+
+  // UC-2: sign-in
+  const login = useCallback(
+    async ({ identifier, masterPassword }) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const salt = (await api.auth.getSalt(identifier)).data.salt;
+        const { kek, authHash } = await ClientCrypto.deriveKeys(masterPassword, salt);
+        const auth = await getAuth();
+        const result = await auth.signIn({ username: identifier, password: ClientCrypto.toCognitoPassword(authHash) });
+
+        if (result.status === 'TOTP_REQUIRED') {
+          pendingLoginRef.current = { kek, salt, identifier };
+          return { mfaRequired: true, mfaType: 'totp' };
+        }
+        if (result.status === 'CONFIRM_SIGN_UP') {
+          return { confirmationRequired: true, identifier };
+        }
+        if (result.status !== 'DONE') {
+          throw new Error('ขั้นตอนการเข้าสู่ระบบนี้ยังไม่รองรับ กรุณาติดต่อผู้ดูแลระบบ');
+        }
+        const profile = await openVault({ kek, salt, identifier });
+        return { success: true, user: profile };
+      } catch (err) {
+        if (err?.name === 'UserNotConfirmedException') {
+          return { confirmationRequired: true, identifier };
+        }
+        setError(friendlyError(err));
+        throw err;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [openVault]
+  );
+
+  // UC-3: TOTP challenge during sign-in
+  const completeMfaLogin = useCallback(
+    async ({ code }) => {
+      const pending = pendingLoginRef.current;
+      if (!pending) throw new Error('ไม่พบขั้นตอนการเข้าสู่ระบบที่รอยืนยัน กรุณาเข้าสู่ระบบใหม่');
+      setLoading(true);
+      setError(null);
+      try {
+        const auth = await getAuth();
+        const result = await auth.confirmTotp({ code });
+        if (result.status !== 'DONE') throw new Error('การยืนยันตัวตนไม่สำเร็จ');
+        pendingLoginRef.current = null;
+        const profile = await openVault(pending);
+        return { success: true, user: profile };
+      } catch (err) {
+        setError(friendlyError(err));
+        throw err;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [openVault]
+  );
+
+  // Unlock after "lock vault" or a page reload (Cognito session still valid).
+  const unlockVault = useCallback(
+    async (masterPassword) => {
+      if (!user?.kdf_salt) throw new Error('ไม่พบข้อมูลบัญชี กรุณาเข้าสู่ระบบใหม่');
+      setLoading(true);
+      setError(null);
+      try {
+        const { kek } = await ClientCrypto.deriveKeys(masterPassword, user.kdf_salt);
+        const unlockedVaultKey = await ClientCrypto.unwrapVaultKey(user.encrypted_vault_key, kek);
+        setVaultKey(unlockedVaultKey);
+        setPrivateKey(await ClientCrypto.unprotectPrivateKey(user.encrypted_private_key, unlockedVaultKey));
+        return true;
+      } catch (err) {
+        const message = err?.code === 'DECRYPT_FAILED' ? 'รหัสผ่านหลักไม่ถูกต้อง' : friendlyError(err);
+        setError(message);
+        throw new Error(message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [user]
+  );
+
+  // UC-7: forgotten master password (Cognito code by e-mail)
+  const requestPasswordReset = useCallback(async ({ identifier }) => {
+    const auth = await getAuth();
+    return auth.forgotPassword({ username: identifier });
+  }, []);
+
+  /**
+   * Sets a new master password. The old Vault Key cannot be recovered without the old
+   * master password (zero knowledge), so fresh key material is generated: items encrypted
+   * with the old Vault Key become unreadable.
+   */
+  const confirmPasswordReset = useCallback(async ({ identifier, code, newMasterPassword }) => {
+    const salt = (await api.auth.getSalt(identifier)).data.salt;
+    const { kek, authHash } = await ClientCrypto.deriveKeys(newMasterPassword, salt);
+    const password = ClientCrypto.toCognitoPassword(authHash);
+    const auth = await getAuth();
+    await auth.confirmForgotPassword({ username: identifier, code, newPassword: password });
+
+    const signIn = await auth.signIn({ username: identifier, password });
+    if (signIn.status !== 'DONE') {
+      // TOTP users finish the key reset on their next sign-in (see openVault errors).
+      await auth.signOut().catch(() => {});
+      return { keysReset: false };
+    }
+    const vaultKeyBytes = ClientCrypto.createVaultKey();
+    const keyPair = await ClientCrypto.createKeyPair();
+    const keyMaterial = {
+      kdf_salt: salt,
+      public_key: keyPair.publicKey,
+      encrypted_private_key: await ClientCrypto.protectPrivateKey(keyPair.privateKey, vaultKeyBytes),
+      encrypted_vault_key: await ClientCrypto.wrapVaultKey(vaultKeyBytes, kek),
+    };
     try {
-      const res = await api.auth.mfaValidate({ mfaSessionToken, token: code });
-      const token = res.token;
-      let userData = res.user;
-
-      // Fetch salt if missing
-      if (!userData.auth_salt && identifier) {
-        try {
-          const saltRes = await api.auth.getSalt(identifier);
-          userData.auth_salt = saltRes?.data?.salt;
-        } catch {}
-      }
-
-      setAuthToken(token);
-      setUser(userData);
-      sessionStorage.setItem('securevault_user', JSON.stringify(userData));
-
-      // Retain MEK in memory
-      setMek(pendingMek);
-
-      // Decrypt private key
-      if (userData.encrypted_private_key && pendingMek) {
-        try {
-          const privKey = await ClientCrypto.unprotectPrivateKey(userData.encrypted_private_key, pendingMek);
-          setPrivateKey(privKey);
-        } catch (e) {
-          console.warn('Failed to decrypt user private key after MFA:', e);
-        }
-      }
-
-      return { success: true, user: userData };
+      await api.users.updateKeys({ ...keyMaterial, reason: 'reset' });
     } catch (err) {
-      setError(err.message || 'MFA validation failed');
-      throw err;
-    } finally {
-      setLoading(false);
+      if (err?.code !== 'PROFILE_NOT_FOUND') throw err;
     }
+    await auth.signOut().catch(() => {});
+    return { keysReset: true };
   }, []);
 
-  // Sync token state on mount
-  useEffect(() => {
-    const token = sessionStorage.getItem('securevault_jwt');
-    if (token) {
-      setAuthToken(token);
-    }
-  }, []);
+  // UC-3: TOTP enrolment
+  const setupTotp = useCallback(async () => {
+    const auth = await getAuth();
+    return auth.setupTotp({ accountName: user?.email || user?.username || 'SecureVault' });
+  }, [user]);
+
+  const verifyTotp = useCallback(
+    async ({ code }) => {
+      const auth = await getAuth();
+      await auth.verifyTotp({ code });
+      const updated = (await api.users.updateMe({ mfa_enabled: true })).data;
+      setUser(updated);
+      cacheProfile(updated);
+    },
+    []
+  );
 
   const value = {
     user,
-    setUser,
-    mek,
-    setMek,
+    vaultKey,
+    // Older components call the item key "mek"; it is the Vault Key.
+    mek: vaultKey,
     privateKey,
-    setPrivateKey,
-    isVaultUnlocked: Boolean(mek),
+    isVaultUnlocked: Boolean(vaultKey),
     isAuthenticated: Boolean(user),
     isAdmin: user?.role === 'admin',
+    authMode: config.authMode,
     loading,
     error,
     setError,
     login,
     register,
+    confirmRegistration,
+    resendConfirmation,
+    completeMfaLogin,
     logout,
     lockVault,
     unlockVault,
-    completeMfaLogin,
+    requestPasswordReset,
+    confirmPasswordReset,
+    setupTotp,
+    verifyTotp,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

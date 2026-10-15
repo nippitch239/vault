@@ -12,6 +12,7 @@ import { CommandPalette } from './components/Layout/CommandPalette.jsx';
 import { LoginView } from './components/Auth/LoginView.jsx';
 import { RegisterView } from './components/Auth/RegisterView.jsx';
 import { ResetPasswordView } from './components/Auth/ResetPasswordView.jsx';
+import { ConfirmSignUpView } from './components/Auth/ConfirmSignUpView.jsx';
 import { MfaModal } from './components/Auth/MfaModal.jsx';
 
 // Main Application Views
@@ -29,7 +30,13 @@ function MainApp() {
   const { isAuthenticated, isAdmin, lockVault, logout } = useAuth();
 
   // Auth navigation state when logged out
-  const [authView, setAuthView] = useState('login'); // 'login' | 'register' | 'reset'
+  const [authView, setAuthView] = useState('login'); // 'login' | 'register' | 'confirm' | 'reset'
+  const [pendingConfirmation, setPendingConfirmation] = useState({ username: '', devCode: null });
+
+  const goToConfirm = useCallback((username, devCode = null) => {
+    setPendingConfirmation({ username: username || '', devCode });
+    setAuthView('confirm');
+  }, []);
 
   // Dashboard tab state when logged in
   const [currentTab, setCurrentTab] = useState('vault'); // 'vault' | 'generator' | 'shared' | 'collections' | 'groups' | 'activity' | 'audit' | 'monitoring'
@@ -118,12 +125,22 @@ function MainApp() {
           <LoginView
             onNavigateRegister={() => setAuthView('register')}
             onNavigateReset={() => setAuthView('reset')}
+            onNavigateConfirm={(identifier) => goToConfirm(identifier)}
             onSuccess={() => setCurrentTab('vault')}
           />
         )}
 
         {authView === 'register' && (
-          <RegisterView onNavigateLogin={() => setAuthView('login')} />
+          <RegisterView onNavigateLogin={() => setAuthView('login')} onNavigateConfirm={goToConfirm} />
+        )}
+
+        {authView === 'confirm' && (
+          <ConfirmSignUpView
+            key={pendingConfirmation.username}
+            username={pendingConfirmation.username}
+            devCode={pendingConfirmation.devCode}
+            onNavigateLogin={() => setAuthView('login')}
+          />
         )}
 
         {authView === 'reset' && (

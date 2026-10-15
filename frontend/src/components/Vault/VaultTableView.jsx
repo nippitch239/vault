@@ -7,7 +7,7 @@ import {
   TableRow,
   TableCell,
 } from '../ui/Table.jsx';
-import { Button } from '../ui/Button.jsx';
+
 import {
   StarIcon,
   EyeIcon,
@@ -15,8 +15,6 @@ import {
   CopyIcon,
   CheckIcon,
   ExternalLinkIcon,
-  EditIcon,
-  KeyIcon,
 } from '../Common/Icons.jsx';
 import { CategoryBadge } from './CategoryBadge.jsx';
 import { ItemActionDropdown } from './ItemActionDropdown.jsx';

@@ -4,7 +4,7 @@ import { ShieldIcon, KeyIcon, EyeIcon, EyeOffIcon, CheckIcon } from '../Common/I
 import { useToast } from '../Common/Toast.jsx';
 import { MfaModal } from './MfaModal.jsx';
 
-export function LoginView({ onNavigateRegister, onNavigateReset, onSuccess }) {
+export function LoginView({ onNavigateRegister, onNavigateReset, onNavigateConfirm, onSuccess }) {
   const { login, loading, error: authError, setError } = useAuth();
   const { addToast } = useToast();
 
@@ -31,12 +31,10 @@ export function LoginView({ onNavigateRegister, onNavigateReset, onSuccess }) {
       });
 
       if (res?.mfaRequired) {
-        setMfaChallenge({
-          mfaSessionToken: res.mfaSessionToken,
-          mfaType: res.mfaType,
-          pendingMek: res.pendingMek,
-          identifier: res.identifier,
-        });
+        setMfaChallenge({ mfaType: res.mfaType });
+      } else if (res?.confirmationRequired) {
+        addToast('บัญชียังไม่ได้ยืนยันอีเมล กรุณากรอกรหัสยืนยัน', 'info');
+        if (onNavigateConfirm) onNavigateConfirm(res.identifier);
       } else if (res?.success) {
         addToast('เข้าสู่ระบบสำเร็จ! ปลดล็อกคลังรหัสผ่านเรียบร้อยแล้ว', 'success');
         if (onSuccess) onSuccess();
@@ -162,7 +160,6 @@ export function LoginView({ onNavigateRegister, onNavigateReset, onSuccess }) {
         <MfaModal
           isOpen={true}
           mode="challenge"
-          challengeData={mfaChallenge}
           onClose={() => setMfaChallenge(null)}
           onSuccess={() => {
             setMfaChallenge(null);

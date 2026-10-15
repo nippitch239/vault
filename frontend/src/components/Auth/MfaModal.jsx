@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
-import api from '../../services/api.js';
-import { ShieldIcon, KeyIcon, CloseIcon, CheckIcon } from '../Common/Icons.jsx';
+import { ShieldIcon, CloseIcon, CheckIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 
-export function MfaModal({ isOpen, onClose, mode = 'setup', challengeData = null, onSuccess }) {
-  const { completeMfaLogin, user, setUser } = useAuth();
+export function MfaModal({ isOpen, onClose, mode = 'setup', onSuccess }) {
+  const { completeMfaLogin, setupTotp, verifyTotp } = useAuth();
   const { addToast } = useToast();
 
   const [setupData, setSetupData] = useState(null);
@@ -19,10 +18,9 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', challengeData = null
       setCode('');
       setError(null);
       setLoading(true);
-      api.auth
-        .mfaSetup()
-        .then((res) => {
-          setSetupData(res.data);
+      setupTotp()
+        .then((details) => {
+          setSetupData({ secret: details.sharedSecret, otpauth_url: details.otpauthUrl });
         })
         .catch((err) => {
           setError(err.message || 'ไม่สามารถเริ่มการตั้งค่า MFA ได้');
@@ -34,6 +32,8 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', challengeData = null
       setCode('');
       setError(null);
     }
+    // setupTotp is intentionally not a dependency: only re-run when the modal opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, mode]);
 
   if (!isOpen) return null;
@@ -48,11 +48,8 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', challengeData = null
     setLoading(true);
     setError(null);
     try {
-      await api.auth.mfaVerify(code.trim());
+      await verifyTotp({ code: code.trim() });
       addToast('เปิดใช้งาน Multi-Factor Authentication (MFA) สำเร็จ!', 'success');
-      if (user) {
-        setUser({ ...user, mfa_enabled: true });
-      }
       if (onSuccess) onSuccess();
       onClose();
     } catch (err) {
@@ -72,12 +69,7 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', challengeData = null
     setLoading(true);
     setError(null);
     try {
-      await completeMfaLogin({
-        mfaSessionToken: challengeData.mfaSessionToken,
-        code: code.trim(),
-        pendingMek: challengeData.pendingMek,
-        identifier: challengeData.identifier,
-      });
+      await completeMfaLogin({ code: code.trim() });
       addToast('ยืนยันตัวตน MFA สำเร็จ ยินดีต้อนรับสู่ SecureVault!', 'success');
       if (onSuccess) onSuccess();
       onClose();

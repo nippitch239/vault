@@ -4,7 +4,7 @@ import ClientCrypto from '../../services/crypto.js';
 import { ShieldIcon, KeyIcon, EyeIcon, EyeOffIcon, CheckIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 
-export function RegisterView({ onNavigateLogin }) {
+export function RegisterView({ onNavigateLogin, onNavigateConfirm }) {
   const { register, loading, error: authError, setError } = useAuth();
   const { addToast } = useToast();
 
@@ -14,7 +14,6 @@ export function RegisterView({ onNavigateLogin }) {
     fullName: '',
     masterPassword: '',
     confirmPassword: '',
-    role: 'user',
   });
 
   const [showPassword, setShowPassword] = useState(false);
@@ -59,17 +58,16 @@ export function RegisterView({ onNavigateLogin }) {
 
     try {
       setDerivingKeys(true);
-      await register({
+      const res = await register({
         username: formData.username.trim(),
         email: formData.email.trim().toLowerCase(),
         fullName: formData.fullName.trim(),
         masterPassword: formData.masterPassword,
-        role: formData.role,
       });
 
-      addToast('สมัครสมาชิกสำเร็จ! กรุณาเข้าสู่ระบบด้วยรหัสผ่านหลักของคุณ', 'success', 5000);
-      if (onNavigateLogin) {
-        onNavigateLogin();
+      addToast('สมัครสมาชิกสำเร็จ! กรุณากรอกรหัสยืนยันที่ส่งไปทางอีเมล', 'success', 5000);
+      if (onNavigateConfirm) {
+        onNavigateConfirm(formData.username.trim(), res?.devCode);
       }
     } catch (err) {
       // error is stored in authError
@@ -228,35 +226,6 @@ export function RegisterView({ onNavigateLogin }) {
           {formErrors.confirmPassword && (
             <p className="mt-1 text-xs text-rose-400">{formErrors.confirmPassword}</p>
           )}
-        </div>
-
-        {/* Role Toggle for testing / admin */}
-        <div className="flex items-center justify-between text-xs pt-1 px-1 text-slate-400">
-          <span>ประเภทบัญชี:</span>
-          <div className="flex space-x-2">
-            <button
-              type="button"
-              onClick={() => setFormData((p) => ({ ...p, role: 'user' }))}
-              className={`px-2.5 py-1 rounded-md border text-xs font-medium transition-all ${
-                formData.role === 'user'
-                  ? 'bg-emerald-600/30 border-emerald-500 text-emerald-300'
-                  : 'bg-slate-900 border-slate-700 text-slate-400'
-              }`}
-            >
-              User
-            </button>
-            <button
-              type="button"
-              onClick={() => setFormData((p) => ({ ...p, role: 'admin' }))}
-              className={`px-2.5 py-1 rounded-md border text-xs font-medium transition-all ${
-                formData.role === 'admin'
-                  ? 'bg-purple-600/30 border-purple-500 text-purple-300'
-                  : 'bg-slate-900 border-slate-700 text-slate-400'
-              }`}
-            >
-              Admin
-            </button>
-          </div>
         </div>
 
         {/* Zero-Knowledge Privacy Notice */}

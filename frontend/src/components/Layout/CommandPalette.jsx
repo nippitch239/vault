@@ -12,7 +12,6 @@ import {
   BarChartIcon,
   LockIcon,
   SunIcon,
-  MoonIcon,
   ShieldIcon,
   BellIcon,
   LogOutIcon,

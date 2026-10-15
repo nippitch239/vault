@@ -188,7 +188,7 @@ export function HistoryDrawer({ isOpen, item, onClose, onRestoreSuccess }) {
                       </div>
                       {decrypted.notes && (
                         <div className="pt-1 border-t border-border text-muted-foreground italic">
-                          "{decrypted.notes}"
+                          “{decrypted.notes}”
                         </div>
                       )}
                     </div>

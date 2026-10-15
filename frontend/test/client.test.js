@@ -17,7 +17,6 @@ describe('Milestone 3 — React Client Cryptography & Services Verification', ()
   let masterPassword = 'Correct-Horse-Battery-Staple-99!';
   let accountSalt;
   let mekBuffer;
-  let authHashHex;
   let userKeyPair;
 
   test('UC-1: Registration Cryptography — Salt, Argon2id KDF, RSA Key Pair, and Private Key Encryption', async () => {
@@ -34,7 +33,7 @@ describe('Milestone 3 — React Client Cryptography & Services Verification', ()
     assert.equal(derived.authHash.length, 64);
 
     mekBuffer = derived.mek;
-    authHashHex = derived.authHash;
+    assert.match(derived.authHash, /^[0-9a-f]{64}$/);
 
     // 3. Asymmetric keypair generation
     userKeyPair = await ClientCrypto.createKeyPair();
@@ -160,5 +159,40 @@ describe('Milestone 3 — React Client Cryptography & Services Verification', ()
       'user-1'
     );
     assert.equal(selfShare.valid, false);
+  });
+});
+
+describe('API client (services/api.js)', () => {
+  test('sends the Cognito ID token, keeps /auth/salt public and exposes error codes', async () => {
+    const calls = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, options) => {
+      calls.push({ url, options });
+      if (url.endsWith('/users/me')) {
+        return new Response(JSON.stringify({ status: 'fail', error: 'PROFILE_NOT_FOUND', message: 'not yet' }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ status: 'success', data: { salt: 'c2FsdA==' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    try {
+      api.setBaseUrl('https://api.example.test/prod/api/v1');
+      setAuthToken('id-token-123');
+
+      await api.auth.getSalt('alice@example.com');
+      assert.equal(calls[0].url, 'https://api.example.test/prod/api/v1/auth/salt?identifier=alice%40example.com');
+      assert.equal(calls[0].options.headers.Authorization, undefined);
+
+      await assert.rejects(() => api.users.me(), (err) => err.status === 404 && err.code === 'PROFILE_NOT_FOUND');
+      assert.equal(calls[1].options.headers.Authorization, 'Bearer id-token-123');
+    } finally {
+      globalThis.fetch = originalFetch;
+      setAuthToken(null);
+      api.setBaseUrl(null);
+    }
   });
 });

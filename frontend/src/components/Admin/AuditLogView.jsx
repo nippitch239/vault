@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../services/api.js';
-import { DownloadIcon, RefreshIcon, SearchIcon, ChartBarIcon } from '../Common/Icons.jsx';
+import { DownloadIcon, RefreshIcon, ChartBarIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 
 export function AuditLogView() {
@@ -14,7 +14,7 @@ export function AuditLogView() {
   // Filters
   const [action, setAction] = useState('');
   const [severity, setSeverity] = useState('');
-  const [searchActor, setSearchActor] = useState('');
+  const [searchActor] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [exporting, setExporting] = useState(false);

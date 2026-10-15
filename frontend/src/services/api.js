@@ -1,149 +1,115 @@
 /**
- * SecureVault Cloud — API Client Service
+ * SecureVault Cloud — API client
  *
- * Implements isomorphic HTTP requests to API Gateway v2 / Lambda endpoints.
- * Handles token management, authentication headers, error serialization, and file downloads.
+ * Every call goes through API Gateway (VITE_API_URL). The Cognito ID token from the auth
+ * adapter is sent as "Authorization: Bearer <token>"; API Gateway's Cognito authorizer
+ * validates it before the Lambda runs. The frontend never talks to the database or to
+ * server-side AWS APIs directly.
  */
 
+import { config } from '../config.js';
+import { getAuth } from './auth/index.js';
+
 let customApiBase = null;
+let staticToken = null; // tests / scripts only
+let unauthorizedHandler = null;
 
 export const setApiBase = (url) => {
   customApiBase = url;
 };
 
-export const getApiBase = () => {
-  if (customApiBase) return customApiBase;
-  if (typeof process !== 'undefined' && process.env?.VITE_API_BASE_URL) {
-    return process.env.VITE_API_BASE_URL;
-  }
-  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) {
-    return import.meta.env.VITE_API_BASE_URL;
-  }
-  return '/api/v1';
+export const getApiBase = () => customApiBase || config.apiUrl;
+
+/** Overrides the token provider (integration tests). Pass null to use the auth adapter again. */
+export const setAuthToken = (token) => {
+  staticToken = token;
 };
 
-class ApiError extends Error {
+export const getAuthToken = async () => {
+  if (staticToken) return staticToken;
+  try {
+    const auth = await getAuth();
+    return await auth.getIdToken();
+  } catch {
+    return null;
+  }
+};
+
+/** Called with the ApiError when the API answers 401 (expired / revoked session). */
+export const setUnauthorizedHandler = (fn) => {
+  unauthorizedHandler = fn;
+};
+
+export class ApiError extends Error {
   constructor(message, status = 500, data = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.data = data;
+    this.code = data?.error;
   }
 }
 
-// Token holder in memory with optional sessionStorage fallback for JWT (never MEK!)
-let authToken =
-  typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('securevault_jwt') : null;
-
-export const setAuthToken = (token) => {
-  authToken = token;
-  if (typeof sessionStorage !== 'undefined') {
-    if (token) {
-      sessionStorage.setItem('securevault_jwt', token);
-    } else {
-      sessionStorage.removeItem('securevault_jwt');
-    }
-  }
-};
-
-export const getAuthToken = () => authToken;
-
 async function request(endpoint, options = {}) {
-  const base = getApiBase();
-  const url = endpoint.startsWith('http') ? endpoint : `${base}${endpoint}`;
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(options.headers || {}),
-  };
+  const url = endpoint.startsWith('http') ? endpoint : `${getApiBase()}${endpoint}`;
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
 
-  if (authToken && !headers.Authorization) {
-    headers.Authorization = `Bearer ${authToken}`;
+  if (!options.public && !headers.Authorization) {
+    const token = await getAuthToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
   }
 
-  const config = {
+  const fetchOptions = {
     method: options.method || 'GET',
     headers,
-    ...options,
+    signal: options.signal,
   };
-
-  if (options.body && typeof options.body === 'object') {
-    config.body = JSON.stringify(options.body);
+  if (options.body !== undefined) {
+    fetchOptions.body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
   }
 
+  let response;
   try {
-    const response = await fetch(url, config);
-
-    // Handle CSV or text responses
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('text/csv') || contentType.includes('text/plain')) {
-      if (!response.ok) {
-        throw new ApiError(`Request failed with status ${response.status}`, response.status);
-      }
-      return await response.text();
-    }
-
-    let data;
-    try {
-      data = await response.json();
-    } catch {
-      data = null;
-    }
-
-    if (!response.ok) {
-      const errorMsg = data?.message || data?.error || `Request failed with status ${response.status}`;
-      throw new ApiError(errorMsg, response.status, data);
-    }
-
-    return data;
+    response = await fetch(url, fetchOptions);
   } catch (err) {
-    if (err instanceof ApiError) throw err;
-    throw new ApiError(err.message || 'Network error occurred', 0, err);
+    if (err?.name === 'AbortError') throw err;
+    throw new ApiError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต', 0, null);
   }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('text/csv') || contentType.includes('text/plain')) {
+    if (!response.ok) throw new ApiError(`Request failed with status ${response.status}`, response.status);
+    return response.text();
+  }
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const error = new ApiError(data?.message || data?.error || `Request failed with status ${response.status}`, response.status, data);
+    if (response.status === 401 && unauthorizedHandler) unauthorizedHandler(error);
+    throw error;
+  }
+  return data;
 }
 
 export const api = {
-  // Authentication (UC-1, UC-2, UC-3, UC-7)
+  // Auth helpers (credentials themselves are handled by Cognito — see services/auth)
   auth: {
-    register: (userData) => request('/auth/register', { method: 'POST', body: userData }),
+    getSalt: (identifier) => request(`/auth/salt?identifier=${encodeURIComponent(identifier)}`, { public: true }),
+    recordSession: () => request('/auth/session', { method: 'POST' }),
+  },
 
-    getSalt: (identifier) => {
-      const isEmail = identifier.includes('@');
-      const param = isEmail ? `email=${encodeURIComponent(identifier)}` : `username=${encodeURIComponent(identifier)}`;
-      return request(`/auth/salt?${param}`);
-    },
-
-    login: ({ identifier, authHash }) => {
-      const isEmail = identifier.includes('@');
-      const body = {
-        auth_hash: authHash,
-        ...(isEmail ? { email: identifier } : { username: identifier }),
-      };
-      return request('/auth/login', { method: 'POST', body });
-    },
-
-    mfaSetup: () => request('/auth/mfa/setup', { method: 'POST' }),
-
-    mfaVerify: (token) => request('/auth/mfa/verify', { method: 'POST', body: { token } }),
-
-    mfaValidate: ({ mfaSessionToken, token }) =>
-      request('/auth/mfa/validate', {
-        method: 'POST',
-        body: { mfa_session_token: mfaSessionToken, token },
-      }),
-
-    resetPasswordRequest: (email) =>
-      request('/auth/reset-password/request', { method: 'POST', body: { email } }),
-
-    resetPasswordConfirm: ({ email, otpCode, newAuthHash, newAuthSalt }) =>
-      request('/auth/reset-password/confirm', {
-        method: 'POST',
-        body: {
-          email,
-          otp_code: otpCode,
-          new_auth_hash: newAuthHash,
-          new_auth_salt: newAuthSalt,
-        },
-      }),
+  // Vault profile & key material
+  users: {
+    me: () => request('/users/me'),
+    createMe: (profile) => request('/users/me', { method: 'POST', body: profile }),
+    updateMe: (fields) => request('/users/me', { method: 'PATCH', body: fields }),
+    updateKeys: (keys) => request('/users/me/keys', { method: 'PUT', body: keys }),
   },
 
   // Vault Items (UC-4, UC-5, UC-6)

@@ -10,16 +10,14 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
-      '@shared': path.resolve(__dirname, '../shared'),
     },
   },
   server: {
     port: 5173,
+    // Local development: the backend simulator (API Gateway + Cognito emulation) on :3000.
     proxy: {
-      '/api': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
+      '/api': { target: 'http://localhost:3000', changeOrigin: true },
+      '/local-auth': { target: 'http://localhost:3000', changeOrigin: true },
     },
   },
   build: {

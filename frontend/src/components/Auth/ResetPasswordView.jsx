@@ -1,11 +1,14 @@
 import React, { useState, useMemo } from 'react';
-import api from '../../services/api.js';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { describeAuthError } from '../../services/auth/index.js';
 import ClientCrypto from '../../services/crypto.js';
-import { ShieldIcon, KeyIcon, EyeIcon, EyeOffIcon, CheckIcon } from '../Common/Icons.jsx';
+import { KeyIcon, EyeIcon, EyeOffIcon, CheckIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 
 export function ResetPasswordView({ onNavigateLogin }) {
   const { addToast } = useToast();
+  const { requestPasswordReset, confirmPasswordReset, authMode } = useAuth();
+  const [devCodeHint, setDevCodeHint] = useState(null);
 
   const [step, setStep] = useState(1); // 1: Request OTP, 2: Enter OTP & New Password
   const [email, setEmail] = useState('');
@@ -32,16 +35,13 @@ export function ResetPasswordView({ onNavigateLogin }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.auth.resetPasswordRequest(email.trim().toLowerCase());
-      addToast(res.message || 'ส่งรหัสยืนยัน OTP ไปยังอีเมลเรียบร้อยแล้ว', 'info');
-
-      // In local dev/testing, the backend provides debug_otp for easy verification
-      if (res?.data?.debug_otp) {
-        setOtpCode(res.data.debug_otp);
-      }
+      const res = await requestPasswordReset({ identifier: email.trim().toLowerCase() });
+      // Same message whether or not the e-mail exists (no account enumeration).
+      addToast('หากอีเมลนี้มีบัญชีอยู่ ระบบได้ส่งรหัสยืนยันไปแล้ว', 'info');
+      setDevCodeHint(res?.devCode || null);
       setStep(2);
     } catch (err) {
-      setError(err.message || 'ไม่พบอีเมลนี้ในระบบ หรือเกิดข้อผิดพลาด');
+      setError(describeAuthError(err));
     } finally {
       setLoading(false);
     }
@@ -66,26 +66,23 @@ export function ResetPasswordView({ onNavigateLogin }) {
 
     setLoading(true);
     try {
-      // 1. Generate fresh salt
-      const newAuthSalt = ClientCrypto.createSalt(16);
-
-      // 2. Derive new Auth Hash via Argon2id
-      const { authHash: newAuthHash } = await ClientCrypto.deriveKeys(newPassword, newAuthSalt);
-
-      // 3. Submit reset to server
-      await api.auth.resetPasswordConfirm({
-        email: email.trim().toLowerCase(),
-        otpCode: otpCode.trim(),
-        newAuthHash,
-        newAuthSalt,
+      const result = await confirmPasswordReset({
+        identifier: email.trim().toLowerCase(),
+        code: otpCode.trim(),
+        newMasterPassword: newPassword,
       });
-
-      addToast('รีเซ็ตรหัสผ่านสำเร็จ! กรุณาเข้าสู่ระบบด้วยรหัสผ่านหลักใหม่', 'success', 6000);
+      addToast(
+        result.keysReset
+          ? 'รีเซ็ตรหัสผ่านหลักสำเร็จ! กรุณาเข้าสู่ระบบด้วยรหัสผ่านหลักใหม่'
+          : 'รีเซ็ตรหัสผ่านสำเร็จ กรุณาเข้าสู่ระบบ (ต้องยืนยัน MFA) เพื่อสร้างคีย์คลังรหัสผ่านใหม่',
+        'success',
+        6000
+      );
       if (onNavigateLogin) {
         onNavigateLogin();
       }
     } catch (err) {
-      setError(err.message || 'รหัสยืนยันไม่ถูกต้องหรือหมดอายุ');
+      setError(describeAuthError(err));
     } finally {
       setLoading(false);
     }
@@ -140,7 +137,7 @@ export function ResetPasswordView({ onNavigateLogin }) {
           <div className="p-3 bg-amber-950/30 border border-amber-500/20 rounded-xl text-amber-200 text-xs flex items-start space-x-2">
             <span className="text-amber-400 font-bold">⚠️ ข้อควรทราบ:</span>
             <span>
-              ตามสถาปัตยกรรม Zero-Knowledge การรีเซ็ตรหัสผ่านหลักจะทำให้กุญแจถอดรหัสเปลี่ยนไป ข้อมูลเดิมจะไม่สามารถอ่านได้หากไม่มี Recovery Key
+              ตามสถาปัตยกรรม Zero-Knowledge ระบบไม่สามารถกู้คืนรหัสผ่านหลักเดิมได้ เมื่อรีเซ็ตแล้วจะสร้างคีย์คลังรหัสผ่านใหม่ รายการรหัสผ่านเดิมจะไม่สามารถถอดรหัสได้อีก
             </span>
           </div>
 
@@ -154,6 +151,11 @@ export function ResetPasswordView({ onNavigateLogin }) {
         </form>
       ) : (
         <form onSubmit={handleConfirmReset} className="space-y-4">
+          {authMode === 'local' && devCodeHint && (
+            <p className="text-xs text-slate-400">
+              โหมดพัฒนา (local): รหัสยืนยันคือ <span className="font-mono text-amber-300">{devCodeHint}</span>
+            </p>
+          )}
           {/* OTP Code */}
           <div>
             <label htmlFor="otp-input" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">

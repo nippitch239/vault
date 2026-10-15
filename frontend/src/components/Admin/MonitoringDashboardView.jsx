@@ -1,10 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../services/api.js';
 import { ChartBarIcon, RefreshIcon, ShieldIcon } from '../Common/Icons.jsx';
-import { useToast } from '../Common/Toast.jsx';
 
 export function MonitoringDashboardView() {
-  const { addToast } = useToast();
 
   const [health, setHealth] = useState(null);
   const [metrics, setMetrics] = useState(null);

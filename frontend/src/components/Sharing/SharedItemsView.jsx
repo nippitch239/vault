@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
 import ClientCrypto from '../../services/crypto.js';
-import { ShareIcon, KeyIcon, EyeIcon, EyeOffIcon, CopyIcon, CheckIcon, RefreshIcon, EditIcon } from '../Common/Icons.jsx';
+import { ShareIcon, EyeIcon, EyeOffIcon, CopyIcon, CheckIcon, RefreshIcon, EditIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 
 export function SharedItemsView({ onEditItem }) {

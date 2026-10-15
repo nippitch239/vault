@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
-import { BellIcon, CloseIcon, ShieldIcon, RefreshIcon } from '../Common/Icons.jsx';
+import { BellIcon, CloseIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Badge } from '../ui/Badge.jsx';

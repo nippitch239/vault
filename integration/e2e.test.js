@@ -1,370 +1,226 @@
 /**
- * SecureVault Cloud — Client E2E Integration Test Suite
+ * SecureVault Cloud — frontend <-> backend integration test
  *
- * Boots local HTTP runner and exercises all 13 Use Cases (UC-1 through UC-13)
- * through the React client's ClientCrypto and API client:
+ * Boots the local API Gateway + Cognito simulator and drives it through the frontend's own
+ * services (auth adapter in "local" mode, api.js, ClientCrypto), covering UC-1 .. UC-13:
  *
- * UC-1: User registration with Argon2id client KDF & RSA keypair
- * UC-2: User login with authHash, JWT token receipt, volatile MEK retention
- * UC-3: MFA setup (TOTP) and verify
- * UC-4: Add Password item with client-side AES-256-GCM authenticated encryption
- * UC-5: Update Password item with re-encryption and optimistic version increment
- * UC-6: Delete Password item with cascading share cleanup
- * UC-7: Password reset request & confirmation
- * UC-8: Security notification alerts & simulation
- * UC-9: Admin audit log search & CSV export
- * UC-10: Granular password sharing with RSA-OAEP key wrapping & revocation
- * UC-11: Password version history retrieval & rollback
- * UC-12: User activity logs inspection
- * UC-13: System monitoring metrics retrieval & health probe
+ *   sign-up -> confirm -> sign-in (Authentication Key as Cognito password)
+ *   -> first sign-in creates the profile: random Vault Key wrapped by the KEK
+ *   -> items encrypted with the Vault Key, TOTP, sharing, history, reset, logs, monitoring
  */
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startLocalServer } from '../backend/local/local-runner.js';
-import ClientCrypto from '../frontend/src/services/crypto.js';
-import { api, setAuthToken } from '../frontend/src/services/api.js';
+import { generateTotp } from '../backend/local/local-auth.js';
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 
-describe('Milestone 3 — Frontend E2E Flow Verification (UC-1 through UC-13)', () => {
-  let serverInstance;
-  let serverUrl;
+describe('Frontend services against the local API Gateway + Cognito simulator (UC-1 .. UC-13)', () => {
+  const stamp = Date.now();
+  const alice = { username: `alice_${stamp}`, email: `alice_${stamp}@example.com`, fullName: 'Alice Frontend', masterPassword: 'MasterPassword-2026-Alice!' };
+  const bob = { username: `bob_${stamp}`, email: `bob_${stamp}@example.com`, fullName: 'Bob Recipient', masterPassword: 'MasterPassword-2026-Bob!' };
 
-  const testUser = {
-    username: `client_alice_${Date.now()}`,
-    email: `alice_${Date.now()}@example.com`,
-    fullName: 'Alice Frontend Tester',
-    masterPassword: 'MasterPassword-2026-Alice!',
-  };
+  let server;
+  let api;
+  let setAuthToken;
+  let ClientCrypto;
+  let auth;
 
-  const recipientUser = {
-    username: `client_bob_${Date.now()}`,
-    email: `bob_${Date.now()}@example.com`,
-    fullName: 'Bob Recipient',
-    masterPassword: 'MasterPassword-2026-Bob!',
-  };
+  const sessions = {};
+  let vaultId;
+  let itemId;
+  let totpSecret;
 
-  let aliceMek;
-  let aliceAuthHash;
-  let aliceKeyPair;
-  let aliceToken;
-  let aliceVaultId;
+  async function signUpAndOpenVault(user) {
+    const salt = (await api.auth.getSalt(user.username)).data.salt;
+    const { kek, authHash } = await ClientCrypto.deriveKeys(user.masterPassword, salt);
+    const password = ClientCrypto.toCognitoPassword(authHash);
 
-  let bobMek;
-  let bobKeyPair;
-  let bobToken;
+    const signUp = await auth.signUp({ username: user.username, email: user.email, name: user.fullName, password });
+    assert.equal(signUp.needsConfirmation, true);
+    await auth.confirmSignUp({ username: user.username, code: signUp.devCode });
 
-  let createdItemId;
-  let sharedKeyPayload;
+    assert.deepEqual(await auth.signIn({ username: user.email, password }), { status: 'DONE' });
+    const token = await auth.getIdToken();
+    setAuthToken(token);
+
+    await assert.rejects(() => api.users.me(), (err) => err.code === 'PROFILE_NOT_FOUND');
+    const vaultKey = ClientCrypto.createVaultKey();
+    const keyPair = await ClientCrypto.createKeyPair();
+    const profile = (
+      await api.users.createMe({
+        full_name: user.fullName,
+        kdf_salt: salt,
+        public_key: keyPair.publicKey,
+        encrypted_private_key: await ClientCrypto.protectPrivateKey(keyPair.privateKey, vaultKey),
+        encrypted_vault_key: await ClientCrypto.wrapVaultKey(vaultKey, kek),
+      })
+    ).data;
+    return { salt, kek, password, token, vaultKey, keyPair, profile };
+  }
 
   before(async () => {
-    // Start local server simulator on dynamic port
-    serverInstance = await startLocalServer(0);
-    const port = serverInstance.port;
-    serverUrl = `http://127.0.0.1:${port}`;
-    process.env.VITE_API_BASE_URL = `${serverUrl}/api/v1`;
-    api.setBaseUrl(`${serverUrl}/api/v1`);
+    process.env.LOCAL_ADMIN_USERS = alice.username;
+    server = await startLocalServer(0);
+    const base = `http://127.0.0.1:${server.port}`;
+    process.env.VITE_AUTH_MODE = 'local';
+    process.env.VITE_API_URL = `${base}/api/v1`;
+    process.env.VITE_LOCAL_AUTH_URL = `${base}/local-auth`;
+
+    // Imported after the env vars are set: config.js reads them at module load.
+    ({ api, setAuthToken } = await import('../frontend/src/services/api.js'));
+    ClientCrypto = (await import('../frontend/src/services/crypto.js')).default;
+    auth = await (await import('../frontend/src/services/auth/index.js')).getAuth();
   });
 
   after(async () => {
-    if (serverInstance) {
-      await serverInstance.close();
-    }
+    setAuthToken?.(null);
+    await server?.close();
   });
 
-  test('UC-1: Alice & Bob Registration with Client-Side Argon2id & RSA Key Generation', async () => {
-    // 1. Alice Registration
-    const aliceSalt = ClientCrypto.createSalt(16);
-    const aliceDerived = await ClientCrypto.deriveKeys(testUser.masterPassword, aliceSalt);
-    aliceMek = aliceDerived.mek;
-    aliceAuthHash = aliceDerived.authHash;
+  test('UC-1: sign-up, e-mail confirmation and first sign-in create the zero-knowledge profile', async () => {
+    sessions.alice = await signUpAndOpenVault(alice);
+    assert.equal(sessions.alice.profile.username, alice.username);
+    assert.equal(sessions.alice.profile.role, 'admin'); // from the Cognito "admin" group
+    sessions.bob = await signUpAndOpenVault(bob);
+    assert.equal(sessions.bob.profile.role, 'user');
 
-    aliceKeyPair = await ClientCrypto.createKeyPair();
-    const aliceEncryptedPrivKey = await ClientCrypto.protectPrivateKey(aliceKeyPair.privateKey, aliceMek);
-
-    const regAliceRes = await api.auth.register({
-      username: testUser.username,
-      email: testUser.email,
-      fullName: testUser.fullName,
-      authHash: aliceAuthHash,
-      authSalt: aliceSalt,
-      publicKey: aliceKeyPair.publicKey,
-      encryptedPrivateKey: aliceEncryptedPrivKey,
-      role: 'admin', // register as admin to test UC-9 and UC-13 as well
-    });
-
-    assert.equal(regAliceRes.status, 'success');
-    assert.ok(regAliceRes.data.user_id);
-    aliceVaultId = regAliceRes.data.default_vault_id;
-
-    // 2. Bob Registration
-    const bobSalt = ClientCrypto.createSalt(16);
-    const bobDerived = await ClientCrypto.deriveKeys(recipientUser.masterPassword, bobSalt);
-    bobMek = bobDerived.mek;
-
-    bobKeyPair = await ClientCrypto.createKeyPair();
-    const bobEncryptedPrivKey = await ClientCrypto.protectPrivateKey(bobKeyPair.privateKey, bobMek);
-
-    const regBobRes = await api.auth.register({
-      username: recipientUser.username,
-      email: recipientUser.email,
-      fullName: recipientUser.fullName,
-      authHash: bobDerived.authHash,
-      authSalt: bobSalt,
-      publicKey: bobKeyPair.publicKey,
-      encryptedPrivateKey: bobEncryptedPrivKey,
-      role: 'user',
-    });
-
-    assert.equal(regBobRes.status, 'success');
+    // The server never receives the master password, KEK or Vault Key
+    const raw = JSON.stringify(sessions.alice.profile);
+    assert.ok(!raw.includes(alice.masterPassword));
+    assert.ok(!raw.includes(ClientCrypto.toBase64(sessions.alice.vaultKey)));
   });
 
-  test('UC-2: Pre-login Salt Retrieval & Login with authHash (Issuing JWT & Volatile MEK)', async () => {
-    // Fetch salt
-    const saltRes = await api.auth.getSalt(testUser.email);
-    assert.equal(saltRes.status, 'success');
-    assert.ok(saltRes.data.salt);
+  test('UC-2: sign-in with the master password re-derives the KEK and unwraps the Vault Key', async () => {
+    const salt = (await api.auth.getSalt(alice.email)).data.salt;
+    assert.equal(salt, sessions.alice.salt);
+    const { kek, authHash } = await ClientCrypto.deriveKeys(alice.masterPassword, salt);
+    assert.equal((await auth.signIn({ username: alice.username, password: ClientCrypto.toCognitoPassword(authHash) })).status, 'DONE');
+    setAuthToken(await auth.getIdToken());
 
-    // Login with authHash
-    const loginRes = await api.auth.login({
-      identifier: testUser.email,
-      authHash: aliceAuthHash,
-    });
+    const me = (await api.users.me()).data;
+    const vaultKey = await ClientCrypto.unwrapVaultKey(me.encrypted_vault_key, kek);
+    assert.deepEqual(vaultKey, sessions.alice.vaultKey);
+    await api.auth.recordSession();
 
-    assert.equal(loginRes.status, 'success');
-    assert.ok(loginRes.token);
-    assert.equal(loginRes.user.email, testUser.email);
-    assert.equal(loginRes.user.role, 'admin');
-
-    aliceToken = loginRes.token;
-    setAuthToken(aliceToken);
-  });
-
-  test('UC-3: Multi-Factor Authentication (MFA Setup, TOTP Code Verification)', async () => {
-    // Setup MFA
-    const mfaSetup = await api.auth.mfaSetup();
-    assert.equal(mfaSetup.status, 'success');
-    assert.ok(mfaSetup.data.secret);
-    assert.ok(mfaSetup.data.otpauth_url);
-
-    // Generate valid TOTP token using shared helper / generator
-    // In server auth.js, generateTotp is used
-    import('../backend/src/handlers/auth.js').then(async (authHandler) => {
-      const code = authHandler.generateTotp(mfaSetup.data.secret);
-      const verifyRes = await api.auth.mfaVerify(code);
-      assert.equal(verifyRes.status, 'success');
-    });
-  });
-
-  test('UC-4: Add Vault Item with AES-256-GCM Authenticated Encryption', async () => {
-    const rawSecret = {
-      username: 'alice_admin@corp.internal',
-      password: 'ProdSuperPassword_8899!',
-      url: 'https://vault.corp.internal',
-      notes: 'Root database cluster credentials',
-    };
-
-    // Client-side encryption
-    const encryptedData = await ClientCrypto.encryptItem(rawSecret, aliceMek);
-    assert.ok(encryptedData.ciphertext);
-    assert.ok(encryptedData.iv);
-    assert.ok(encryptedData.authTag || encryptedData.auth_tag);
-
-    const createRes = await api.vault.createItem(
-      {
-        item_type: 'login',
-        encrypted_data: encryptedData,
-        metadata: {
-          title: 'Database Cluster Admin',
-          url: rawSecret.url,
-          favorite: true,
-          tags: ['prod', 'db'],
-        },
-      },
-      aliceVaultId
+    // Wrong master password: Cognito rejects the derived password
+    const wrong = await ClientCrypto.deriveKeys('not-the-password', salt);
+    await assert.rejects(
+      () => auth.signIn({ username: alice.username, password: ClientCrypto.toCognitoPassword(wrong.authHash) }),
+      (err) => err.name === 'NotAuthorizedException'
     );
-
-    assert.equal(createRes.status, 'success');
-    assert.ok(createRes.data.item_id);
-    assert.equal(createRes.data.version, 1);
-
-    createdItemId = createRes.data.item_id;
-
-    // Verify retrieval & client decryption
-    const getRes = await api.vault.getItem(createdItemId, aliceVaultId);
-    assert.equal(getRes.status, 'success');
-    const decrypted = await ClientCrypto.decryptItem(getRes.data.encrypted_data, aliceMek);
-    assert.deepEqual(decrypted, rawSecret);
   });
 
-  test('UC-5: Update Vault Item (Re-encryption & Version Increment)', async () => {
-    const updatedSecret = {
-      username: 'alice_admin@corp.internal',
-      password: 'Updated_ProdSuperPassword_2026!',
-      url: 'https://vault.corp.internal/v2',
-      notes: 'Rotated password with fresh salt',
-    };
+  test('UC-3: TOTP enrolment and TOTP challenge on the next sign-in', async () => {
+    assert.equal((await auth.signIn({ username: alice.username, password: sessions.alice.password })).status, 'DONE');
+    const setup = await auth.setupTotp({ accountName: alice.email });
+    totpSecret = setup.sharedSecret;
+    assert.match(setup.otpauthUrl, /^otpauth:\/\/totp\//);
+    await auth.verifyTotp({ code: generateTotp(totpSecret) });
+    setAuthToken(await auth.getIdToken());
+    assert.equal((await api.users.updateMe({ mfa_enabled: true })).data.mfa_enabled, true);
 
-    // Re-encrypt with fresh IV
-    const newEncrypted = await ClientCrypto.encryptItem(updatedSecret, aliceMek);
+    await auth.signOut();
+    assert.equal((await auth.signIn({ username: alice.username, password: sessions.alice.password })).status, 'TOTP_REQUIRED');
+    assert.equal((await auth.confirmTotp({ code: generateTotp(totpSecret) })).status, 'DONE');
+    sessions.alice.token = await auth.getIdToken();
+    setAuthToken(sessions.alice.token);
+  });
 
-    const updateRes = await api.vault.updateItem(
-      createdItemId,
-      {
-        encrypted_data: newEncrypted,
-        metadata: {
-          title: 'Database Cluster Admin (Rotated)',
-          favorite: true,
-          tags: ['prod', 'rotated'],
-        },
-        version: 1, // current version
-      },
-      aliceVaultId
+  test('UC-4: add an item encrypted with the Vault Key', async () => {
+    vaultId = (await api.vault.listVaults()).data[0].vault_id;
+    const secret = { username: 'alice_admin@corp.internal', password: 'ProdSuperPassword_8899!', url: 'https://vault.corp.internal', notes: 'Root DB' };
+    const created = await api.vault.createItem(
+      { item_type: 'login', encrypted_data: await ClientCrypto.encryptItem(secret, sessions.alice.vaultKey), metadata: { title: 'Database Cluster Admin' } },
+      vaultId
     );
+    assert.equal(created.data.version, 1);
+    itemId = created.data.item_id;
 
-    assert.equal(updateRes.status, 'success');
-    assert.equal(updateRes.data.version, 2);
-
-    // Verify decrypted updated data
-    const getRes = await api.vault.getItem(createdItemId, aliceVaultId);
-    const decrypted = await ClientCrypto.decryptItem(getRes.data.encrypted_data, aliceMek);
-    assert.deepEqual(decrypted, updatedSecret);
+    const fetched = await api.vault.getItem(itemId, vaultId);
+    assert.deepEqual(await ClientCrypto.decryptItem(fetched.data.encrypted_data, sessions.alice.vaultKey), secret);
   });
 
-  test('UC-11: Password Version History & Rollback', async () => {
-    const historyRes = await api.history.getHistory(createdItemId, aliceVaultId);
-    assert.equal(historyRes.status, 'success');
-    assert.ok(historyRes.history.length >= 1);
-    assert.equal(historyRes.history[0].version, 1);
-
-    // Decrypt historical snapshot
-    const histDecrypted = await ClientCrypto.decryptItem(historyRes.history[0].encrypted_data, aliceMek);
-    assert.equal(histDecrypted.password, 'ProdSuperPassword_8899!');
-
-    // Rollback to version 1
-    const rollbackRes = await api.history.rollback(createdItemId, 1, aliceVaultId);
-    assert.equal(rollbackRes.status, 'success');
-    assert.equal(rollbackRes.data.version, 3);
-  });
-
-  test('UC-10: Granular Password Sharing (RSA Key Wrapping, Recipient Decryption, Revoke)', async () => {
-    // 1. Alice looks up Bob's public key
-    const lookupRes = await api.sharing.lookupUser(recipientUser.email);
-    assert.equal(lookupRes.status, 'success');
-    assert.equal(lookupRes.data.email, recipientUser.email);
-    assert.ok(lookupRes.data.public_key);
-
-    // 2. Alice generates fresh 32-byte item key
-    const itemKey = ClientCrypto.generateItemKey();
-    const wrappedKey = await ClientCrypto.wrapItemKey(itemKey, lookupRes.data.public_key);
-
-    // 3. Alice shares item with Bob
-    const shareRes = await api.sharing.shareItem(
-      createdItemId,
-      {
-        recipient_email: recipientUser.email,
-        permission_level: 'modify',
-        encrypted_key_for_recipient: wrappedKey,
-      },
-      aliceVaultId
+  test('UC-5 & UC-11: update with optimistic version, history and rollback', async () => {
+    const updated = { username: 'alice_admin@corp.internal', password: 'Rotated_2026!', url: 'https://vault.corp.internal/v2', notes: 'rotated' };
+    const res = await api.vault.updateItem(
+      itemId,
+      { encrypted_data: await ClientCrypto.encryptItem(updated, sessions.alice.vaultKey), metadata: { title: 'Database Cluster Admin' }, version: 1 },
+      vaultId
     );
+    assert.equal(res.data.version, 2);
 
-    assert.equal(shareRes.status, 'success');
-
-    // 4. Bob logs in and checks shared items
-    const bobSalt = await api.auth.getSalt(recipientUser.email);
-    const bobDerived = await ClientCrypto.deriveKeys(recipientUser.masterPassword, bobSalt.data.salt);
-    const bobLogin = await api.auth.login({
-      identifier: recipientUser.email,
-      authHash: bobDerived.authHash,
-    });
-    bobToken = bobLogin.token;
-
-    setAuthToken(bobToken);
-    const bobSharedList = await api.sharing.listSharedItems();
-    assert.equal(bobSharedList.status, 'success');
-    assert.ok(bobSharedList.data.length >= 1);
-
-    // 5. Bob unwraps key using his private key
-    const bobShare = bobSharedList.data.find((s) => (s.item_id || s.share_id) === createdItemId || s.title?.includes('Database'));
-    assert.ok(bobShare);
-
-    // 6. Alice revokes share
-    setAuthToken(aliceToken);
-    const revokeRes = await api.sharing.revokeShare(createdItemId, lookupRes.data.user_id, aliceVaultId);
-    assert.equal(revokeRes.status, 'success');
+    const history = await api.history.getHistory(itemId, vaultId);
+    assert.equal((await ClientCrypto.decryptItem(history.history[0].encrypted_data, sessions.alice.vaultKey)).password, 'ProdSuperPassword_8899!');
+    assert.equal((await api.history.rollback(itemId, 1, vaultId)).data.version, 3);
   });
 
-  test('UC-6: Delete Password Item', async () => {
-    setAuthToken(aliceToken);
-    const deleteRes = await api.vault.deleteItem(createdItemId, aliceVaultId);
-    assert.equal(deleteRes.status, 'success');
+  test('UC-10: share with RSA-OAEP key wrapping, recipient listing and revoke', async () => {
+    const lookup = await api.sharing.lookupUser(bob.email);
+    assert.equal(lookup.data.public_key, sessions.bob.keyPair.publicKey);
 
-    // Confirm deletion
-    await assert.rejects(async () => {
-      await api.vault.getItem(createdItemId, aliceVaultId);
-    }, /not found/i);
+    const wrapped = await ClientCrypto.wrapItemKey(ClientCrypto.generateItemKey(), lookup.data.public_key);
+    const share = await api.sharing.shareItem(itemId, { recipient_email: bob.email, permission_level: 'modify', encrypted_key_for_recipient: wrapped }, vaultId);
+    assert.equal(share.status, 'success');
+
+    setAuthToken(sessions.bob.token);
+    const shared = await api.sharing.listSharedItems();
+    assert.ok(shared.data.some((s) => s.item_id === itemId));
+
+    setAuthToken(sessions.alice.token);
+    assert.equal((await api.sharing.revokeShare(itemId, lookup.data.user_id, vaultId)).status, 'success');
   });
 
-  test('UC-7: Password Reset Flow (Request OTP & Confirm New Master Password)', async () => {
-    const reqRes = await api.auth.resetPasswordRequest(testUser.email);
-    assert.equal(reqRes.status, 'success');
-    assert.ok(reqRes.data.debug_otp);
-
-    // Confirm reset with new password
-    const newMasterPassword = 'BrandNewMasterPassword_2026!';
-    const newSalt = ClientCrypto.createSalt(16);
-    const { authHash: newAuthHash } = await ClientCrypto.deriveKeys(newMasterPassword, newSalt);
-
-    const confirmRes = await api.auth.resetPasswordConfirm({
-      email: testUser.email,
-      otpCode: reqRes.data.debug_otp,
-      newAuthHash,
-      newAuthSalt: newSalt,
-    });
-    assert.equal(confirmRes.status, 'success');
+  test('UC-6: delete item', async () => {
+    assert.equal((await api.vault.deleteItem(itemId, vaultId)).status, 'success');
+    await assert.rejects(() => api.vault.getItem(itemId, vaultId), (err) => err.status === 404);
   });
 
-  test('UC-8, UC-9, UC-12, UC-13: Security Alerts, Audit Logs, Activity, and Monitoring', async () => {
-    setAuthToken(aliceToken);
+  test('UC-7: forgotten master password -> Cognito code -> new key material', async () => {
+    const reset = await auth.forgotPassword({ username: bob.email });
+    assert.ok(reset.devCode);
 
-    // UC-8: Security notifications & simulation
-    const simRes = await api.logs.simulateSecurityEvent({
-      severity: 'CRITICAL',
-      type: 'GuardDuty:PortScanning',
-      description: 'Anomalous port scan detected',
+    const newMaster = 'BrandNewMasterPassword_2026!';
+    const { kek, authHash } = await ClientCrypto.deriveKeys(newMaster, sessions.bob.salt);
+    const newPassword = ClientCrypto.toCognitoPassword(authHash);
+    await auth.confirmForgotPassword({ username: bob.email, code: reset.devCode, newPassword });
+
+    await assert.rejects(() => auth.signIn({ username: bob.username, password: sessions.bob.password }));
+    assert.equal((await auth.signIn({ username: bob.username, password: newPassword })).status, 'DONE');
+    setAuthToken(await auth.getIdToken());
+
+    const vaultKey = ClientCrypto.createVaultKey();
+    const keyPair = await ClientCrypto.createKeyPair();
+    const updated = await api.users.updateKeys({
+      reason: 'reset',
+      kdf_salt: sessions.bob.salt,
+      public_key: keyPair.publicKey,
+      encrypted_private_key: await ClientCrypto.protectPrivateKey(keyPair.privateKey, vaultKey),
+      encrypted_vault_key: await ClientCrypto.wrapVaultKey(vaultKey, kek),
     });
-    assert.equal(simRes.status, 'success');
+    assert.deepEqual(await ClientCrypto.unwrapVaultKey(updated.data.encrypted_vault_key, kek), vaultKey);
+  });
 
-    const notifRes = await api.logs.getSecurityNotifications();
-    assert.equal(notifRes.status, 'success');
-    assert.ok(notifRes.data.length >= 1);
+  test('UC-8, UC-9, UC-12, UC-13: security alerts, audit log, activity log, monitoring', async () => {
+    setAuthToken(sessions.alice.token);
+    assert.equal((await api.logs.simulateSecurityEvent({ severity: 'CRITICAL', type: 'GuardDuty:PortScanning', description: 'scan' })).status, 'success');
+    assert.ok((await api.logs.getSecurityNotifications()).data.length >= 1);
+    assert.ok((await api.logs.getAdminAuditLogs({ limit: 10 })).data.length >= 1);
+    assert.ok((await api.logs.exportAuditLogsCsv()).includes('audit_id'));
+    assert.ok((await api.logs.getUserActivityLogs({ limit: 10 })).data.length >= 1);
+    const metrics = await api.monitoring.getMetrics();
+    assert.equal((metrics.metrics || metrics.data).system_health, 'HEALTHY');
+    assert.equal((await api.monitoring.getHealth()).status, 'healthy');
 
-    // UC-9: Admin Audit Log query and CSV export
-    const auditRes = await api.logs.getAdminAuditLogs({ limit: 10 });
-    assert.equal(auditRes.status, 'success');
-    assert.ok(auditRes.data.length >= 1);
+    // A regular user is forbidden from admin endpoints
+    setAuthToken(sessions.bob.token);
+    await assert.rejects(() => api.logs.getAdminAuditLogs(), (err) => err.status === 403);
+  });
 
-    const csvData = await api.logs.exportAuditLogsCsv();
-    assert.ok(typeof csvData === 'string');
-    assert.ok(csvData.includes('audit_id'));
-
-    // UC-12: User Activity Log
-    const actRes = await api.logs.getUserActivityLogs({ limit: 10 });
-    assert.equal(actRes.status, 'success');
-    assert.ok(actRes.data.length >= 1);
-
-    // UC-13: System Monitoring Dashboard
-    const metricsRes = await api.monitoring.getMetrics();
-    assert.equal(metricsRes.status, 'success');
-    const metrics = metricsRes.metrics || metricsRes.data;
-    assert.ok(metrics);
-    assert.equal(metrics.system_health, 'HEALTHY');
-    assert.ok(metrics.uptime_seconds >= 0);
-    assert.ok(metrics.inventory.total_users >= 1);
-
-    const healthRes = await api.monitoring.getHealth();
-    assert.equal(healthRes.status, 'healthy');
+  test('API Gateway authorizer emulation: no token -> 401', async () => {
+    setAuthToken(null);
+    await auth.signOut();
+    await assert.rejects(() => api.vault.listVaults(), (err) => err.status === 401);
   });
 });

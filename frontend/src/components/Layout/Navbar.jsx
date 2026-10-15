@@ -3,12 +3,9 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
 import {
   ShieldIcon,
-  KeyIcon,
   BellIcon,
   LockIcon,
   UnlockIcon,
-  ChartBarIcon,
-  ShareIcon,
 } from '../Common/Icons.jsx';
 import { SecurityNotificationModal } from '../Logs/SecurityNotificationModal.jsx';
 import { MfaModal } from '../Auth/MfaModal.jsx';
