@@ -6,7 +6,6 @@ import {
   calculateEntropy,
   getRandomInt,
   shuffleArray,
-  CHAR_SETS,
   DICEWARE_WORDS,
 } from '../generator.js';
 
@@ -60,7 +59,7 @@ test('Password Generator: Character set rules', () => {
     const hasUpper = /[A-Z]/.test(pwd);
     const hasLower = /[a-z]/.test(pwd);
     const hasNumber = /[0-9]/.test(pwd);
-    const hasSymbol = /[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(pwd);
+    const hasSymbol = /[!@#$%^&*()_+\-=[\]{}|;:,.<>?]/.test(pwd);
 
     assert.ok(hasUpper, `Password ${pwd} missing uppercase`);
     assert.ok(hasLower, `Password ${pwd} missing lowercase`);

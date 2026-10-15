@@ -282,7 +282,9 @@ export async function deriveMasterKeys(masterPassword, salt, options = {}) {
     );
     const authHash = toHex(new Uint8Array(authHashBuffer));
 
+    // mek is the Key Encryption Key (KEK): it only wraps the random Vault Key.
     return {
+      kek: mek,
       mek,
       authHash,
       salt: saltBase64,
@@ -459,6 +461,60 @@ export async function decryptData(encryptedPayload, key, options = {}) {
       err
     );
   }
+}
+
+// ============================================================================
+// Vault Key (random, wrapped by the password-derived KEK)
+// ============================================================================
+//
+//   master password + kdf_salt --Argon2id--> Master Key --HKDF--> KEK + Authentication Key
+//   KEK --AES-256-GCM--> unwraps the random Vault Key
+//   Vault Key --AES-256-GCM--> RSA private key and personal vault items
+//
+// Changing the master password only re-wraps the Vault Key; items are not re-encrypted.
+
+/**
+ * Generates a fresh random 256-bit Vault Key.
+ * @returns {Uint8Array}
+ */
+export function generateVaultKey() {
+  return generateRandomBytes(32);
+}
+
+/**
+ * Wraps the Vault Key with the KEK (AES-256-GCM, fresh IV).
+ * @param {Uint8Array} vaultKey 32 bytes
+ * @param {Uint8Array|CryptoKey} kek 32 bytes
+ */
+export async function wrapVaultKey(vaultKey, kek) {
+  if (!(vaultKey instanceof Uint8Array) || vaultKey.length !== 32) {
+    throw new CryptoError('Vault Key must be a 32-byte Uint8Array', 'INVALID_KEY_LENGTH');
+  }
+  return encryptData(toBase64(vaultKey), kek, { additionalData: 'securevault-vault-key-v1' });
+}
+
+/**
+ * Unwraps the Vault Key. Fails (DECRYPT_FAILED) when the master password is wrong.
+ * @returns {Promise<Uint8Array>}
+ */
+export async function unwrapVaultKey(encryptedVaultKey, kek) {
+  const b64 = await decryptData(encryptedVaultKey, kek, { rawString: true, additionalData: 'securevault-vault-key-v1' });
+  const bytes = fromBase64(b64);
+  if (bytes.length !== 32) throw new CryptoError('Unwrapped Vault Key has invalid length', 'INVALID_KEY_LENGTH');
+  return bytes;
+}
+
+/**
+ * Maps the Authentication Key (hex authHash) to the Amazon Cognito password.
+ * The fixed prefix satisfies Cognito's default password policy (upper, lower, digit,
+ * symbol); all of the entropy comes from the 256-bit authHash.
+ * @param {string} authHash 64 hex chars
+ */
+export function toCognitoPassword(authHash) {
+  if (typeof authHash !== 'string' || !/^[0-9a-f]{64}$/.test(authHash)) {
+    throw new CryptoError('authHash must be 64 lowercase hex characters', 'INVALID_AUTH_HASH');
+  }
+  return `Sv1!${authHash}`;
 }
 
 /**
@@ -640,6 +696,83 @@ export async function decryptPrivateKey(encryptedPrivateKeyPayload, mek) {
 // ============================================================================
 // Server-Side Defense-in-Depth Password Hashing Helper
 // ============================================================================
+
+// ============================================================================
+// Collection keys (random 256-bit key per collection, RSA-OAEP wrapped per member)
+// ============================================================================
+
+function stripPem(key) {
+  if (typeof key !== 'string') return key;
+  return key
+    .replace(/-----BEGIN [^-]+-----/g, '')
+    .replace(/-----END [^-]+-----/g, '')
+    .replace(/\s/g, '');
+}
+
+function toKeyBytes(key, label) {
+  let bytes;
+  if (key instanceof Uint8Array) bytes = key;
+  else if (typeof key === 'string') bytes = fromBase64(key);
+  else throw new CryptoError(`${label} must be a 32-byte Uint8Array or base64 string`, 'INVALID_KEY');
+  if (bytes.length !== 32) {
+    throw new CryptoError(`${label} must be exactly 32 bytes (received ${bytes.length})`, 'INVALID_KEY_LENGTH');
+  }
+  return bytes;
+}
+
+/**
+ * @returns {Uint8Array} fresh 32-byte collection key
+ */
+export function generateCollectionKey() {
+  return generateRandomBytes(32);
+}
+
+/**
+ * Wraps a collection key for one member with RSA-OAEP-SHA256.
+ * @param {Uint8Array|string} collectionKey
+ * @param {string|CryptoKey} recipientPublicKey SPKI base64 / PEM / CryptoKey
+ * @returns {Promise<{ algorithm: 'RSA-OAEP', hash: 'SHA-256', ciphertext: string }>}
+ */
+export async function wrapCollectionKey(collectionKey, recipientPublicKey) {
+  const keyBytes = toKeyBytes(collectionKey, 'Collection key');
+  try {
+    const pubKey =
+      recipientPublicKey && typeof recipientPublicKey.type === 'string'
+        ? recipientPublicKey
+        : await importPublicKey(stripPem(recipientPublicKey));
+    const encrypted = await subtle.encrypt({ name: 'RSA-OAEP' }, pubKey, keyBytes);
+    return { algorithm: 'RSA-OAEP', hash: 'SHA-256', ciphertext: toBase64(new Uint8Array(encrypted)) };
+  } catch (err) {
+    if (err instanceof CryptoError) throw err;
+    throw new CryptoError('Collection key wrapping failed', 'WRAP_COLLECTION_KEY_ERROR', err);
+  }
+}
+
+/**
+ * Unwraps a member's collection key with their RSA private key.
+ * @param {object|string} wrapped { ciphertext } or base64 ciphertext
+ * @param {string|CryptoKey} recipientPrivateKey PKCS#8 base64 / PEM / CryptoKey
+ * @returns {Promise<Uint8Array>}
+ */
+export async function unwrapCollectionKey(wrapped, recipientPrivateKey) {
+  const ciphertext =
+    typeof wrapped === 'string' ? wrapped : wrapped?.ciphertext || wrapped?.wrappedKey || wrapped?.wrapped_key;
+  if (!ciphertext) throw new CryptoError('Missing ciphertext in wrapped key payload', 'INVALID_WRAPPED_KEY');
+  try {
+    const privKey =
+      recipientPrivateKey && typeof recipientPrivateKey.type === 'string'
+        ? recipientPrivateKey
+        : await importPrivateKey(stripPem(recipientPrivateKey));
+    const decrypted = new Uint8Array(await subtle.decrypt({ name: 'RSA-OAEP' }, privKey, fromBase64(ciphertext)));
+    if (decrypted.length !== 32) {
+      throw new CryptoError(`Unwrapped key length mismatch: expected 32 bytes, got ${decrypted.length}`, 'INVALID_KEY_LENGTH');
+    }
+    return decrypted;
+  } catch (err) {
+    if (err instanceof CryptoError) throw err;
+    throw new CryptoError('Collection key unwrapping failed', 'UNWRAP_COLLECTION_KEY_ERROR', err);
+  }
+}
 
 /**
  * Computes a secure server-side password hash from client's authHash

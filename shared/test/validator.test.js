@@ -9,7 +9,6 @@ import {
   validateShareRequest,
   validatePasswordReset,
   getErrorMessage,
-  ERROR_MESSAGES,
   isValidUsername,
   isValidEmail,
   isValidPassword,

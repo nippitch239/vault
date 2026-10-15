@@ -5,7 +5,6 @@ import {
   encryptData,
   decryptData,
   generateSalt,
-  generateIV,
   generateItemKey,
   generateAsymmetricKeyPair,
   wrapKey,
@@ -19,6 +18,10 @@ import {
   fromHex,
   CRYPTO_CONSTANTS,
   CryptoError,
+  generateVaultKey,
+  wrapVaultKey,
+  unwrapVaultKey,
+  toCognitoPassword,
 } from '../crypto.js';
 
 test('Encoding Utilities: Base64 and Hex roundtrips', () => {
@@ -271,3 +274,30 @@ test('Dual-Key Derivation: RFC 9106 Production Parameters (m=64MB, t=3, p=1)', a
   assert.deepEqual(decrypted, payload);
 });
 
+
+
+test('Vault Key: random key wrapped by the KEK, wrong master password cannot unwrap', async () => {
+  const fast = CRYPTO_CONSTANTS.FAST_TEST_ARGON2;
+  const salt = generateSalt();
+  const { kek, authHash } = await deriveMasterKeys('correct horse battery staple', salt, fast);
+  const vaultKey = generateVaultKey();
+  assert.equal(vaultKey.length, 32);
+
+  const wrapped = await wrapVaultKey(vaultKey, kek);
+  assert.equal(wrapped.algorithm, 'AES-256-GCM');
+  assert.deepEqual(await unwrapVaultKey(wrapped, kek), vaultKey);
+
+  const { kek: wrongKek } = await deriveMasterKeys('wrong password', salt, fast);
+  await assert.rejects(() => unwrapVaultKey(wrapped, wrongKek), (err) => err.code === 'DECRYPT_FAILED');
+
+  // Re-wrapping after a master password change keeps the same Vault Key
+  const { kek: newKek } = await deriveMasterKeys('a brand new master password', generateSalt(), fast);
+  assert.deepEqual(await unwrapVaultKey(await wrapVaultKey(vaultKey, newKek), newKek), vaultKey);
+
+  // Cognito password derived from the Authentication Key
+  const cognitoPassword = toCognitoPassword(authHash);
+  assert.ok(cognitoPassword.endsWith(authHash));
+  assert.match(cognitoPassword, /[A-Z]/);
+  assert.match(cognitoPassword, /[^A-Za-z0-9]/);
+  assert.throws(() => toCognitoPassword('not-hex'));
+});
