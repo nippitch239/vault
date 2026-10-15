@@ -130,9 +130,9 @@ describe('Frontend services against the local API Gateway + Cognito simulator (U
 
   test('UC-4: add an item encrypted with the Vault Key', async () => {
     vaultId = (await api.vault.listVaults()).data[0].vault_id;
-    const secret = { username: 'alice_admin@corp.internal', password: 'ProdSuperPassword_8899!', url: 'https://vault.corp.internal', notes: 'Root DB' };
+    const secret = { title: 'Database Cluster Admin', username: 'alice_admin@corp.internal', password: 'ProdSuperPassword_8899!', url: 'https://vault.corp.internal', notes: 'Root DB' };
     const created = await api.vault.createItem(
-      { item_type: 'login', encrypted_data: await ClientCrypto.encryptItem(secret, sessions.alice.vaultKey), metadata: { title: 'Database Cluster Admin' } },
+      { item_type: 'login', encrypted_data: await ClientCrypto.encryptItem(secret, sessions.alice.vaultKey), metadata: { favorite: true } },
       vaultId
     );
     assert.equal(created.data.version, 1);
@@ -143,10 +143,10 @@ describe('Frontend services against the local API Gateway + Cognito simulator (U
   });
 
   test('UC-5 & UC-11: update with optimistic version, history and rollback', async () => {
-    const updated = { username: 'alice_admin@corp.internal', password: 'Rotated_2026!', url: 'https://vault.corp.internal/v2', notes: 'rotated' };
+    const updated = { title: 'Database Cluster Admin', username: 'alice_admin@corp.internal', password: 'Rotated_2026!', url: 'https://vault.corp.internal/v2', notes: 'rotated' };
     const res = await api.vault.updateItem(
       itemId,
-      { encrypted_data: await ClientCrypto.encryptItem(updated, sessions.alice.vaultKey), metadata: { title: 'Database Cluster Admin' }, version: 1 },
+      { encrypted_data: await ClientCrypto.encryptItem(updated, sessions.alice.vaultKey), metadata: { favorite: true }, version: 1 },
       vaultId
     );
     assert.equal(res.data.version, 2);

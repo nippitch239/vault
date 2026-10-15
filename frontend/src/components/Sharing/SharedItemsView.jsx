@@ -4,6 +4,7 @@ import api from '../../services/api.js';
 import ClientCrypto from '../../services/crypto.js';
 import { ShareIcon, EyeIcon, EyeOffIcon, CopyIcon, CheckIcon, RefreshIcon, EditIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
+import { itemFields } from '../../lib/item-fields.js';
 
 export function SharedItemsView({ onEditItem }) {
   const { mek, privateKey } = useAuth();
@@ -134,7 +135,6 @@ export function SharedItemsView({ onEditItem }) {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {sharedItems.map((item) => {
             const id = item.item_id || item.share_id;
-            const meta = item.metadata || {};
             const decrypted = item._decrypted || {};
             const isRevealed = revealedIds.has(id);
             const canModify = item.permission_level === 'modify';
@@ -148,7 +148,7 @@ export function SharedItemsView({ onEditItem }) {
                   <div className="flex items-start justify-between mb-3">
                     <div>
                       <h3 className="text-base font-bold text-white tracking-tight">
-                        {meta.title || item.title || 'Untitled'}
+                        {itemFields(item).title}
                       </h3>
                       <span className="text-xs text-slate-400">
                         แชร์โดย: <strong className="text-slate-300">{item.shared_by || item.shared_by_email || 'Owner'}</strong>

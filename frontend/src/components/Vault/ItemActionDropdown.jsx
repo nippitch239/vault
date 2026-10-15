@@ -17,6 +17,7 @@ import {
   HistoryIcon,
   TrashIcon,
 } from '../Common/Icons.jsx';
+import { itemFields } from '../../lib/item-fields.js';
 
 function MoreVerticalIcon({ className = 'w-4 h-4' }) {
   return (
@@ -45,12 +46,10 @@ export function ItemActionDropdown({
   onHistory,
   onDelete,
 }) {
-  const meta = item.metadata || {};
   const dec = item._decrypted || {};
   const itemId = item.item_id || item.id;
-  const username = dec.username || meta.username_preview || '';
+  const { username, title } = itemFields(item);
   const password = dec.password || '';
-  const title = meta.title || item.title || 'Untitled';
 
   return (
     <DropdownMenu>

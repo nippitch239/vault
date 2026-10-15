@@ -163,10 +163,8 @@ export function formatVaultItem(row) {
   return {
     id,
     item_id: id,
-    title: row.title || metadata?.title || metadata?.name || '',
     category: row.category || row.item_type || 'LOGIN',
     item_type: row.item_type || row.category || 'login',
-    tags: tags || metadata?.tags || [],
     metadata: metadata || {},
     favorite: Boolean(row.favorite !== undefined ? row.favorite : metadata?.favorite),
     version: row.version || 1,

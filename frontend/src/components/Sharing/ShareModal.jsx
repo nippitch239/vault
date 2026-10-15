@@ -6,6 +6,7 @@ import { ShareIcon, CloseIcon, CheckIcon, KeyIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Input } from '../ui/Input.jsx';
+import { itemFields } from '../../lib/item-fields.js';
 
 
 export function ShareModal({ isOpen, item, onClose, onSuccess }) {
@@ -97,7 +98,7 @@ export function ShareModal({ isOpen, item, onClose, onSuccess }) {
                 แชร์รหัสผ่าน (Share Item)
               </h3>
               <p className="text-xs text-muted-foreground truncate max-w-[220px]">
-                {item.metadata?.title || item.title || 'Untitled Item'}
+                {itemFields(item).title}
               </p>
             </div>
           </div>

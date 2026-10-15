@@ -6,6 +6,7 @@ import { HistoryIcon, CloseIcon, RefreshIcon, EyeIcon, EyeOffIcon, CopyIcon, Che
 import { useToast } from '../Common/Toast.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Badge } from '../ui/Badge.jsx';
+import { itemFields } from '../../lib/item-fields.js';
 
 export function HistoryDrawer({ isOpen, item, onClose, onRestoreSuccess }) {
   const { mek } = useAuth();
@@ -117,7 +118,7 @@ export function HistoryDrawer({ isOpen, item, onClose, onRestoreSuccess }) {
                 ประวัติการแก้ไขรหัสผ่าน
               </h3>
               <p className="text-xs text-muted-foreground truncate max-w-[240px]">
-                {item.metadata?.title || item.title || 'Untitled Item'} (ปัจจุบัน v{item.version || 1})
+                {itemFields(item).title} (ปัจจุบัน v{item.version || 1})
               </p>
             </div>
           </div>

@@ -562,17 +562,21 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
     body: {
       item_type: 'login',
       encrypted_data: TEST_ENCRYPTED_PAYLOAD,
-      metadata: {
-        title: 'Production AWS Console',
-        url: 'https://aws.amazon.com',
-        username_preview: 'bob_cloud',
-        favorite: true,
-        tags: ['cloud', 'aws'],
-      },
+      metadata: { favorite: true },
     },
   });
 
   assert.equal(addItemRes.statusCode, 201);
+
+  // Sensitive fields as plaintext metadata are rejected (zero knowledge)
+  const leak = await callRouter({
+    method: 'POST',
+    path: `/api/v1/vaults/${defaultVaultId}/items`,
+    claims: bobClaims,
+    body: { encrypted_data: TEST_ENCRYPTED_PAYLOAD, metadata: { title: 'Bank', username_preview: 'bob' } },
+  });
+  assert.equal(leak.statusCode, 400);
+  assert.equal(leak.data.error, 'METADATA_NOT_ALLOWED');
   assert.ok(addItemRes.data.data.item_id);
   assert.equal(addItemRes.data.data.version, 1);
   const itemId = addItemRes.data.data.item_id;
@@ -585,7 +589,7 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   });
   assert.equal(listRes.statusCode, 200);
   assert.equal(listRes.data.data.length, 1);
-  assert.equal(listRes.data.data[0].metadata.title, 'Production AWS Console');
+  assert.equal(listRes.data.data[0].metadata.favorite, true);
   assert.equal(listRes.data.data[0].encrypted_data.ciphertext, TEST_ENCRYPTED_PAYLOAD.ciphertext);
 
   // --- UC-5: Update Item ---
@@ -602,10 +606,7 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
     body: {
       version: 1, // Current version
       encrypted_data: updatedPayload,
-      metadata: {
-        title: 'Production AWS Console (Updated)',
-        tags: ['cloud', 'aws', 'prod'],
-      },
+      metadata: { favorite: false },
     },
   });
 
@@ -689,7 +690,7 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
     claims: bobClaims,
     body: {
       encrypted_data: TEST_ENCRYPTED_PAYLOAD,
-      metadata: { title: 'Shared Server Key' },
+      metadata: { favorite: false },
     },
   });
   const itemId = bobItem.data.data.item_id;
@@ -742,7 +743,7 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
   });
   assert.equal(sharedList.statusCode, 200);
   assert.equal(sharedList.data.data.length, 1);
-  assert.equal(sharedList.data.data[0].metadata.title, 'Shared Server Key');
+  assert.equal(sharedList.data.data[0].item_id, itemId);
   assert.equal(sharedList.data.data[0].permission_level, 'read');
 
   // 6. Charlie gets item directly
@@ -759,7 +760,7 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
     method: 'PUT',
     path: `/api/v1/items/${itemId}`,
     claims: charlieClaims,
-    body: { metadata: { title: 'Hacked by Charlie' } },
+    body: { metadata: { favorite: true } },
   });
   assert.equal(charlieUpdate.statusCode, 403);
 
@@ -920,7 +921,7 @@ test('Local Simulation HTTP Server: End-to-End Live HTTP Network Parity', async 
       token
     );
     assert.equal(profile.status, 201);
-    const itemRes = await post('/api/v1/items', { encrypted_data: TEST_ENCRYPTED_PAYLOAD, metadata: { title: 'Network Vault Item' } }, token);
+    const itemRes = await post('/api/v1/items', { encrypted_data: TEST_ENCRYPTED_PAYLOAD, metadata: { favorite: false } }, token);
     assert.equal(itemRes.status, 201);
     const itemData = await itemRes.json();
     assert.ok(itemData.data.item_id);

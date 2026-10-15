@@ -12,6 +12,7 @@ Change this file in the same commit as any route change.
 | Auth | `Authorization: Bearer <Cognito ID token>`. API Gateway's Cognito User Pool authorizer validates it; the Lambda reads `requestContext.authorizer.claims` (`sub`, `email`, `cognito:username`, `cognito:groups`). Routes marked **public** have no authorizer. Admin = member of the Cognito group `admin` (`COGNITO_ADMIN_GROUP`). |
 | Body | JSON, `Content-Type: application/json`. A body that is not a JSON object → `400 INVALID_JSON` (routes using `readJsonBody`). |
 | IDs | UUID strings. `user_id` is the Cognito `sub`. |
+| Item metadata | Plaintext `metadata` may contain only `{ favorite: boolean, collection_id: uuid|null }`. Title, URL, username, notes and tags go inside `encrypted_data`; other keys → `400 METADATA_NOT_ALLOWED`, wrong types → `400 INVALID_METADATA`. |
 | Ciphertext | `EncryptedPayload = { ciphertext, iv, authTag, algorithm: "AES-256-GCM", keyVersion }` (base64 fields). `WrappedKey = { ciphertext, algorithm: "RSA-OAEP", hash: "SHA-256" }`. The server never decrypts either. |
 | CORS | Returned by the Lambda on every response; allowed origin(s) from `CORS_ALLOW_ORIGIN`. `OPTIONS` on any path → `204`. |
 

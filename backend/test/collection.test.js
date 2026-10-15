@@ -10,12 +10,12 @@ import { TEST_ENCRYPTED_PAYLOAD, callRouter, registerProfile } from './helpers.j
 
 const WRAPPED = { ciphertext: 'd3JhcHBlZC1rZXk=', algorithm: 'RSA-OAEP', hash: 'SHA-256' };
 
-async function createItem(claims, title = 'Secret') {
+async function createItem(claims) {
   const res = await callRouter({
     method: 'POST',
     path: '/api/v1/items',
     claims,
-    body: { encrypted_data: TEST_ENCRYPTED_PAYLOAD, metadata: { title } },
+    body: { encrypted_data: TEST_ENCRYPTED_PAYLOAD, metadata: { favorite: false } },
   });
   assert.equal(res.statusCode, 201, JSON.stringify(res.data));
   return res.data.data.item_id;
@@ -48,7 +48,7 @@ test('C1: a collection writer cannot attach (and then read) another user\'s vaul
   const mallory = await registerProfile('mallory');
   const victim = await registerProfile('victim');
 
-  const victimItem = await createItem(victim, 'Victim bank login');
+  const victimItem = await createItem(victim);
   const collectionId = await createCollection(owner);
   await grant(owner, collectionId, mallory.sub, 'write');
 
@@ -66,7 +66,7 @@ test('C1: a collection writer cannot attach (and then read) another user\'s vaul
   assert.equal(listed.data.items.length, 0);
 
   // The owner of an item can still add their own item
-  const ownItem = await createItem(mallory, 'Team wifi');
+  const ownItem = await createItem(mallory);
   const ok = await callRouter({
     method: 'POST',
     path: `/api/v1/collections/${collectionId}/items`,

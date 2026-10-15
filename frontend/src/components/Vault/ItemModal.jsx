@@ -8,6 +8,7 @@ import { useToast } from '../Common/Toast.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Input } from '../ui/Input.jsx';
 import { Badge } from '../ui/Badge.jsx';
+import { buildMetadata } from '../../lib/item-fields.js';
 
 export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
   const { mek, privateKey, user } = useAuth();
@@ -64,13 +65,13 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         setSelectedCollectionId(colId);
 
         setFormData({
-          title: meta.title || item.title || '',
+          title: decrypted.title || '',
           category: item.item_type ? item.item_type.toUpperCase() : (item.category || 'LOGIN'),
-          url: decrypted.url || meta.url || '',
-          username: decrypted.username || meta.username_preview || '',
+          url: decrypted.url || '',
+          username: decrypted.username || '',
           password: decrypted.password || '',
           notes: decrypted.notes || '',
-          tags: Array.isArray(meta.tags) ? meta.tags.join(', ') : '',
+          tags: Array.isArray(decrypted.tags) ? decrypted.tags.join(', ') : '',
           favorite: Boolean(meta.favorite),
         });
       } else {
@@ -138,6 +139,10 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         password: formData.password,
         url: formData.url.trim(),
         notes: formData.notes.trim(),
+        tags: formData.tags
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean),
         updatedAt: new Date().toISOString(),
       };
 
@@ -162,20 +167,8 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         encryptedData = await ClientCrypto.encryptItem(sensitivePayload, mek);
       }
 
-      // 3. Prepare metadata (unencrypted indexable attributes)
-      const tagsArray = formData.tags
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean);
-
-      const metadata = {
-        title: formData.title.trim(),
-        url: formData.url.trim(),
-        username_preview: formData.username.trim(),
-        favorite: formData.favorite,
-        tags: tagsArray,
-        ...(selectedCollectionId ? { collection_id: selectedCollectionId } : {}),
-      };
+      // 3. Plaintext metadata: non-sensitive flags only (title/url/username/tags are encrypted)
+      const metadata = buildMetadata({ favorite: formData.favorite, collectionId: selectedCollectionId });
 
       const itemType = formData.category.toLowerCase();
       let savedItemId = null;

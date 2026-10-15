@@ -14,6 +14,36 @@
 import { getDatabase } from '../db/adapter.js';
 import { authenticate, hasRequiredPermission } from '../middleware/auth-guard.js';
 import { permissionOnItemViaCollections } from '../services/collection-service.js';
+import { isUuid } from '../http/validate.js';
+
+/**
+ * Plaintext metadata the server may store. Everything else (title, url, username, tags,
+ * notes) belongs inside encrypted_data so it never leaves the browser unencrypted.
+ * @returns {{ value?: object, error?: object }}
+ */
+const ALLOWED_METADATA_KEYS = new Set(['favorite', 'collection_id']);
+function sanitizeMetadata(metadata) {
+  if (metadata === undefined || metadata === null) return { value: {} };
+  if (typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return { error: { error: 'INVALID_METADATA', message: 'metadata must be an object' } };
+  }
+  const extra = Object.keys(metadata).filter((k) => !ALLOWED_METADATA_KEYS.has(k));
+  if (extra.length) {
+    return {
+      error: {
+        error: 'METADATA_NOT_ALLOWED',
+        message: `Sensitive fields must be encrypted, not sent as metadata: ${extra.join(', ')}`,
+      },
+    };
+  }
+  if (metadata.favorite !== undefined && typeof metadata.favorite !== 'boolean') {
+    return { error: { error: 'INVALID_METADATA', message: 'metadata.favorite must be a boolean' } };
+  }
+  if (metadata.collection_id !== undefined && metadata.collection_id !== null && !isUuid(metadata.collection_id)) {
+    return { error: { error: 'INVALID_METADATA', message: 'metadata.collection_id must be a UUID' } };
+  }
+  return { value: { ...metadata } };
+}
 
 function jsonResponse(statusCode, data) {
   return {
@@ -276,7 +306,9 @@ export async function createVaultItemHandler(event) {
   }
 
   const normalizedEncrypted = normalizeEncryptedData(encryptedData);
-  const metadata = body.metadata || {};
+  const metadataCheck = sanitizeMetadata(body.metadata);
+  if (metadataCheck.error) return jsonResponse(400, { status: 'fail', ...metadataCheck.error });
+  const metadata = metadataCheck.value;
   const itemType = body.item_type || body.itemType || 'login';
 
   // Insert vault item
@@ -297,7 +329,7 @@ export async function createVaultItemHandler(event) {
   await db.query(
     `INSERT INTO activity_logs (user_id, action_type, target_item_id, ip_address, user_agent, details)
      VALUES ($1, 'PASSWORD_CREATE', $2, $3, $4, $5)`,
-    [user.user_id, newItem.item_id, clientIp, userAgent, { title: metadata.title || 'Untitled' }]
+    [user.user_id, newItem.item_id, clientIp, userAgent, { item_type: itemType }]
   );
 
   return jsonResponse(201, {
@@ -394,7 +426,12 @@ export async function updateVaultItemHandler(event) {
   const newEncryptedData = encryptedData
     ? normalizeEncryptedData(encryptedData)
     : existingItem.encrypted_data;
-  let newMetadata = body.metadata || existingItem.metadata;
+  let newMetadata = existingItem.metadata;
+  if (body.metadata !== undefined) {
+    const metadataCheck = sanitizeMetadata(body.metadata);
+    if (metadataCheck.error) return jsonResponse(400, { status: 'fail', ...metadataCheck.error });
+    newMetadata = metadataCheck.value;
+  }
   if (!isOwner) {
     // Only the owner decides which collection an item belongs to.
     const { collection_id: existingCollection } = existingItem.metadata || {};
@@ -502,13 +539,13 @@ export async function deleteVaultItemHandler(event) {
   await db.query(
     `INSERT INTO activity_logs (user_id, action_type, ip_address, details)
      VALUES ($1, 'PASSWORD_DELETE', $2, $3)`,
-    [user.user_id, clientIp, { item_id: itemId, title: item.metadata?.title }]
+    [user.user_id, clientIp, { item_id: itemId }]
   );
 
   await db.query(
     `INSERT INTO audit_logs (actor_user_id, actor_role, event_action, event_severity, target_resource, target_resource_id, ip_address, status, details)
      VALUES ($1, $2, 'PASSWORD_DELETE', 'WARNING', 'vault_items', $3, $4, 'SUCCESS', $5)`,
-    [user.user_id, user.role, itemId, clientIp, { title: item.metadata?.title }]
+    [user.user_id, user.role, itemId, clientIp, { item_id: itemId }]
   );
 
   return jsonResponse(200, {

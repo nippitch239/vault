@@ -20,6 +20,7 @@ import {
 import { useToast } from '../Common/Toast.jsx';
 import { VaultGridView } from './VaultGridView.jsx';
 import { VaultTableView } from './VaultTableView.jsx';
+import { itemFields, buildMetadata } from '../../lib/item-fields.js';
 
 function LayoutGridIcon({ className = 'w-4 h-4' }) {
   return (
@@ -282,10 +283,10 @@ export function VaultDashboard() {
     const currentItem = items.find((it) => (it.item_id || it.id) === itemId) || item;
     const currentFav = Boolean(currentItem.metadata?.favorite);
     const updatedFav = !currentFav;
-    const updatedMetadata = {
-      ...(currentItem.metadata || {}),
+    const updatedMetadata = buildMetadata({
       favorite: updatedFav,
-    };
+      collectionId: currentItem.metadata?.collection_id,
+    });
 
     // Optimistically update in memory state
     setItems((prev) =>
@@ -366,7 +367,6 @@ export function VaultDashboard() {
   const filteredItems = useMemo(() => {
     return items.filter((it) => {
       const meta = it.metadata || {};
-      const dec = it._decrypted || {};
       const type = (it.item_type || 'login').toUpperCase();
 
       // Category filter
@@ -401,11 +401,13 @@ export function VaultDashboard() {
       // Query search
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
-        const matchTitle = (meta.title || it.title || '').toLowerCase().includes(q);
-        const matchUser = (dec.username || meta.username_preview || '').toLowerCase().includes(q);
-        const matchUrl = (dec.url || meta.url || '').toLowerCase().includes(q);
-        const matchTags = Array.isArray(meta.tags) && meta.tags.some((t) => t.toLowerCase().includes(q));
-        const matchNotes = (dec.notes || '').toLowerCase().includes(q);
+        // Search runs on decrypted fields only (nothing searchable is stored in plaintext).
+        const f = itemFields(it);
+        const matchTitle = f.title.toLowerCase().includes(q);
+        const matchUser = f.username.toLowerCase().includes(q);
+        const matchUrl = f.url.toLowerCase().includes(q);
+        const matchTags = f.tags.some((t) => String(t).toLowerCase().includes(q));
+        const matchNotes = f.notes.toLowerCase().includes(q);
 
         return matchTitle || matchUser || matchUrl || matchTags || matchNotes;
       }

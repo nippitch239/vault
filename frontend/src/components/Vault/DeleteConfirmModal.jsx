@@ -1,5 +1,6 @@
 import React from 'react';
 import { TrashIcon, CloseIcon } from '../Common/Icons.jsx';
+import { itemFields } from '../../lib/item-fields.js';
 
 export function DeleteConfirmModal({ isOpen, item, onClose, onConfirm, loading }) {
   if (!isOpen || !item) return null;
@@ -28,7 +29,7 @@ export function DeleteConfirmModal({ isOpen, item, onClose, onConfirm, loading }
         <p className="text-sm text-slate-300 mb-4 leading-relaxed">
           คุณแน่ใจหรือไม่ว่าต้องการลบรายการ{' '}
           <strong className="text-white bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700 font-semibold">
-            {item.metadata?.title || item.title || 'Untitled'}
+            {itemFields(item).title}
           </strong>{' '}
           นี้ออกจากระบบอย่างถาวร?
         </p>

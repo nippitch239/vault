@@ -18,6 +18,7 @@ import {
 } from '../Common/Icons.jsx';
 import { CategoryBadge } from './CategoryBadge.jsx';
 import { ItemActionDropdown } from './ItemActionDropdown.jsx';
+import { itemFields } from '../../lib/item-fields.js';
 
 export function VaultTableView({
   items = [],
@@ -52,10 +53,8 @@ export function VaultTableView({
           const dec = it._decrypted || {};
           const isRevealed = revealedIds.has(id);
           const isFav = Boolean(meta.favorite);
-          const title = meta.title || it.title || 'Untitled';
-          const username = dec.username || meta.username_preview || '';
+          const { title, username, url } = itemFields(it);
           const password = dec.password || '';
-          const url = dec.url || meta.url || '';
           const colId = it._collectionId || meta.collection_id;
           const collection =
             it._collection ||
