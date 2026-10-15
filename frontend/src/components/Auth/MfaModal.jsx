@@ -1,8 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import QRCode from 'qrcode';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { ShieldIcon, CloseIcon, CheckIcon } from '../Common/Icons.jsx';
+import { CopyIcon, CheckIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
+import {
+  Button,
+  Input,
+  Field,
+  Alert,
+  Skeleton,
+  Spinner,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '../ui/index.js';
+
+const CODE_ERROR = 'รหัสต้องเป็นตัวเลข 6 หลัก';
+
+/** Groups the base32 secret in blocks of 4 for easier manual entry (display only). */
+const formatSecret = (secret) => (secret || '').replace(/(.{4})(?=.)/g, '$1 ');
 
 export function MfaModal({ isOpen, onClose, mode = 'setup', onSuccess }) {
   const { completeMfaLogin, setupTotp, verifyTotp } = useAuth();
@@ -13,26 +32,38 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', onSuccess }) {
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [codeError, setCodeError] = useState(null);
+  const [setupFailed, setSetupFailed] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef(null);
+
+  const loadSetup = () => {
+    setCode('');
+    setError(null);
+    setCodeError(null);
+    setSetupFailed(false);
+    setLoading(true);
+    setupTotp()
+      .then((details) => {
+        setSetupData({ secret: details.sharedSecret, otpauth_url: details.otpauthUrl });
+      })
+      .catch((err) => {
+        setSetupFailed(true);
+        setError(err.message || 'เริ่มตั้งค่าการยืนยันตัวตนสองขั้นตอนไม่สำเร็จ ลองอีกครั้ง');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  };
 
   // Load MFA setup details when in 'setup' mode
   useEffect(() => {
     if (isOpen && mode === 'setup') {
-      setCode('');
-      setError(null);
-      setLoading(true);
-      setupTotp()
-        .then((details) => {
-          setSetupData({ secret: details.sharedSecret, otpauth_url: details.otpauthUrl });
-        })
-        .catch((err) => {
-          setError(err.message || 'ไม่สามารถเริ่มการตั้งค่า MFA ได้');
-        })
-        .finally(() => {
-          setLoading(false);
-        });
+      loadSetup();
     } else if (isOpen && mode === 'challenge') {
       setCode('');
       setError(null);
+      setCodeError(null);
     }
     // setupTotp is intentionally not a dependency: only re-run when the modal opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -55,12 +86,27 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', onSuccess }) {
     };
   }, [setupData]);
 
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
+
   if (!isOpen) return null;
+
+  const handleCopySecret = async () => {
+    if (!setupData?.secret) return;
+    try {
+      await navigator.clipboard.writeText(setupData.secret);
+      setCopied(true);
+      addToast('คัดลอกคีย์แล้ว', 'success');
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(false), 2000);
+    } catch {
+      addToast('คัดลอกไม่สำเร็จ เลือกข้อความแล้วคัดลอกเอง', 'error');
+    }
+  };
 
   const handleVerifySetup = async (e) => {
     e.preventDefault();
     if (code.trim().length !== 6) {
-      setError('รหัส OTP ต้องมี 6 หลัก (Must be 6 digits)');
+      setCodeError(CODE_ERROR);
       return;
     }
 
@@ -68,11 +114,11 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', onSuccess }) {
     setError(null);
     try {
       await verifyTotp({ code: code.trim() });
-      addToast('เปิดใช้งาน Multi-Factor Authentication (MFA) สำเร็จ!', 'success');
+      addToast('เปิดการยืนยันตัวตนสองขั้นตอนแล้ว', 'success');
       if (onSuccess) onSuccess();
       onClose();
     } catch (err) {
-      setError(err.message || 'รหัสยืนยันไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง');
+      setError(err.message || 'รหัสยืนยันไม่ถูกต้อง ตรวจสอบรหัสในแอปแล้วลองอีกครั้ง');
     } finally {
       setLoading(false);
     }
@@ -81,7 +127,7 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', onSuccess }) {
   const handleVerifyChallenge = async (e) => {
     e.preventDefault();
     if (code.trim().length !== 6) {
-      setError('รหัส OTP ต้องมี 6 หลัก (Must be 6 digits)');
+      setCodeError(CODE_ERROR);
       return;
     }
 
@@ -89,158 +135,152 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', onSuccess }) {
     setError(null);
     try {
       await completeMfaLogin({ code: code.trim() });
-      addToast('ยืนยันตัวตน MFA สำเร็จ ยินดีต้อนรับสู่ SecureVault!', 'success');
+      addToast('ยืนยันตัวตนแล้ว ปลดล็อกคลังเรียบร้อย', 'success');
       if (onSuccess) onSuccess();
       onClose();
     } catch (err) {
-      setError(err.message || 'รหัสยืนยันไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง');
+      setError(err.message || 'รหัสยืนยันไม่ถูกต้อง ตรวจสอบรหัสในแอปแล้วลองอีกครั้ง');
     } finally {
       setLoading(false);
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
-      <div className="bg-slate-800 border border-slate-700/80 rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl relative">
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-5 top-5 text-slate-400 hover:text-slate-200 transition-colors"
-        >
-          <CloseIcon className="w-5 h-5" />
-        </button>
+  const isSetup = mode === 'setup';
+  // Verifying a code (not the initial setup load) must not be interrupted.
+  const submitting = loading && (!isSetup || !!setupData);
+  const formId = isSetup ? 'mfa-setup-form' : 'mfa-challenge-form';
 
-        <div className="flex items-center space-x-3 mb-5">
-          <div className="w-11 h-11 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <ShieldIcon className="w-6 h-6" />
-          </div>
-          <div>
-            <h3 className="text-lg font-bold text-white">
-              {mode === 'setup' ? 'ตั้งค่าการยืนยันตัวตน 2 ขั้นตอน (MFA)' : 'การยืนยันตัวตนขั้นที่สอง (MFA Challenge)'}
-            </h3>
-            <p className="text-xs text-slate-400">
-              {mode === 'setup' ? 'ผูกกับ Authenticator App (Google/Microsoft Authenticator)' : 'กรอกรหัส 6 หลักจากแอปพลิเคชันของคุณ'}
-            </p>
-          </div>
-        </div>
+  const codeField = (
+    <Field
+      label="รหัส 6 หลักจากแอป"
+      hint="รหัสในแอปจะเปลี่ยนทุก 30 วินาที"
+      error={codeError}
+    >
+      {(props) => (
+        <Input
+          {...props}
+          type="text"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          pattern="[0-9]*"
+          maxLength={6}
+          value={code}
+          onChange={(e) => {
+            setCode(e.target.value.replace(/\D/g, ''));
+            if (codeError) setCodeError(null);
+          }}
+          placeholder="000000"
+          className="h-11 text-center font-mono text-lg tracking-[0.4em]"
+          disabled={loading}
+          autoFocus
+          data-autofocus
+        />
+      )}
+    </Field>
+  );
+
+  return (
+    <Dialog open={isOpen} onOpenChange={(open) => !open && !submitting && onClose()}>
+      <DialogContent className="max-w-md" dismissible={!submitting}>
+        <DialogHeader>
+          <DialogTitle>{isSetup ? 'เปิดการยืนยันตัวตนสองขั้นตอน (2FA)' : 'ยืนยันตัวตนสองขั้นตอน'}</DialogTitle>
+          <DialogDescription>
+            {isSetup
+              ? 'เชื่อมบัญชีกับแอปยืนยันตัวตน เช่น Google Authenticator หรือ Microsoft Authenticator'
+              : 'เปิดแอปยืนยันตัวตนแล้วกรอกรหัส 6 หลักเพื่อปลดล็อกคลังรหัสผ่าน'}
+          </DialogDescription>
+        </DialogHeader>
 
         {error && (
-          <div className="mb-4 p-3 bg-rose-950/80 border border-rose-500/50 rounded-xl text-rose-200 text-xs">
+          <Alert
+            variant="error"
+            action={
+              isSetup && setupFailed ? (
+                <Button variant="outline" size="sm" onClick={loadSetup} disabled={loading}>
+                  ลองอีกครั้ง
+                </Button>
+              ) : null
+            }
+          >
             {error}
-          </div>
+          </Alert>
         )}
 
-        {mode === 'setup' ? (
-          <div>
-            {loading && !setupData ? (
-              <div className="py-8 text-center text-sm text-slate-400">
-                กำลังสร้างคีย์ TOTP สำหรับบัญชีของคุณ...
+        {isSetup ? (
+          loading && !setupData ? (
+            <div className="grid gap-4" aria-busy="true">
+              <div className="flex justify-center">
+                <Spinner label="กำลังสร้างคีย์สำหรับบัญชีของคุณ" />
               </div>
-            ) : setupData ? (
-              <form onSubmit={handleVerifySetup} className="space-y-4">
-                {/* Secret Key Display */}
-                <div className="bg-slate-900/80 rounded-2xl p-4 border border-slate-700/60 text-center">
-                  <div className="text-xs text-slate-400 mb-2">
-                    สแกน QR Code หรือเพิ่มรหัส Secret ใน Authenticator App:
-                  </div>
-
-                  <div className="w-40 h-40 mx-auto my-2 bg-white rounded-xl p-2 flex items-center justify-center shadow-md">
+              <Skeleton className="mx-auto size-40 rounded-lg" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ) : setupData ? (
+            <form id={formId} onSubmit={handleVerifySetup} className="grid gap-5" noValidate aria-busy={loading || undefined}>
+              <div className="grid gap-5">
+                <div className="grid gap-3">
+                  <p className="text-sm font-ui">1. สแกนคิวอาร์โค้ดด้วยแอปยืนยันตัวตน</p>
+                  <div className="mx-auto flex size-44 items-center justify-center rounded-lg border border-border bg-card p-2">
                     {qrDataUrl ? (
-                      <img src={qrDataUrl} alt="QR Code สำหรับตั้งค่าแอป Authenticator" className="w-full h-full object-contain" />
+                      <img
+                        src={qrDataUrl}
+                        alt="คิวอาร์โค้ดสำหรับเพิ่มบัญชีในแอปยืนยันตัวตน"
+                        className="size-40 rounded-md object-contain"
+                      />
                     ) : (
-                      <span className="text-xs text-slate-500">กำลังสร้าง QR Code...</span>
+                      <Skeleton className="size-40" />
                     )}
                   </div>
+                </div>
 
-                  <div className="mt-3">
-                    <span className="text-xs text-slate-400 block mb-1">รหัสสำหรับกรอกด้วยตนเอง (Manual Key):</span>
-                    <code className="px-3 py-1.5 bg-slate-800 rounded-lg text-emerald-400 font-mono text-xs font-bold tracking-wider select-all border border-slate-700">
-                      {setupData.secret}
+                <div className="grid gap-2">
+                  <p className="text-sm font-ui">หรือกรอกคีย์นี้ในแอปด้วยตนเอง</p>
+                  <div className="flex items-center gap-2 rounded-md border border-border bg-secondary py-1 pl-3 pr-1">
+                    <code className="min-w-0 flex-1 break-all font-mono text-sm text-foreground select-all">
+                      {formatSecret(setupData.secret)}
                     </code>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={handleCopySecret}
+                      aria-label={copied ? 'คัดลอกคีย์แล้ว' : 'คัดลอกคีย์'}
+                    >
+                      {copied ? <CheckIcon /> : <CopyIcon />}
+                    </Button>
                   </div>
                 </div>
 
-                <div>
-                  <label htmlFor="mfa-verify-code" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    กรอกรหัสยืนยัน 6 หลัก (Enter 6-Digit Code)
-                  </label>
-                  <input
-                    id="mfa-verify-code"
-                    type="text"
-                    maxLength={6}
-                    value={code}
-                    onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-                    placeholder="123456"
-                    className="w-full text-center tracking-widest font-mono text-xl py-2.5 px-4 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    autoFocus
-                    required
-                  />
+                <div className="grid gap-2">
+                  <p className="text-sm font-ui">2. กรอกรหัสที่แอปแสดงเพื่อยืนยัน</p>
+                  {codeField}
                 </div>
-
-                <div className="flex space-x-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="flex-1 py-2.5 px-4 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-xl transition-colors"
-                  >
-                    ยกเลิก
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={loading || code.length !== 6}
-                    className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors flex items-center justify-center space-x-1"
-                  >
-                    <CheckIcon className="w-4 h-4" />
-                    <span>ยืนยันและเปิดใช้</span>
-                  </button>
-                </div>
-              </form>
-            ) : null}
-          </div>
+              </div>
+            </form>
+          ) : null
         ) : (
-          <form onSubmit={handleVerifyChallenge} className="space-y-4">
-            <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-700/40 text-xs text-slate-300">
-              บัญชีนี้ได้รับการปกป้องด้วย MFA กรุณากรอกรหัส 6 หลักจาก Authenticator App ของคุณเพื่อปลดล็อกคลังรหัสผ่าน
-            </div>
-
-            <div>
-              <label htmlFor="mfa-challenge-code" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                รหัสความปลอดภัย (6-Digit OTP Code)
-              </label>
-              <input
-                id="mfa-challenge-code"
-                type="text"
-                maxLength={6}
-                value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-                placeholder="000000"
-                className="w-full text-center tracking-widest font-mono text-2xl py-3 px-4 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                autoFocus
-                required
-              />
-            </div>
-
-            <div className="flex space-x-3 pt-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="flex-1 py-2.5 px-4 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-xl transition-colors"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="submit"
-                disabled={loading || code.length !== 6}
-                className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors flex items-center justify-center space-x-1"
-              >
-                <CheckIcon className="w-4 h-4" />
-                <span>ยืนยันเข้าสู่ระบบ</span>
-              </button>
-            </div>
+          <form id={formId} onSubmit={handleVerifyChallenge} className="grid gap-4" noValidate aria-busy={loading || undefined}>
+            {codeField}
           </form>
         )}
-      </div>
-    </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={submitting}>
+            ยกเลิก
+          </Button>
+          {(!isSetup || setupData) && (
+            <Button type="submit" form={formId} loading={submitting}>
+              {submitting
+                ? isSetup
+                  ? 'กำลังตรวจสอบ…'
+                  : 'กำลังปลดล็อกคลัง…'
+                : isSetup
+                  ? 'ยืนยันและเปิดใช้'
+                  : 'ยืนยัน'}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

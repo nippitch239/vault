@@ -1,8 +1,98 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { ShieldIcon, KeyIcon, EyeIcon, EyeOffIcon, CheckIcon } from '../Common/Icons.jsx';
+import { ShieldIcon, EyeIcon, EyeOffIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
+import { Button, Card, Input, Field, Alert, cn } from '../ui/index.js';
 import { MfaModal } from './MfaModal.jsx';
+
+/* ------------------------------------------------------------------------------------------
+ * Shared building blocks for the signed-out screens (Login / Register / Confirm / Reset).
+ * ---------------------------------------------------------------------------------------- */
+
+/** Centered auth card with the product mark, page title and description. */
+export function AuthCard({ title, description, children, footer, size = 'sm' }) {
+  return (
+    <div className={cn('mx-auto w-full', size === 'md' ? 'max-w-md' : 'max-w-sm')}>
+      <div className="mb-6 flex items-center justify-center gap-2 text-foreground">
+        <span
+          className="flex size-8 items-center justify-center rounded-md border border-border bg-secondary text-primary"
+          aria-hidden="true"
+        >
+          <ShieldIcon className="size-4" />
+        </span>
+        <span className="text-sm font-strong tracking-tight">SecureVault</span>
+      </div>
+
+      <Card className="rounded-xl p-6 sm:p-7">
+        <div className="mb-6 grid gap-1.5 text-center">
+          <h1 className="text-2xl tracking-tight">{title}</h1>
+          {description && <p className="text-sm text-muted-foreground">{description}</p>}
+        </div>
+        {children}
+      </Card>
+
+      {footer && <div className="mt-4 text-center text-sm text-muted-foreground">{footer}</div>}
+    </div>
+  );
+}
+
+/** Password input with an accessible show/hide toggle. Spread Field's render props into it. */
+export const PasswordInput = React.forwardRef(({ visible, onToggleVisible, className, ...props }, ref) => (
+  <div className="relative">
+    <Input ref={ref} type={visible ? 'text' : 'password'} className={cn('pr-11', className)} {...props} />
+    {onToggleVisible && (
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground"
+        onClick={onToggleVisible}
+        aria-label={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+        aria-pressed={visible}
+        aria-controls={props.id}
+      >
+        {visible ? <EyeOffIcon /> : <EyeIcon />}
+      </Button>
+    )}
+  </div>
+));
+PasswordInput.displayName = 'PasswordInput';
+
+const STRENGTH_BAR = ['bg-error-foreground', 'bg-error-foreground', 'bg-warning-foreground', 'bg-info-foreground', 'bg-success-foreground'];
+
+/** Strength meter for ClientCrypto.calculateStrength() results: segmented bar + text label. */
+export function PasswordStrengthMeter({ strength }) {
+  if (!strength) return null;
+  const score = Math.max(0, Math.min(4, strength.score ?? 0));
+  return (
+    <div className="grid gap-1.5" aria-live="polite">
+      <div className="flex gap-1" aria-hidden="true">
+        {[1, 2, 3, 4].map((step) => (
+          <span
+            key={step}
+            className={cn('h-1 flex-1 rounded-full transition-colors duration-fast', score >= step ? STRENGTH_BAR[score] : 'bg-muted')}
+          />
+        ))}
+      </div>
+      <p className="flex items-center justify-between text-caption text-muted-foreground">
+        <span>
+          ความแข็งแรง: <span className="font-ui text-foreground">{strength.label?.th}</span>
+        </span>
+        {typeof strength.entropyBits === 'number' && <span className="font-mono text-xs">{strength.entropyBits} บิต</span>}
+      </p>
+    </div>
+  );
+}
+
+/** Polite live region that announces the key-derivation step to screen readers. */
+export function DerivingStatus({ active, message = 'กำลังเตรียมกุญแจเข้ารหัส…' }) {
+  return (
+    <p className="sr-only" aria-live="polite">
+      {active ? message : ''}
+    </p>
+  );
+}
+
+/* ------------------------------------------------------------------------------------------ */
 
 export function LoginView({ onNavigateRegister, onNavigateReset, onNavigateConfirm, onSuccess }) {
   const { login, loading, error: authError, setError } = useAuth();
@@ -12,14 +102,21 @@ export function LoginView({ onNavigateRegister, onNavigateReset, onNavigateConfi
   const [masterPassword, setMasterPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [deriving, setDeriving] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState({});
 
   // MFA Challenge modal state
   const [mfaChallenge, setMfaChallenge] = useState(null);
 
+  const busy = loading || deriving;
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!identifier.trim() || !masterPassword) {
-      setError('กรุณากรอกชื่อผู้ใช้/อีเมล และรหัสผ่านหลักให้ครบถ้วน');
+    const errs = {};
+    if (!identifier.trim()) errs.identifier = 'กรอกชื่อผู้ใช้หรืออีเมล';
+    if (!masterPassword) errs.masterPassword = 'กรอกรหัสผ่านหลัก';
+    if (Object.keys(errs).length) {
+      setFieldErrors(errs);
+      setError(null);
       return;
     }
 
@@ -33,10 +130,10 @@ export function LoginView({ onNavigateRegister, onNavigateReset, onNavigateConfi
       if (res?.mfaRequired) {
         setMfaChallenge({ mfaType: res.mfaType });
       } else if (res?.confirmationRequired) {
-        addToast('บัญชียังไม่ได้ยืนยันอีเมล กรุณากรอกรหัสยืนยัน', 'info');
+        addToast('บัญชียังไม่ได้ยืนยันอีเมล กรอกรหัสยืนยันเพื่อดำเนินการต่อ', 'info');
         if (onNavigateConfirm) onNavigateConfirm(res.identifier);
       } else if (res?.success) {
-        addToast('เข้าสู่ระบบสำเร็จ! ปลดล็อกคลังรหัสผ่านเรียบร้อยแล้ว', 'success');
+        addToast('เข้าสู่ระบบและปลดล็อกคลังแล้ว', 'success');
         if (onSuccess) onSuccess();
       }
     } catch (err) {
@@ -47,113 +144,80 @@ export function LoginView({ onNavigateRegister, onNavigateReset, onNavigateConfi
   };
 
   return (
-    <div className="w-full max-w-md mx-auto p-6 sm:p-8 bg-slate-800/90 backdrop-blur-xl border border-slate-700/80 rounded-3xl shadow-2xl">
-      <div className="text-center mb-6">
-        <div className="inline-flex p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mb-3">
-          <ShieldIcon className="w-8 h-8" />
-        </div>
-        <h1 className="text-2xl font-bold text-white tracking-tight">เข้าสู่ระบบ SecureVault</h1>
-        <p className="text-sm text-slate-400 mt-1">
-          กรอกรหัสผ่านหลักเพื่อปลดล็อกข้อมูลลับ Zero-Knowledge ของคุณ
-        </p>
-      </div>
-
+    <AuthCard
+      title="เข้าสู่ระบบ"
+      description="ใช้รหัสผ่านหลักเพื่อปลดล็อกคลังรหัสผ่านของคุณ"
+      footer={
+        <>
+          ยังไม่มีบัญชี?{' '}
+          <Button variant="link" className="h-auto p-0" onClick={onNavigateRegister}>
+            สมัครสมาชิก
+          </Button>
+        </>
+      }
+    >
       {authError && (
-        <div className="mb-5 p-3.5 bg-rose-950/80 border border-rose-500/50 rounded-xl text-rose-200 text-xs sm:text-sm">
+        <Alert variant="error" className="mb-5">
           {authError}
-        </div>
+        </Alert>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Identifier */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-            ชื่อผู้ใช้หรืออีเมล (Username / Email)
-          </label>
-          <input
-            type="text"
-            value={identifier}
-            onChange={(e) => {
-              setIdentifier(e.target.value);
-              setError(null);
-            }}
-            placeholder="เช่น alice หรือ alice@example.com"
-            className="w-full px-4 py-2.5 bg-slate-900/80 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
-            autoFocus
-            required
-          />
-        </div>
-
-        {/* Master Password */}
-        <div>
-          <div className="flex justify-between items-center mb-1">
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
-              รหัสผ่านหลัก (Master Password)
-            </label>
-            <button
-              type="button"
-              onClick={onNavigateReset}
-              className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
-            >
-              ลืมรหัสผ่าน? (Forgot?)
-            </button>
-          </div>
-          <div className="relative">
-            <input
-              type={showPassword ? 'text' : 'password'}
-              value={masterPassword}
+      <form onSubmit={handleSubmit} className="grid gap-4" noValidate aria-busy={busy || undefined}>
+        <Field label="ชื่อผู้ใช้หรืออีเมล" error={fieldErrors.identifier}>
+          {(props) => (
+            <Input
+              {...props}
+              type="text"
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              value={identifier}
               onChange={(e) => {
-                setMasterPassword(e.target.value);
+                setIdentifier(e.target.value);
+                if (fieldErrors.identifier) setFieldErrors((p) => ({ ...p, identifier: null }));
                 setError(null);
               }}
-              placeholder="รหัสผ่านหลักของคุณ"
-              className="w-full px-4 py-2.5 pr-11 bg-slate-900/80 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
-              required
+              placeholder="เช่น alice หรือ alice@example.com"
+              disabled={busy}
+              autoFocus
             />
-            <button
-              type="button"
-              onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
-            >
-              {showPassword ? <EyeOffIcon className="w-5 h-5" /> : <EyeIcon className="w-5 h-5" />}
-            </button>
+          )}
+        </Field>
+
+        <div className="grid gap-1.5">
+          <Field label="รหัสผ่านหลัก" error={fieldErrors.masterPassword}>
+            {(props) => (
+              <PasswordInput
+                {...props}
+                autoComplete="current-password"
+                value={masterPassword}
+                onChange={(e) => {
+                  setMasterPassword(e.target.value);
+                  if (fieldErrors.masterPassword) setFieldErrors((p) => ({ ...p, masterPassword: null }));
+                  setError(null);
+                }}
+                visible={showPassword}
+                onToggleVisible={() => setShowPassword((v) => !v)}
+                disabled={busy}
+              />
+            )}
+          </Field>
+          <div className="flex justify-end">
+            <Button variant="link" size="sm" className="h-auto p-0" onClick={onNavigateReset}>
+              ลืมรหัสผ่านหลัก?
+            </Button>
           </div>
         </div>
 
-        {/* Zero-Knowledge Privacy Badge */}
-        <div className="p-3 bg-slate-900/60 border border-slate-700/50 rounded-xl text-xs text-slate-400 flex items-center space-x-2.5">
-          <KeyIcon className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-          <span>คีย์ถอดรหัสจะถูกเก็บในหน่วยความจำ RAM เท่านั้น และไม่ถูกบันทึกบนดิสก์</span>
-        </div>
+        <Button type="submit" className="mt-1 w-full" loading={busy}>
+          {deriving ? 'กำลังเตรียมกุญแจเข้ารหัส…' : loading ? 'กำลังเข้าสู่ระบบ…' : 'เข้าสู่ระบบ'}
+        </Button>
 
-        <button
-          type="submit"
-          disabled={loading || deriving}
-          className="w-full mt-2 py-3 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium rounded-xl text-sm transition-all shadow-lg shadow-emerald-950/40 flex items-center justify-center space-x-2"
-        >
-          {deriving ? (
-            <span>กำลังคำนวณคีย์ Argon2id...</span>
-          ) : loading ? (
-            <span>กำลังเข้าสู่ระบบ...</span>
-          ) : (
-            <>
-              <CheckIcon className="w-4 h-4" />
-              <span>เข้าสู่ระบบ (Sign In)</span>
-            </>
-          )}
-        </button>
+        <p className="text-center text-caption text-muted-foreground">
+          รหัสผ่านหลักไม่ถูกส่งออกจากเครื่องนี้ กุญแจถอดรหัสถูกเก็บไว้ในหน่วยความจำชั่วคราวเท่านั้น
+        </p>
       </form>
-
-      <div className="mt-6 text-center text-sm text-slate-400">
-        ยังไม่มีบัญชีผู้ใช้?{' '}
-        <button
-          type="button"
-          onClick={onNavigateRegister}
-          className="text-emerald-400 hover:text-emerald-300 font-medium transition-colors"
-        >
-          สมัครสมาชิกใหม่ (Register)
-        </button>
-      </div>
+      <DerivingStatus active={deriving} />
 
       {/* MFA Challenge Modal */}
       {mfaChallenge && (
@@ -167,7 +231,7 @@ export function LoginView({ onNavigateRegister, onNavigateReset, onNavigateConfi
           }}
         />
       )}
-    </div>
+    </AuthCard>
   );
 }
 
