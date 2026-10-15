@@ -1,37 +1,63 @@
-import React, { useState } from 'react';
+import React, { createContext, useContext, useState } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { ShieldIcon, EyeIcon, EyeOffIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 import { Button, Card, Input, Field, Alert, cn } from '../ui/index.js';
 import { MfaModal } from './MfaModal.jsx';
+import { PublicNav } from '../Landing/PublicNav.jsx';
 
 /* ------------------------------------------------------------------------------------------
  * Shared building blocks for the signed-out screens (Login / Register / Confirm / Reset).
  * ---------------------------------------------------------------------------------------- */
 
-/** Centered auth card with the product mark, page title and description. */
-export function AuthCard({ title, description, children, footer, size = 'sm' }) {
+/**
+ * Optional navigation handlers for the public top bar shown above every auth screen.
+ * App can wrap all signed-out screens once — `<AuthNavProvider value={{ onHome, onSignIn, onSignUp }}>` —
+ * instead of threading props through each view. Props passed directly to AuthCard win.
+ */
+const AuthNavContext = createContext(null);
+export const AuthNavProvider = AuthNavContext.Provider;
+
+/**
+ * Full-page auth shell: PublicNav on top, faint grid backdrop, centered card with the product
+ * mark, page title and description. `onHome` / `onSignIn` / `onSignUp` are optional; nav buttons
+ * without a handler are hidden.
+ */
+export function AuthCard({ title, description, children, footer, size = 'sm', onHome, onSignIn, onSignUp }) {
+  const nav = useContext(AuthNavContext) || {};
+  const handleHome = onHome ?? nav.onHome;
+  const handleSignIn = onSignIn ?? nav.onSignIn;
+  const handleSignUp = onSignUp ?? nav.onSignUp;
+
   return (
-    <div className={cn('mx-auto w-full', size === 'md' ? 'max-w-md' : 'max-w-sm')}>
-      <div className="mb-6 flex items-center justify-center gap-2 text-foreground">
-        <span
-          className="flex size-8 items-center justify-center rounded-md border border-border bg-secondary text-primary"
+    <div className="flex min-h-screen w-full flex-col">
+      <PublicNav current="auth" onHome={handleHome} onSignIn={handleSignIn} onSignUp={handleSignUp} />
+
+      <div className="relative isolate flex flex-1 items-center justify-center px-4 py-10 sm:px-6 sm:py-16">
+        <div
+          className="bg-grid pointer-events-none absolute inset-0 -z-10 [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]"
           aria-hidden="true"
-        >
-          <ShieldIcon className="size-4" />
-        </span>
-        <span className="text-sm font-strong tracking-tight">SecureVault</span>
-      </div>
+        />
+        <div className={cn('w-full', size === 'md' ? 'max-w-md' : 'max-w-sm')}>
+          <Card className="p-6 sm:p-8">
+            <div className="mb-6 flex flex-col items-center gap-4 text-center">
+              <span
+                className="flex size-12 items-center justify-center rounded-full border border-primary-glow/40 bg-primary-glow/15 text-primary-glow shadow-glow-sm"
+                aria-hidden="true"
+              >
+                <ShieldIcon className="size-5" />
+              </span>
+              <div className="grid gap-1.5">
+                <h1 className="text-2xl tracking-tight sm:text-3xl">{title}</h1>
+                {description && <p className="text-sm text-muted-foreground">{description}</p>}
+              </div>
+            </div>
+            {children}
+          </Card>
 
-      <Card className="rounded-xl p-6 sm:p-7">
-        <div className="mb-6 grid gap-1.5 text-center">
-          <h1 className="text-2xl tracking-tight">{title}</h1>
-          {description && <p className="text-sm text-muted-foreground">{description}</p>}
+          {footer && <div className="mt-5 text-center text-sm text-muted-foreground">{footer}</div>}
         </div>
-        {children}
-      </Card>
-
-      {footer && <div className="mt-4 text-center text-sm text-muted-foreground">{footer}</div>}
+      </div>
     </div>
   );
 }
