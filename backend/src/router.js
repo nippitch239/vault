@@ -77,6 +77,7 @@ import {
   revokeCollectionAccessHandler,
   storeCollectionKeyHandler,
   getCollectionKeyHandler,
+  listPendingCollectionKeysHandler,
   addCollectionItemHandler,
   listCollectionItemsHandler,
   removeCollectionItemHandler,
@@ -295,6 +296,12 @@ const routes = [
   },
 
   // Collection Keys (M3: R1, R2)
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?collections\/([^/]+)\/keys\/pending\/?$/,
+    paramNames: ['collectionId'],
+    handler: listPendingCollectionKeysHandler,
+  },
   {
     method: 'POST',
     pattern: /^\/(?:api\/v1\/|api\/)?collections\/([^/]+)\/keys\/?$/,

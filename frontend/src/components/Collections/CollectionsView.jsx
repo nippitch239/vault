@@ -57,6 +57,8 @@ export function CollectionsView() {
 
   // Access modal state
   const [accessList, setAccessList] = useState([]);
+  const [pendingKeys, setPendingKeys] = useState([]);
+  const [distributing, setDistributing] = useState(false);
   const [loadingAccess, setLoadingAccess] = useState(false);
   const [targetType, setTargetType] = useState('user'); // 'user' | 'group'
   const [recipientEmail, setRecipientEmail] = useState('');
@@ -89,8 +91,12 @@ export function CollectionsView() {
     if (!collectionId) return;
     setLoadingAccess(true);
     try {
-      const res = await api.collections.listAccess(collectionId);
+      const [res, pending] = await Promise.all([
+        api.collections.listAccess(collectionId),
+        api.collections.pendingKeys(collectionId).catch(() => ({ pending: [] })),
+      ]);
       setAccessList(res?.access || []);
+      setPendingKeys(pending?.pending || []);
     } catch (err) {
       addToast(err.message || 'ไม่สามารถโหลดสิทธิ์การเข้าถึงได้', 'error');
     } finally {
@@ -364,6 +370,39 @@ export function CollectionsView() {
       addToast(err.message || 'ไม่สามารถมอบสิทธิ์ได้', 'error');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // Members who have access (e.g. joined a group later) but no wrapped key yet.
+  const handleDistributePendingKeys = async () => {
+    if (!selectedCollection || pendingKeys.length === 0) return;
+    const colId = selectedCollection.collection_id || selectedCollection.id;
+    setDistributing(true);
+    try {
+      let collectionKey;
+      try {
+        collectionKey = await getUnwrappedCollectionKey(colId);
+      } catch (keyErr) {
+        throw new Error(keyErr?.status === 404 ? 'คุณยังไม่มีคีย์ของคอลเลกชันนี้ จึงส่งคีย์ให้ผู้อื่นไม่ได้' : keyErr?.message || 'ไม่สามารถถอดรหัสคีย์ของคอลเลกชันได้');
+      }
+      const results = await Promise.allSettled(
+        pendingKeys.map(async (member) => {
+          if (!member.public_key) throw new Error('no public key');
+          const wrapped = await ClientCrypto.wrapCollectionKey(collectionKey, member.public_key);
+          await api.collections.storeKey(colId, { userId: member.user_id, encryptedKeyForRecipient: wrapped });
+        })
+      );
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      if (failed) {
+        addToast(`ส่งคีย์สำเร็จ ${pendingKeys.length - failed} คน ไม่สำเร็จ ${failed} คน`, 'error', 6000);
+      } else {
+        addToast(`ส่งคีย์ให้สมาชิก ${pendingKeys.length} คนสำเร็จ`, 'success');
+      }
+      loadAccessList(colId);
+    } catch (err) {
+      addToast(err.message || 'ส่งคีย์ไม่สำเร็จ', 'error');
+    } finally {
+      setDistributing(false);
     }
   };
 
@@ -841,6 +880,35 @@ export function CollectionsView() {
                 </div>
               )}
             </div>
+
+            {/* Members with access but without a wrapped key */}
+            {pendingKeys.length > 0 && (
+              <div className="mb-5 p-4 rounded-2xl border border-amber-500/30 bg-amber-950/30" role="status">
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <h4 className="text-xs font-semibold text-amber-300 uppercase tracking-wider">
+                    รอรับคีย์ ({pendingKeys.length} คน)
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={handleDistributePendingKeys}
+                    disabled={distributing}
+                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-medium rounded-lg"
+                  >
+                    {distributing ? 'กำลังส่งคีย์...' : 'ส่งคีย์ให้ทั้งหมด'}
+                  </button>
+                </div>
+                <p className="text-xs text-amber-200/80 mb-2">
+                  สมาชิกเหล่านี้มีสิทธิ์แล้วแต่ยังเปิดรายการในคอลเลกชันไม่ได้ จนกว่าจะได้รับคีย์
+                </p>
+                <ul className="text-xs text-slate-200 space-y-1">
+                  {pendingKeys.map((m) => (
+                    <li key={m.user_id}>
+                      {m.full_name || m.username} <span className="text-slate-400">({m.email})</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {/* Existing Access Entries List */}
             <div>

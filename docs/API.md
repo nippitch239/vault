@@ -404,6 +404,7 @@ All ids in paths and bodies must be UUIDs → otherwise `400 INVALID_ID`. Invali
 | `GET /collections/{collectionId}/access` | admin | — | `200 { access: AccessEntry[] }` | — |
 | `POST /collections/{collectionId}/access` | admin | `{ targetType: "user"|"group", targetId: uuid, permission?: "read"|"write"|"admin" (default read) }` — upsert, case-insensitive | `201 { access }` | `400 BAD_REQUEST` (enum), `404 NOT_FOUND` (target) |
 | `DELETE /collections/{collectionId}/access/{targetType}/{targetId}` | admin | — | `200 { message, keysRemoved }` — wrapped keys of users left without access are deleted | `404 NOT_FOUND` (grant) |
+| `GET /collections/{collectionId}/keys/pending` | admin | — | `200 { pending: [{ user_id, username, email, full_name, public_key }] }` — members with access but no wrapped key (e.g. joined a granted group later) | — |
 | `GET /collections/{collectionId}/keys` | read | — | `200 { key: { id, collectionId, userId, encryptedKeyForRecipient: WrappedKey, ... } }` — caller's own wrapped key | `404 KEY_NOT_FOUND` |
 | `POST /collections/{collectionId}/keys` | **admin** | `{ userId: uuid, encryptedKeyForRecipient: WrappedKey }` — upsert. Grant access first. | `201 { message }` | `400 BAD_REQUEST`, `400 TARGET_HAS_NO_ACCESS`, `404 NOT_FOUND` (user) |
 | `GET /collections/{collectionId}/items` | read | — | `200 { items: VaultItem[] }` (ciphertext + metadata) | — |

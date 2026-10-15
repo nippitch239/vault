@@ -172,6 +172,39 @@ describe('Frontend services against the local API Gateway + Cognito simulator (U
     assert.equal((await api.sharing.revokeShare(itemId, lookup.data.user_id, vaultId)).status, 'success');
   });
 
+  test('Collections: late group member appears in pending keys, admin sends the key, member decrypts', async () => {
+    setAuthToken(sessions.alice.token);
+    const collectionKey = ClientCrypto.generateCollectionKey();
+    const created = await api.collections.create({
+      name: 'Ops secrets',
+      encryptedKeyForRecipient: await ClientCrypto.wrapCollectionKey(collectionKey, sessions.alice.keyPair.publicKey),
+    });
+    const collectionId = created.collection.id;
+
+    const group = await api.groups.create({ name: 'Ops' });
+    const groupId = group.group.group_id || group.group.id;
+    await api.collections.grantAccess(collectionId, { targetType: 'group', targetId: groupId, permission: 'read' });
+    await api.groups.addMember(groupId, { userId: sessions.bob.profile.user_id, role: 'member' });
+
+    const pending = await api.collections.pendingKeys(collectionId);
+    assert.deepEqual(pending.pending.map((m) => m.user_id), [sessions.bob.profile.user_id]);
+
+    // What CollectionsView.handleDistributePendingKeys does:
+    const myKey = await api.collections.getKeys(collectionId);
+    const unwrapped = await ClientCrypto.unwrapCollectionKey(myKey.key.encryptedKeyForRecipient, sessions.alice.keyPair.privateKey);
+    await api.collections.storeKey(collectionId, {
+      userId: pending.pending[0].user_id,
+      encryptedKeyForRecipient: await ClientCrypto.wrapCollectionKey(unwrapped, pending.pending[0].public_key),
+    });
+    assert.equal((await api.collections.pendingKeys(collectionId)).pending.length, 0);
+
+    setAuthToken(sessions.bob.token);
+    const bobKey = await api.collections.getKeys(collectionId);
+    const bobCollectionKey = await ClientCrypto.unwrapCollectionKey(bobKey.key.encryptedKeyForRecipient, sessions.bob.keyPair.privateKey);
+    assert.deepEqual(bobCollectionKey, collectionKey);
+    setAuthToken(sessions.alice.token);
+  });
+
   test('UC-6: delete item', async () => {
     assert.equal((await api.vault.deleteItem(itemId, vaultId)).status, 'success');
     await assert.rejects(() => api.vault.getItem(itemId, vaultId), (err) => err.status === 404);

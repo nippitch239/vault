@@ -359,6 +359,26 @@ export async function storeCollectionKeyHandler(event) {
 }
 
 /**
+ * GET /collections/:collectionId/keys/pending — members with access but without a key
+ */
+export async function listPendingCollectionKeysHandler(event) {
+  const { user, errorResponse } = authenticate(event, 'user');
+  if (errorResponse) return errorResponse;
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
+  const pending = await service.listPendingKeys(getDatabase(), user, collectionId);
+  return ok({
+    pending: pending.map((u) => ({
+      user_id: u.user_id,
+      username: u.username,
+      email: u.email,
+      full_name: u.full_name,
+      public_key: u.public_key,
+    })),
+  });
+}
+
+/**
  * GET /collections/:collectionId/keys — the caller's own wrapped key
  */
 export async function getCollectionKeyHandler(event) {

@@ -317,3 +317,29 @@ test('C11: every collection change is written to the audit log', async () => {
     assert.ok(actions.has(a), `missing audit action ${a}`);
   }
 });
+
+test('D4: admins can list members who have access but no wrapped key yet', async () => {
+  await resetDatabase();
+  const admin = await registerProfile('d4admin');
+  const early = await registerProfile('d4early');
+  const late = await registerProfile('d4late');
+  const direct = await registerProfile('d4direct');
+  const collectionId = await createCollection(admin);
+
+  const group = await callRouter({ method: 'POST', path: '/api/v1/groups', claims: admin, body: { name: 'D4' } });
+  const groupId = group.data.group.group_id || group.data.group.id;
+  await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: admin, body: { userId: early.sub } });
+  await grant(admin, collectionId, groupId, 'read', 'group');
+  await grant(admin, collectionId, direct.sub, 'write');
+  await callRouter({ method: 'POST', path: `/api/v1/collections/${collectionId}/keys`, claims: admin, body: { userId: early.sub, encryptedKeyForRecipient: WRAPPED } });
+  // joins after the group grant -> has access, no key
+  await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: admin, body: { userId: late.sub } });
+
+  const pending = await callRouter({ method: 'GET', path: `/api/v1/collections/${collectionId}/keys/pending`, claims: admin });
+  assert.equal(pending.statusCode, 200);
+  assert.deepEqual(pending.data.pending.map((p) => p.username).sort(), ['d4direct', 'd4late']);
+  assert.ok(pending.data.pending.every((p) => p.public_key));
+
+  const forbidden = await callRouter({ method: 'GET', path: `/api/v1/collections/${collectionId}/keys/pending`, claims: direct });
+  assert.equal(forbidden.statusCode, 403);
+});

@@ -124,6 +124,11 @@ export async function storeKey(db, user, collectionId, { userId, wrappedKey }) {
   await audit(db, user, 'COLLECTION_KEY_DISTRIBUTED', collectionId, { userId });
 }
 
+export async function listPendingKeys(db, user, collectionId) {
+  await requirePermission(db, collectionId, user, 'admin', 'list members without keys');
+  return repo.listMembersWithoutKey(db, collectionId);
+}
+
 export async function getMyKey(db, user, collectionId) {
   await requirePermission(db, collectionId, user, 'read', 'retrieve collection keys');
   const key = await repo.findKey(db, collectionId, user.user_id);

@@ -246,6 +246,7 @@ export const api = {
 
     // Collection Keys Distribution (M3: R1, R2)
     getKeys: (collectionId) => request(`/collections/${collectionId}/keys`),
+    pendingKeys: (collectionId) => request(`/collections/${collectionId}/keys/pending`),
     storeKey: (collectionId, keyData) =>
       request(`/collections/${collectionId}/keys`, { method: 'POST', body: keyData }),
 

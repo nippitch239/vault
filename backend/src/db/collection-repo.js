@@ -147,6 +147,35 @@ export async function listKeyHolders(db, collectionId) {
   return res.rows.map((r) => r.user_id);
 }
 
+/**
+ * Users who can access the collection (creator, direct grants, members of granted
+ * groups) but have no wrapped key yet — e.g. people who joined a group after the
+ * group was granted access.
+ */
+export async function listMembersWithoutKey(db, collectionId) {
+  const res = await db.query(
+    `WITH members AS (
+       SELECT created_by AS user_id FROM collections WHERE collection_id = $1
+       UNION
+       SELECT target_id FROM collection_access WHERE collection_id = $1 AND target_type = 'user'
+       UNION
+       SELECT gm.user_id
+       FROM collection_access ca
+       JOIN group_members gm ON gm.group_id = ca.target_id
+       WHERE ca.collection_id = $1 AND ca.target_type = 'group'
+     )
+     SELECT u.user_id, u.username, u.email, u.full_name, u.public_key
+     FROM members m
+     JOIN users u ON u.user_id = m.user_id
+     WHERE NOT EXISTS (
+       SELECT 1 FROM collection_keys k WHERE k.collection_id = $1 AND k.user_id = m.user_id
+     )
+     ORDER BY u.username`,
+    [collectionId]
+  );
+  return res.rows;
+}
+
 export async function deleteKey(db, collectionId, userId) {
   await db.query('DELETE FROM collection_keys WHERE collection_id = $1 AND user_id = $2', [collectionId, userId]);
 }
