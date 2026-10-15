@@ -61,6 +61,7 @@ export function authenticate(event, requiredRole = 'user') {
   }
 
   const user = userFromClaims(claims);
+  user.source_ip = event?.requestContext?.http?.sourceIp || '0.0.0.0';
   if (requiredRole === 'admin' && user.role !== 'admin') {
     return { user: null, errorResponse: forbidden('Admin privileges required to access this resource') };
   }

@@ -8,6 +8,15 @@ import * as repo from '../db/collection-repo.js';
 import { notFound, forbidden, badRequest, conflict } from './errors.js';
 
 /**
+ * Audit trail (UC-9). Never blocks the operation it records.
+ */
+async function audit(db, user, action, collectionId, details = {}) {
+  await repo
+    .insertAuditLog(db, { actorUserId: user.user_id, actorRole: user.role, action, collectionId, details, ipAddress: user.source_ip })
+    .catch((err) => console.error(JSON.stringify({ level: 'error', msg: 'audit log write failed', action, error: err.message })));
+}
+
+/**
  * Loads the collection and checks the caller's effective permission.
  * 404 when the collection does not exist, 403 when the permission is too low.
  */
@@ -45,9 +54,7 @@ export async function createCollection(db, user, { name, description, wrappedKey
     }
     return created;
   });
-  await repo
-    .insertAuditLog(db, { actorUserId: user.user_id, actorRole: user.role, action: 'COLLECTION_CREATED', collectionId: collection.collection_id, details: { name } })
-    .catch(() => {});
+  await audit(db, user, 'COLLECTION_CREATED', collection.collection_id, { name });
   return collection;
 }
 
@@ -65,15 +72,18 @@ export async function getCollection(db, user, collectionId) {
 
 export async function updateCollection(db, user, collectionId, changes) {
   const { collection } = await requirePermission(db, collectionId, user, 'admin', 'update collection');
-  return repo.updateCollection(db, collectionId, {
+  const updated = await repo.updateCollection(db, collectionId, {
     name: changes.name ?? collection.name,
     description: changes.description === undefined ? collection.description : changes.description,
   });
+  await audit(db, user, 'COLLECTION_UPDATED', collectionId, { name: updated.name });
+  return updated;
 }
 
 export async function deleteCollection(db, user, collectionId) {
-  await requirePermission(db, collectionId, user, 'admin', 'delete collection');
+  const { collection } = await requirePermission(db, collectionId, user, 'admin', 'delete collection');
   await db.transaction((tx) => repo.deleteCollection(tx, collectionId));
+  await audit(db, user, 'COLLECTION_DELETED', collectionId, { name: collection.name });
 }
 
 export async function listAccess(db, user, collectionId) {
@@ -86,15 +96,18 @@ export async function grantAccess(db, user, collectionId, { targetType, targetId
   const exists = targetType === 'user' ? await repo.userExists(db, targetId) : await repo.groupExists(db, targetId);
   if (!exists) throw notFound(targetType === 'user' ? 'Target user not found' : 'Target group not found');
   await repo.upsertAccess(db, { collectionId, targetType, targetId, permission });
+  await audit(db, user, 'COLLECTION_ACCESS_GRANTED', collectionId, { targetType, targetId, permission });
 }
 
 export async function revokeAccess(db, user, collectionId, { targetType, targetId }) {
   await requirePermission(db, collectionId, user, 'admin', 'revoke access');
   if (!(await repo.findAccess(db, collectionId, targetType, targetId))) throw notFound('Access entry not found');
-  return db.transaction(async (tx) => {
+  const keysRemoved = await db.transaction(async (tx) => {
     await repo.deleteAccess(tx, collectionId, targetType, targetId);
     return pruneOrphanedKeys(tx, collectionId);
   });
+  await audit(db, user, 'COLLECTION_ACCESS_REVOKED', collectionId, { targetType, targetId, keysRemoved });
+  return keysRemoved;
 }
 
 /**
@@ -108,6 +121,7 @@ export async function storeKey(db, user, collectionId, { userId, wrappedKey }) {
     throw badRequest('Grant the user access to the collection before storing their key', 'TARGET_HAS_NO_ACCESS');
   }
   await repo.upsertKey(db, { collectionId, userId, wrappedKey });
+  await audit(db, user, 'COLLECTION_KEY_DISTRIBUTED', collectionId, { userId });
 }
 
 export async function getMyKey(db, user, collectionId) {
@@ -129,7 +143,9 @@ export async function addItem(db, user, collectionId, itemId) {
   if (await repo.findItemLink(db, collectionId, itemId)) {
     throw conflict('Item is already associated with this collection');
   }
-  return repo.insertItemLink(db, collectionId, itemId);
+  const link = await repo.insertItemLink(db, collectionId, itemId);
+  await audit(db, user, 'COLLECTION_ITEM_ADDED', collectionId, { itemId });
+  return link;
 }
 
 export async function listItems(db, user, collectionId) {
@@ -141,6 +157,7 @@ export async function removeItem(db, user, collectionId, itemId) {
   await requirePermission(db, collectionId, user, 'write', 'remove items from collection');
   if (!(await repo.findItemLink(db, collectionId, itemId))) throw notFound('Item association not found in collection');
   await repo.deleteItemLink(db, collectionId, itemId);
+  await audit(db, user, 'COLLECTION_ITEM_REMOVED', collectionId, { itemId });
 }
 
 /**

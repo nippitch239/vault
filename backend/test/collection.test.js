@@ -286,3 +286,34 @@ test('C7: create/delete collection are atomic', async () => {
   const access = await db.query('SELECT COUNT(*) AS n FROM collection_access');
   assert.equal(Number(access.rows[0].n), 0, 'access row must be rolled back');
 });
+
+test('C11: every collection change is written to the audit log', async () => {
+  await resetDatabase();
+  const owner = await registerProfile('c11owner');
+  const friend = await registerProfile('c11friend');
+  const collectionId = await createCollection(owner);
+  const itemId = await createItem(owner);
+  await grant(owner, collectionId, friend.sub, 'read');
+  await callRouter({ method: 'POST', path: `/api/v1/collections/${collectionId}/keys`, claims: owner, body: { userId: friend.sub, encryptedKeyForRecipient: WRAPPED } });
+  await callRouter({ method: 'POST', path: `/api/v1/collections/${collectionId}/items`, claims: owner, body: { itemId } });
+  await callRouter({ method: 'DELETE', path: `/api/v1/collections/${collectionId}/items/${itemId}`, claims: owner });
+  await callRouter({ method: 'PUT', path: `/api/v1/collections/${collectionId}`, claims: owner, body: { name: 'Renamed' } });
+  await callRouter({ method: 'DELETE', path: `/api/v1/collections/${collectionId}/access/user/${friend.sub}`, claims: owner });
+  await callRouter({ method: 'DELETE', path: `/api/v1/collections/${collectionId}`, claims: owner });
+
+  const db = (await import('../src/db/adapter.js')).getDatabase();
+  const rows = await db.query("SELECT event_action FROM audit_logs WHERE target_resource = 'collection' AND target_resource_id = $1", [collectionId]);
+  const actions = new Set(rows.rows.map((r) => r.event_action));
+  for (const a of [
+    'COLLECTION_CREATED',
+    'COLLECTION_ACCESS_GRANTED',
+    'COLLECTION_KEY_DISTRIBUTED',
+    'COLLECTION_ITEM_ADDED',
+    'COLLECTION_ITEM_REMOVED',
+    'COLLECTION_UPDATED',
+    'COLLECTION_ACCESS_REVOKED',
+    'COLLECTION_DELETED',
+  ]) {
+    assert.ok(actions.has(a), `missing audit action ${a}`);
+  }
+});
