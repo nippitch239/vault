@@ -279,93 +279,82 @@ export function CollectionsView() {
     if (!selectedCollection) return;
     const colId = selectedCollection.collection_id || selectedCollection.id;
 
+    if (targetType === 'user' && !foundRecipient) {
+      addToast('กรุณาค้นหาและเลือกผู้รับก่อนมอบสิทธิ์', 'error');
+      return;
+    }
+    if (targetType === 'user' && !foundRecipient.public_key) {
+      addToast('ผู้รับยังไม่มีคีย์สาธารณะ จึงไม่สามารถส่งคีย์คอลเลกชันให้ได้', 'error');
+      return;
+    }
+    if (targetType === 'group' && !selectedGroupId) {
+      addToast('กรุณาเลือกกลุ่มที่ต้องการมอบสิทธิ์', 'error');
+      return;
+    }
+
     setActionLoading(true);
     try {
-      // 1. Unwrap current user's collection key
-      let collectionKey = null;
+      // Without the collection key the recipients could not decrypt anything, so stop
+      // before granting access instead of granting "empty" access.
+      let collectionKey;
       try {
         collectionKey = await getUnwrappedCollectionKey(colId);
       } catch (keyErr) {
-        console.warn('Could not unwrap collection key:', keyErr);
+        throw new Error(
+          keyErr?.status === 404
+            ? 'คุณยังไม่มีคีย์ของคอลเลกชันนี้ จึงมอบสิทธิ์ให้ผู้อื่นไม่ได้ กรุณาให้ผู้ดูแลคอลเลกชันส่งคีย์ให้ก่อน'
+            : keyErr?.message || 'ไม่สามารถถอดรหัสคีย์ของคอลเลกชันได้'
+        );
       }
 
       if (targetType === 'user') {
-        if (!foundRecipient) {
-          addToast('กรุณาค้นหาและเลือกผู้รับก่อนมอบสิทธิ์', 'error');
-          setActionLoading(false);
-          return;
-        }
-
-        // Grant access first: the server only accepts keys for users who are members.
+        // Grant first: the server only accepts keys for users who are members.
         await api.collections.grantAccess(colId, {
           targetType: 'user',
           targetId: foundRecipient.user_id,
           permission: selectedPermission,
         });
-
-        // Then wrap the collection key for the recipient
-        if (collectionKey && foundRecipient.public_key) {
-          const wrappedForRecipient = await ClientCrypto.wrapCollectionKey(
-            collectionKey,
-            foundRecipient.public_key
-          );
-          await api.collections.storeKey(colId, {
-            userId: foundRecipient.user_id,
-            encryptedKeyForRecipient: wrappedForRecipient,
-          });
-        }
+        const wrappedForRecipient = await ClientCrypto.wrapCollectionKey(collectionKey, foundRecipient.public_key);
+        await api.collections.storeKey(colId, {
+          userId: foundRecipient.user_id,
+          encryptedKeyForRecipient: wrappedForRecipient,
+        });
 
         addToast(`มอบสิทธิ์ให้ ${foundRecipient.username || foundRecipient.email} สำเร็จ`, 'success');
         setFoundRecipient(null);
         setRecipientEmail('');
-      } else if (targetType === 'group') {
-        if (!selectedGroupId) {
-          addToast('กรุณาเลือกกลุ่มที่ต้องการมอบสิทธิ์', 'error');
-          setActionLoading(false);
-          return;
-        }
-
-        // Grant access to group on server
+      } else {
         await api.collections.grantAccess(colId, {
           targetType: 'group',
           targetId: selectedGroupId,
           permission: selectedPermission,
         });
 
-        // Distribute wrapped key to members of that group
-        if (collectionKey) {
-          try {
-            const mbrRes = await api.groups.listMembers(selectedGroupId);
-            const groupMembers = mbrRes?.members || [];
-            for (const mbr of groupMembers) {
-              const memberUserId = mbr.user_id || mbr.userId;
-              let mbrPubKey = mbr.public_key || mbr.publicKey;
-              if (!mbrPubKey && mbr.email) {
-                try {
-                  const l = await api.sharing.lookupUser(mbr.email);
-                  mbrPubKey = l?.data?.public_key;
-                } catch {
-                  // ignore
-                }
-              }
-              if (mbrPubKey) {
-                try {
-                  const wrapped = await ClientCrypto.wrapCollectionKey(collectionKey, mbrPubKey);
-                  await api.collections.storeKey(colId, {
-                    userId: memberUserId,
-                    encryptedKeyForRecipient: wrapped,
-                  });
-                } catch {
-                  // non-blocking per member
-                }
-              }
+        // Distribute the wrapped key to every current member and report who missed out.
+        const mbrRes = await api.groups.listMembers(selectedGroupId);
+        const members = mbrRes?.members || [];
+        const results = await Promise.allSettled(
+          members.map(async (mbr) => {
+            const memberUserId = mbr.user_id || mbr.userId;
+            let pubKey = mbr.public_key || mbr.publicKey;
+            if (!pubKey && mbr.email) {
+              pubKey = (await api.sharing.lookupUser(mbr.email))?.data?.public_key;
             }
-          } catch {
-            // non-blocking
-          }
+            if (!pubKey) throw new Error(`no public key for ${memberUserId}`);
+            const wrapped = await ClientCrypto.wrapCollectionKey(collectionKey, pubKey);
+            await api.collections.storeKey(colId, { userId: memberUserId, encryptedKeyForRecipient: wrapped });
+          })
+        );
+        const failed = results.filter((r) => r.status === 'rejected').length;
+        if (failed > 0) {
+          addToast(
+            `มอบสิทธิ์ให้กลุ่มแล้ว แต่ส่งคีย์ไม่สำเร็จ ${failed} จาก ${members.length} คน สมาชิกเหล่านี้จะยังเปิดรายการในคอลเลกชันไม่ได้ กรุณาลองมอบสิทธิ์ใหม่อีกครั้ง`,
+            'error',
+            8000
+          );
+        } else {
+          addToast(`มอบสิทธิ์และส่งคีย์ให้สมาชิกกลุ่ม ${members.length} คนสำเร็จ`, 'success');
         }
-
-        addToast('มอบสิทธิ์ให้กลุ่มผู้ใช้สำเร็จ', 'success');
       }
 
       loadAccessList(colId);
