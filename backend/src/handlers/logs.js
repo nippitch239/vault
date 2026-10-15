@@ -52,7 +52,7 @@ const securityNotifications = [
  * GET /api/v1/admin/security/notifications
  */
 export async function getSecurityNotificationsHandler(event) {
-  const { user, errorResponse } = authenticate(event, 'admin');
+  const { errorResponse } = authenticate(event, 'admin');
   if (errorResponse) return errorResponse;
 
   const db = getDatabase();
@@ -168,7 +168,7 @@ function objectsToCsv(rows) {
  * Search, filter, and export centralized audit records
  */
 export async function getAdminAuditLogsHandler(event) {
-  const { user, errorResponse } = authenticate(event, 'admin');
+  const { errorResponse } = authenticate(event, 'admin');
   if (errorResponse) return errorResponse;
 
   const db = getDatabase();

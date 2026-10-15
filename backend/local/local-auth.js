@@ -1,35 +1,71 @@
 /**
- * Secure Vault Cloud — Authentication Handlers (UC-1, UC-2, UC-3, UC-7)
+ * Local Amazon Cognito emulator — DEVELOPMENT AND TESTS ONLY.
  *
- * Implements:
- * 1. UC-1: Registration with salt, client auth hash, and default vault creation.
- * 2. Pre-Login: User salt lookup.
- * 3. UC-2: Login with client auth hash verification and JWT issuance.
- * 4. UC-3: MFA setup (RFC 6238 TOTP), verification, and login challenge validation.
- * 5. UC-7: Password reset request and confirmation flow.
+ * Not bundled into the Lambda (backend/scripts/build.js only bundles src/lambda.js).
+ * It lets the frontend's "local" auth adapter and the integration tests exercise the same
+ * flow as Cognito without an AWS account:
+ *   sign-up -> confirm code -> sign-in (-> TOTP challenge) -> ID token
+ *   forgot password -> confirm code + new password
+ *   TOTP setup / verify
  *
- * Zero-Knowledge Guarantee: Server only receives and validates client Auth Hash.
- * Master Password and Master Encryption Key (MEK) are NEVER transmitted to or stored on server.
+ * ID tokens are HS256 JWTs carrying Cognito-shaped claims (sub, email, cognito:username,
+ * cognito:groups, token_use=id). The local runner verifies them and injects the claims
+ * into the event exactly where the API Gateway Cognito authorizer would.
+ *
+ * Confirmation / reset codes are printed to the console and returned as `devCode`
+ * (there is no e-mail locally). Users listed in LOCAL_ADMIN_USERS (comma separated
+ * usernames) get the "admin" group.
  */
 
 import crypto from 'node:crypto';
-import { getDatabase } from '../db/adapter.js';
-import { signJwt, verifyJwt, authenticate } from '../middleware/auth-guard.js';
-import { hashAuthHash } from '@vault/shared/crypto.js';
-import {
-  isValidEmail,
-  isValidUsername,
-  isValidAuthHash,
-  isValidMfaCode,
-} from '@vault/shared/validator.js';
+import { getDatabase } from '../src/db/adapter.js';
 
-// In-memory store for pending password reset OTPs: email -> { code, expiresAt }
-const resetOtpStore = new Map();
+const LOCAL_SECRET = process.env.LOCAL_AUTH_SECRET || crypto.randomBytes(32).toString('hex');
+const ID_TOKEN_TTL_SECONDS = 3600;
+const MAX_FAILED_SIGN_INS = 5;
+const LOCKOUT_MS = 15 * 60 * 1000;
 
-// In-memory tracking for failed login attempts to feed UC-8 anomaly alerts: ip/email -> [{ timestamp }]
-export const loginFailureLog = [];
+// ---------------------------------------------------------------------------
+// JWT (HS256)
+// ---------------------------------------------------------------------------
 
-// Base32 helper for RFC 6238 TOTP
+export function signJwt(payload, expiresIn = ID_TOKEN_TTL_SECONDS, secret = LOCAL_SECRET) {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const now = Math.floor(Date.now() / 1000);
+  const body = Buffer.from(JSON.stringify({ iss: 'local-cognito', iat: now, exp: now + expiresIn, ...payload })).toString('base64url');
+  const sig = crypto.createHmac('sha256', secret).update(`${header}.${body}`).digest('base64url');
+  return `${header}.${body}.${sig}`;
+}
+
+export function verifyJwt(token, secret = LOCAL_SECRET) {
+  if (typeof token !== 'string') throw new Error('MISSING_TOKEN');
+  const parts = token.split('.');
+  if (parts.length !== 3) throw new Error('INVALID_TOKEN_FORMAT');
+  const header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+  if (header.alg !== 'HS256') throw new Error('INVALID_ALGORITHM');
+  const expected = Buffer.from(crypto.createHmac('sha256', secret).update(`${parts[0]}.${parts[1]}`).digest('base64url'));
+  const actual = Buffer.from(parts[2]);
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+    throw new Error('INVALID_SIGNATURE');
+  }
+  const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('TOKEN_EXPIRED');
+  return payload;
+}
+
+/**
+ * Verifies a local ID token and returns its claims (what API Gateway would pass on).
+ */
+export function verifyIdToken(token) {
+  const claims = verifyJwt(token);
+  if (claims.token_use !== 'id') throw new Error('INVALID_TOKEN_USE');
+  return claims;
+}
+
+// ---------------------------------------------------------------------------
+// TOTP (RFC 6238)
+// ---------------------------------------------------------------------------
+
 const BASE32_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
 export function base32Encode(buffer) {
@@ -44,9 +80,7 @@ export function base32Encode(buffer) {
       bits -= 5;
     }
   }
-  if (bits > 0) {
-    output += BASE32_CHARS[(value << (5 - bits)) & 31];
-  }
+  if (bits > 0) output += BASE32_CHARS[(value << (5 - bits)) & 31];
   return output;
 }
 
@@ -80,666 +114,288 @@ export function generateTotp(secret, time = Math.floor(Date.now() / 1000), timeS
 }
 
 export function verifyTotp(secret, code, window = 1) {
-  if (!code || typeof code !== 'string') return false;
+  if (!secret || typeof code !== 'string') return false;
   const trimmed = code.trim();
   const now = Math.floor(Date.now() / 1000);
-  const step = 30;
   for (let w = -window; w <= window; w++) {
-    if (generateTotp(secret, now + w * step) === trimmed) {
-      return true;
-    }
+    if (generateTotp(secret, now + w * 30) === trimmed) return true;
   }
   return false;
 }
 
-/**
- * Standard JSON response helper
- */
-function jsonResponse(statusCode, data) {
-  return {
-    statusCode,
-    headers: {
-      'content-type': 'application/json',
-      'access-control-allow-origin': '*',
-    },
-    body: JSON.stringify(data),
-  };
+// ---------------------------------------------------------------------------
+// Account store (separate table, created only by the emulator)
+// ---------------------------------------------------------------------------
+
+let tableReady = null;
+
+async function db() {
+  const database = getDatabase();
+  if (!tableReady) {
+    // COLLATE NOCASE is SQLite-only; lookups below use LOWER() so Postgres works too.
+    const nocase = database.type === 'sqlite' ? ' COLLATE NOCASE' : '';
+    tableReady = database.query(`
+      CREATE TABLE IF NOT EXISTS local_auth_accounts (
+        sub TEXT PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE${nocase},
+        email TEXT NOT NULL UNIQUE${nocase},
+        name TEXT,
+        password_hash TEXT NOT NULL,
+        confirmed INTEGER NOT NULL DEFAULT 0,
+        confirm_code TEXT,
+        totp_secret TEXT,
+        pending_totp_secret TEXT,
+        reset_code TEXT,
+        reset_expires BIGINT,
+        failed_attempts INTEGER NOT NULL DEFAULT 0,
+        locked_until BIGINT
+      )`);
+  }
+  await tableReady;
+  return database;
 }
 
-/**
- * Parse body helper for Lambda event
- */
-function parseBody(event) {
-  if (!event.body) return {};
-  if (typeof event.body === 'object') return event.body;
+/** Test helper: forget the cached "table exists" flag after resetDatabase(). */
+export function resetLocalAuthStore() {
+  tableReady = null;
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto.scryptSync(password, salt, 32).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function passwordMatches(password, stored) {
+  const [salt, hash] = stored.split(':');
+  const candidate = Buffer.from(hashPassword(password, salt).split(':')[1], 'hex');
+  const expected = Buffer.from(hash, 'hex');
+  return candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected);
+}
+
+function sixDigitCode() {
+  return crypto.randomInt(0, 1000000).toString().padStart(6, '0');
+}
+
+function adminUsernames() {
+  return (process.env.LOCAL_ADMIN_USERS || '')
+    .split(',')
+    .map((u) => u.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function issueIdToken(account) {
+  const groups = adminUsernames().includes(account.username.toLowerCase()) ? ['admin'] : [];
+  return signJwt({
+    sub: account.sub,
+    email: account.email,
+    email_verified: true,
+    name: account.name || undefined,
+    'cognito:username': account.username,
+    'cognito:groups': groups,
+    token_use: 'id',
+    aud: 'local-client',
+  });
+}
+
+async function findAccount(identifier) {
+  const database = await db();
+  const res = await database.query(
+    'SELECT * FROM local_auth_accounts WHERE LOWER(username) = $1 OR LOWER(email) = $1',
+    [String(identifier || '').trim().toLowerCase()]
+  );
+  return res.rows[0] || null;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP handler for /local-auth/*
+// ---------------------------------------------------------------------------
+
+function reply(statusCode, data) {
+  return { statusCode, headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) };
+}
+
+const cognitoError = (statusCode, name, message) => reply(statusCode, { error: name, name, message });
+
+function bearerClaims(headers) {
+  const auth = headers.authorization || '';
+  const [scheme, token] = auth.split(' ');
+  if (scheme?.toLowerCase() !== 'bearer' || !token) return null;
   try {
-    return JSON.parse(event.body);
+    return verifyIdToken(token);
   } catch {
-    return {};
+    return null;
   }
 }
 
-// ============================================================================
-// UC-1: User Registration
-// ============================================================================
-export async function registerHandler(event) {
-  const db = getDatabase();
-  const body = parseBody(event);
+const routes = {
+  async 'sign-up'(body) {
+    const username = String(body.username || '').trim();
+    const email = String(body.email || '').trim().toLowerCase();
+    const password = String(body.password || '');
+    if (!/^[a-zA-Z0-9_-]{3,30}$/.test(username)) return cognitoError(400, 'InvalidParameterException', 'Invalid username');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return cognitoError(400, 'InvalidParameterException', 'Invalid email');
+    if (password.length < 8) return cognitoError(400, 'InvalidPasswordException', 'Password does not conform to policy');
 
-  const email = (body.email || '').trim().toLowerCase();
-  const username = (body.username || '').trim();
-  const fullName = (body.full_name || body.fullName || '').trim();
-  const authHash = body.auth_hash || body.authHash;
-  const authSalt = body.auth_salt || body.authSalt;
-  const publicKey = body.public_key || body.publicKey || null;
-  const encryptedPrivateKey = body.encrypted_private_key || body.encryptedPrivateKey || null;
-  const role = body.role === 'admin' ? 'admin' : 'user';
+    if (await findAccount(username)) return cognitoError(400, 'UsernameExistsException', 'User already exists');
+    if (await findAccount(email)) return cognitoError(400, 'AliasExistsException', 'An account with the given email already exists');
 
-  // Input validation
-  if (!email || !username || !fullName || !authHash || !authSalt) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'VALIDATION_FAILED',
-      message: 'Missing required fields: email, username, fullName, authHash, and authSalt are mandatory',
-    });
-  }
-
-  if (!isValidEmail(email)) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'INVALID_EMAIL',
-      message: 'Invalid email address format',
-    });
-  }
-
-  if (!isValidUsername(username)) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'INVALID_USERNAME',
-      message: 'Username must be 3-30 alphanumeric characters, underscores, or hyphens',
-    });
-  }
-
-  if (!isValidAuthHash(authHash)) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'INVALID_AUTH_HASH',
-      message: 'Auth hash must be a 64-character hexadecimal string',
-    });
-  }
-
-  // Check unique email and username
-  const existingEmail = await db.query('SELECT user_id FROM users WHERE LOWER(email) = $1', [email]);
-  if (existingEmail.rows.length > 0) {
-    return jsonResponse(409, {
-      status: 'fail',
-      error: 'USER_EXISTS',
-      message: 'Email is already registered',
-    });
-  }
-
-  const existingUsername = await db.query('SELECT user_id FROM users WHERE LOWER(username) = $1', [
-    username.toLowerCase(),
-  ]);
-  if (existingUsername.rows.length > 0) {
-    return jsonResponse(409, {
-      status: 'fail',
-      error: 'USER_EXISTS',
-      message: 'Username is already taken',
-    });
-  }
-
-  // Hash the client Auth Hash with server salt for defense-in-depth storage
-  const serverAuthHash = await hashAuthHash(authHash);
-
-  // Insert user
-  const userResult = await db.query(
-    `INSERT INTO users (
-      email, username, full_name, auth_hash, auth_salt, role,
-      public_key, encrypted_private_key, status
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active')
-    RETURNING user_id, email, username, full_name, role, auth_salt, created_at`,
-    [
-      email,
-      username,
-      fullName,
-      serverAuthHash,
-      authSalt,
-      role,
-      publicKey,
-      encryptedPrivateKey,
-    ]
-  );
-  const newUser = userResult.rows[0];
-
-  // Initialize default personal vault for the user
-  const vaultResult = await db.query(
-    `INSERT INTO vaults (user_id, name, description)
-     VALUES ($1, 'Personal Vault', 'Default personal password vault')
-     RETURNING vault_id`,
-    [newUser.user_id]
-  );
-  const defaultVault = vaultResult.rows[0];
-
-  // Record activity and audit logs
-  const clientIp = event.requestContext?.http?.sourceIp || '127.0.0.1';
-  const userAgent = event.headers?.['user-agent'] || 'client';
-
-  await db.query(
-    `INSERT INTO activity_logs (user_id, action_type, ip_address, user_agent, details)
-     VALUES ($1, 'USER_REGISTERED', $2, $3, $4)`,
-    [newUser.user_id, clientIp, userAgent, { email, username }]
-  );
-
-  await db.query(
-    `INSERT INTO audit_logs (actor_user_id, actor_role, event_action, event_severity, target_resource, target_resource_id, ip_address, details)
-     VALUES ($1, $2, 'USER_REGISTERED', 'INFO', 'users', $1, $3, $4)`,
-    [newUser.user_id, role, clientIp, { email, username }]
-  );
-
-  return jsonResponse(201, {
-    status: 'success',
-    message: 'User registered successfully',
-    data: {
-      user_id: newUser.user_id,
-      email: newUser.email,
-      username: newUser.username,
-      full_name: newUser.full_name,
-      role: newUser.role,
-      default_vault_id: defaultVault.vault_id,
-    },
-  });
-}
-
-// ============================================================================
-// Salt Retrieval (Pre-Login)
-// ============================================================================
-export async function getSaltHandler(event) {
-  const db = getDatabase();
-  const query = event.queryStringParameters || {};
-  const email = (query.email || '').trim().toLowerCase();
-  const username = (query.username || '').trim().toLowerCase();
-
-  if (!email && !username) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'MISSING_PARAM',
-      message: 'Query parameter email or username is required',
-    });
-  }
-
-  const result = await db.query(
-    'SELECT auth_salt FROM users WHERE LOWER(email) = $1 OR LOWER(username) = $2',
-    [email || '', username || '']
-  );
-
-  if (result.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'USER_NOT_FOUND',
-      message: 'No account found for this email address or username',
-    });
-  }
-
-  return jsonResponse(200, {
-    status: 'success',
-    data: {
-      salt: result.rows[0].auth_salt,
-    },
-  });
-}
-
-// ============================================================================
-// UC-2: User Login
-// ============================================================================
-export async function loginHandler(event) {
-  const db = getDatabase();
-  const body = parseBody(event);
-  const identifier = (body.email || body.username || '').trim().toLowerCase();
-  const authHash = body.auth_hash || body.authHash;
-  const clientIp = event.requestContext?.http?.sourceIp || '127.0.0.1';
-  const userAgent = event.headers?.['user-agent'] || 'client';
-
-  if (!identifier || !authHash) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'REQUIRED_FIELDS',
-      message: 'Email/username and authHash are required',
-    });
-  }
-
-  // Fetch user
-  const userResult = await db.query(
-    `SELECT user_id, email, username, full_name, auth_hash, auth_salt, role,
-            mfa_enabled, mfa_secret, mfa_type, public_key, encrypted_private_key, status
-     FROM users
-     WHERE LOWER(email) = $1 OR LOWER(username) = $1`,
-    [identifier]
-  );
-
-  if (userResult.rows.length === 0) {
-    // Record login failure for anomaly detection
-    loginFailureLog.push({ identifier, ip: clientIp, timestamp: Date.now() });
-    return jsonResponse(401, {
-      status: 'fail',
-      error: 'INVALID_CREDENTIALS',
-      message: 'Invalid email/username or master password',
-    });
-  }
-
-  const user = userResult.rows[0];
-
-  if (user.status === 'suspended') {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'ACCOUNT_SUSPENDED',
-      message: 'Account is suspended. Please contact administrator.',
-    });
-  }
-
-  // Verify Auth Hash
-  const expectedHash = await hashAuthHash(authHash);
-  const expectedBuf = Buffer.from(expectedHash, 'hex');
-  const storedBuf = Buffer.from(user.auth_hash, 'hex');
-
-  const matches =
-    expectedBuf.length === storedBuf.length && crypto.timingSafeEqual(expectedBuf, storedBuf);
-
-  if (!matches) {
-    loginFailureLog.push({ identifier, ip: clientIp, timestamp: Date.now() });
-
-    // Check for brute-force anomaly: 5+ failures within 3 minutes
-    const threeMinAgo = Date.now() - 3 * 60 * 1000;
-    const recentFailures = loginFailureLog.filter(
-      (f) => (f.identifier === identifier || f.ip === clientIp) && f.timestamp >= threeMinAgo
+    const sub = crypto.randomUUID();
+    const code = sixDigitCode();
+    const database = await db();
+    await database.query(
+      `INSERT INTO local_auth_accounts (sub, username, email, name, password_hash, confirm_code)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [sub, username, email, body.name || null, hashPassword(password), code]
     );
-    if (recentFailures.length >= 5) {
-      await db.query(
-        `INSERT INTO audit_logs (actor_user_id, actor_role, event_action, event_severity, target_resource, ip_address, status, details)
-         VALUES ($1, 'system', 'BRUTE_FORCE_DETECTED', 'CRITICAL', 'users', $2, 'FAILURE', $3)`,
-        [user.user_id, clientIp, { failedAttempts: recentFailures.length, identifier }]
+    console.log(`[local-cognito] sign-up confirmation code for ${username}: ${code}`);
+    return reply(200, { userSub: sub, nextStep: 'CONFIRM_SIGN_UP', devCode: code });
+  },
+
+  async 'confirm-sign-up'(body) {
+    const account = await findAccount(body.username);
+    if (!account) return cognitoError(400, 'UserNotFoundException', 'User does not exist');
+    if (account.confirmed) return reply(200, { nextStep: 'DONE' });
+    if (String(body.code || '').trim() !== account.confirm_code) {
+      return cognitoError(400, 'CodeMismatchException', 'Invalid verification code provided');
+    }
+    const database = await db();
+    await database.query('UPDATE local_auth_accounts SET confirmed = 1, confirm_code = NULL WHERE sub = $1', [account.sub]);
+    return reply(200, { nextStep: 'DONE' });
+  },
+
+  async 'resend-sign-up-code'(body) {
+    const account = await findAccount(body.username);
+    if (!account || account.confirmed) return reply(200, {});
+    const code = sixDigitCode();
+    const database = await db();
+    await database.query('UPDATE local_auth_accounts SET confirm_code = $1 WHERE sub = $2', [code, account.sub]);
+    console.log(`[local-cognito] sign-up confirmation code for ${account.username}: ${code}`);
+    return reply(200, { devCode: code });
+  },
+
+  async 'sign-in'(body) {
+    const account = await findAccount(body.username);
+    const database = await db();
+    if (!account) return cognitoError(400, 'NotAuthorizedException', 'Incorrect username or password.');
+    if (account.locked_until && account.locked_until > Date.now()) {
+      return cognitoError(400, 'NotAuthorizedException', 'Password attempts exceeded');
+    }
+    if (!passwordMatches(String(body.password || ''), account.password_hash)) {
+      const attempts = account.failed_attempts + 1;
+      const lockedUntil = attempts >= MAX_FAILED_SIGN_INS ? Date.now() + LOCKOUT_MS : null;
+      await database.query(
+        'UPDATE local_auth_accounts SET failed_attempts = $1, locked_until = $2 WHERE sub = $3',
+        [lockedUntil ? 0 : attempts, lockedUntil, account.sub]
       );
+      return cognitoError(400, 'NotAuthorizedException', 'Incorrect username or password.');
     }
+    await database.query('UPDATE local_auth_accounts SET failed_attempts = 0, locked_until = NULL WHERE sub = $1', [account.sub]);
+    if (!account.confirmed) return cognitoError(400, 'UserNotConfirmedException', 'User is not confirmed.');
 
-    return jsonResponse(401, {
-      status: 'fail',
-      error: 'INVALID_CREDENTIALS',
-      message: 'Invalid email/username or master password',
-    });
-  }
-
-  // Check if MFA is enabled
-  if (user.mfa_enabled) {
-    const mfaSessionToken = signJwt(
-      { sub: user.user_id, type: 'mfa_session', email: user.email },
-      undefined,
-      300 // 5 minutes validity
-    );
-
-    return jsonResponse(200, {
-      status: 'mfa_required',
-      mfa_session_token: mfaSessionToken,
-      mfa_type: user.mfa_type || 'totp',
-    });
-  }
-
-  // Update last login timestamp
-  await db.query(
-    'UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE user_id = $1',
-    [user.user_id]
-  );
-
-  // Issue standard access token
-  const token = signJwt({
-    sub: user.user_id,
-    email: user.email,
-    username: user.username,
-    role: user.role,
-    mfa_verified: false,
-  });
-
-  // Log successful login
-  await db.query(
-    `INSERT INTO activity_logs (user_id, action_type, ip_address, user_agent, details)
-     VALUES ($1, 'LOGIN_SUCCESS', $2, $3, $4)`,
-    [user.user_id, clientIp, userAgent, { role: user.role }]
-  );
-
-  return jsonResponse(200, {
-    status: 'success',
-    token,
-    expires_in: 3600,
-    user: {
-      user_id: user.user_id,
-      email: user.email,
-      username: user.username,
-      full_name: user.full_name,
-      role: user.role,
-      mfa_enabled: false,
-      public_key: user.public_key,
-      encrypted_private_key: user.encrypted_private_key,
-    },
-  });
-}
-
-// ============================================================================
-// UC-3: MFA Setup & Verification
-// ============================================================================
-
-/**
- * MFA Setup: Generate TOTP secret and QR URL
- */
-export async function mfaSetupHandler(event) {
-  const { user, errorResponse } = authenticate(event, 'user');
-  if (errorResponse) return errorResponse;
-
-  const db = getDatabase();
-  const randomBytes = crypto.randomBytes(20);
-  const secret = base32Encode(randomBytes);
-  const otpauthUrl = `otpauth://totp/SecureVault:${encodeURIComponent(user.email)}?secret=${secret}&issuer=SecureVault`;
-
-  // Temporarily store secret on user pending verification
-  await db.query('UPDATE users SET mfa_secret = $1 WHERE user_id = $2', [secret, user.user_id]);
-
-  return jsonResponse(200, {
-    status: 'success',
-    data: {
-      secret,
-      otpauth_url: otpauthUrl,
-    },
-  });
-}
-
-/**
- * MFA Verify: Confirm setup by validating code
- */
-export async function mfaVerifyHandler(event) {
-  const { user, errorResponse } = authenticate(event, 'user');
-  if (errorResponse) return errorResponse;
-
-  const db = getDatabase();
-  const body = parseBody(event);
-  const token = body.token || body.code;
-
-  if (!token || !isValidMfaCode(token)) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'INVALID_MFA_CODE',
-      message: 'MFA code must be 6 digits',
-    });
-  }
-
-  const userResult = await db.query(
-    'SELECT mfa_secret FROM users WHERE user_id = $1',
-    [user.user_id]
-  );
-  const storedSecret = userResult.rows[0]?.mfa_secret;
-
-  if (!storedSecret) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'MFA_NOT_INITIALIZED',
-      message: 'Please initiate MFA setup first',
-    });
-  }
-
-  const isValid = verifyTotp(storedSecret, token);
-  if (!isValid) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'INVALID_MFA_CODE',
-      message: 'Invalid verification code',
-    });
-  }
-
-  // Activate MFA on user record
-  await db.query(
-    'UPDATE users SET mfa_enabled = TRUE, mfa_type = $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2',
-    ['totp', user.user_id]
-  );
-
-  await db.query(
-    `INSERT INTO activity_logs (user_id, action_type, ip_address, details)
-     VALUES ($1, 'MFA_ENABLED', '127.0.0.1', $2)`,
-    [user.user_id, { mfa_type: 'totp' }]
-  );
-
-  return jsonResponse(200, {
-    status: 'success',
-    message: 'Multi-Factor Authentication enabled successfully',
-  });
-}
-
-/**
- * MFA Validate: Multi-step login validation
- */
-export async function mfaValidateHandler(event) {
-  const db = getDatabase();
-  const body = parseBody(event);
-  const mfaSessionToken = body.mfa_session_token || body.mfaSessionToken;
-  const token = body.token || body.code;
-  const clientIp = event.requestContext?.http?.sourceIp || '127.0.0.1';
-  const userAgent = event.headers?.['user-agent'] || 'client';
-
-  if (!mfaSessionToken || !token) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'REQUIRED_FIELDS',
-      message: 'mfa_session_token and token are required',
-    });
-  }
-
-  let sessionClaims;
-  try {
-    sessionClaims = verifyJwt(mfaSessionToken);
-    if (sessionClaims.type !== 'mfa_session') {
-      throw new Error('INVALID_SESSION_TYPE');
+    if (account.totp_secret) {
+      const session = signJwt({ sub: account.sub, token_use: 'mfa_session' }, 300);
+      return reply(200, { nextStep: 'CONFIRM_SIGN_IN_WITH_TOTP_CODE', session });
     }
-  } catch {
-    return jsonResponse(401, {
-      status: 'fail',
-      error: 'INVALID_MFA_SESSION',
-      message: 'MFA session token is invalid or expired',
-    });
-  }
+    return reply(200, { nextStep: 'DONE', idToken: issueIdToken(account) });
+  },
 
-  const userResult = await db.query(
-    `SELECT user_id, email, username, full_name, role, mfa_secret, mfa_enabled, public_key, encrypted_private_key
-     FROM users WHERE user_id = $1`,
-    [sessionClaims.sub]
-  );
+  async 'confirm-sign-in'(body) {
+    let session;
+    try {
+      session = verifyJwt(body.session);
+      if (session.token_use !== 'mfa_session') throw new Error('bad session');
+    } catch {
+      return cognitoError(400, 'NotAuthorizedException', 'Invalid session for the user, session is expired.');
+    }
+    const database = await db();
+    const res = await database.query('SELECT * FROM local_auth_accounts WHERE sub = $1', [session.sub]);
+    const account = res.rows[0];
+    if (!account || !verifyTotp(account.totp_secret, String(body.code || ''))) {
+      return cognitoError(400, 'CodeMismatchException', 'Invalid code received for user');
+    }
+    return reply(200, { nextStep: 'DONE', idToken: issueIdToken(account) });
+  },
 
-  if (userResult.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'USER_NOT_FOUND',
-      message: 'User not found',
-    });
-  }
+  async 'totp/setup'(body, claims) {
+    if (!claims) return cognitoError(401, 'NotAuthorizedException', 'Access Token has been revoked');
+    const secret = base32Encode(crypto.randomBytes(20));
+    const database = await db();
+    await database.query('UPDATE local_auth_accounts SET pending_totp_secret = $1 WHERE sub = $2', [secret, claims.sub]);
+    return reply(200, { sharedSecret: secret });
+  },
 
-  const user = userResult.rows[0];
-  const isValid = verifyTotp(user.mfa_secret, token);
-
-  if (!isValid) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'INVALID_MFA_CODE',
-      message: 'Invalid verification code',
-    });
-  }
-
-  // Update last login
-  await db.query(
-    'UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE user_id = $1',
-    [user.user_id]
-  );
-
-  const fullToken = signJwt({
-    sub: user.user_id,
-    email: user.email,
-    username: user.username,
-    role: user.role,
-    mfa_verified: true,
-  });
-
-  await db.query(
-    `INSERT INTO activity_logs (user_id, action_type, ip_address, user_agent, details)
-     VALUES ($1, 'LOGIN_MFA_SUCCESS', $2, $3, $4)`,
-    [user.user_id, clientIp, userAgent, { mfa_type: 'totp' }]
-  );
-
-  return jsonResponse(200, {
-    status: 'success',
-    token: fullToken,
-    expires_in: 3600,
-    user: {
-      user_id: user.user_id,
-      email: user.email,
-      username: user.username,
-      full_name: user.full_name,
-      role: user.role,
-      mfa_enabled: true,
-      public_key: user.public_key,
-      encrypted_private_key: user.encrypted_private_key,
-    },
-  });
-}
-
-// ============================================================================
-// UC-7: Password Reset Flow
-// ============================================================================
-
-/**
- * Request password reset OTP
- */
-export async function resetPasswordRequestHandler(event) {
-  const db = getDatabase();
-  const body = parseBody(event);
-  const email = (body.email || '').trim().toLowerCase();
-
-  if (!email || !isValidEmail(email)) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'INVALID_EMAIL',
-      message: 'Valid email address is required',
-    });
-  }
-
-  const userResult = await db.query(
-    'SELECT user_id FROM users WHERE LOWER(email) = $1',
-    [email]
-  );
-
-  // Generate 6-digit OTP
-  const otpCode = crypto.randomInt(100000, 999999).toString();
-  const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins
-
-  resetOtpStore.set(email, { code: otpCode, expiresAt });
-
-  if (userResult.rows.length > 0) {
-    await db.query(
-      `INSERT INTO audit_logs (actor_user_id, actor_role, event_action, event_severity, target_resource, ip_address, details)
-       VALUES ($1, 'user', 'PASSWORD_RESET_REQUESTED', 'INFO', 'users', '127.0.0.1', $2)`,
-      [userResult.rows[0].user_id, { email }]
+  async 'totp/verify'(body, claims) {
+    if (!claims) return cognitoError(401, 'NotAuthorizedException', 'Access Token has been revoked');
+    const database = await db();
+    const res = await database.query('SELECT pending_totp_secret FROM local_auth_accounts WHERE sub = $1', [claims.sub]);
+    const pending = res.rows[0]?.pending_totp_secret;
+    if (!pending) return cognitoError(400, 'InvalidParameterException', 'Call totp/setup first');
+    if (!verifyTotp(pending, String(body.code || ''))) {
+      return cognitoError(400, 'EnableSoftwareTokenMFAException', 'Code mismatch');
+    }
+    await database.query(
+      'UPDATE local_auth_accounts SET totp_secret = pending_totp_secret, pending_totp_secret = NULL WHERE sub = $1',
+      [claims.sub]
     );
-  }
+    return reply(200, { status: 'SUCCESS' });
+  },
 
-  // In test / simulation environment, include preview of otp_code to facilitate automated tests
-  return jsonResponse(200, {
-    status: 'success',
-    message: 'Verification code sent to registered email',
-    data: {
-      // In dev simulation, we provide debug_otp for headless automated testing
-      debug_otp: otpCode,
-    },
-  });
-}
+  async 'forgot-password'(body) {
+    const account = await findAccount(body.username);
+    // Same response for unknown users (Cognito "prevent user existence errors").
+    if (!account) return reply(200, { deliveryMedium: 'EMAIL' });
+    const code = sixDigitCode();
+    const database = await db();
+    await database.query(
+      'UPDATE local_auth_accounts SET reset_code = $1, reset_expires = $2 WHERE sub = $3',
+      [code, Date.now() + 60 * 60 * 1000, account.sub]
+    );
+    console.log(`[local-cognito] password reset code for ${account.username}: ${code}`);
+    return reply(200, { deliveryMedium: 'EMAIL', devCode: code });
+  },
+
+  async 'confirm-forgot-password'(body) {
+    const account = await findAccount(body.username);
+    const code = String(body.code || '').trim();
+    if (!account || !account.reset_code || account.reset_code !== code || account.reset_expires < Date.now()) {
+      return cognitoError(400, 'CodeMismatchException', 'Invalid verification code provided, please try again.');
+    }
+    if (String(body.newPassword || '').length < 8) {
+      return cognitoError(400, 'InvalidPasswordException', 'Password does not conform to policy');
+    }
+    const database = await db();
+    await database.query(
+      `UPDATE local_auth_accounts
+         SET password_hash = $1, reset_code = NULL, reset_expires = NULL, failed_attempts = 0, locked_until = NULL
+       WHERE sub = $2`,
+      [hashPassword(String(body.newPassword)), account.sub]
+    );
+    return reply(200, { nextStep: 'DONE' });
+  },
+
+  async 'change-password'(body, claims) {
+    if (!claims) return cognitoError(401, 'NotAuthorizedException', 'Access Token has been revoked');
+    const database = await db();
+    const res = await database.query('SELECT * FROM local_auth_accounts WHERE sub = $1', [claims.sub]);
+    const account = res.rows[0];
+    if (!account || !passwordMatches(String(body.oldPassword || ''), account.password_hash)) {
+      return cognitoError(400, 'NotAuthorizedException', 'Incorrect username or password.');
+    }
+    await database.query('UPDATE local_auth_accounts SET password_hash = $1 WHERE sub = $2', [
+      hashPassword(String(body.newPassword || '')),
+      claims.sub,
+    ]);
+    return reply(200, {});
+  },
+};
 
 /**
- * Confirm password reset with OTP and new Auth Hash
+ * @param {string} subPath path after /local-auth/
+ * @param {object} body parsed JSON body
+ * @param {object} headers lower-cased request headers
  */
-export async function resetPasswordConfirmHandler(event) {
-  const db = getDatabase();
-  const body = parseBody(event);
-  const email = (body.email || '').trim().toLowerCase();
-  const otpCode = (body.otp_code || body.otpCode || '').trim();
-  const newAuthHash = body.new_auth_hash || body.newAuthHash;
-  const newAuthSalt = body.new_auth_salt || body.newAuthSalt;
-
-  if (!email || !otpCode || !newAuthHash || !newAuthSalt) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'REQUIRED_FIELDS',
-      message: 'email, otp_code, new_auth_hash, and new_auth_salt are required',
-    });
-  }
-
-  const storedOtp = resetOtpStore.get(email);
-  if (!storedOtp) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'INVALID_OTP',
-      message: 'No pending reset request found for this email',
-    });
-  }
-
-  if (Date.now() > storedOtp.expiresAt) {
-    resetOtpStore.delete(email);
-    return jsonResponse(410, {
-      status: 'fail',
-      error: 'EXPIRED_OTP',
-      message: 'Verification code has expired. Please request a new one.',
-    });
-  }
-
-  if (storedOtp.code !== otpCode) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'INVALID_OTP',
-      message: 'Invalid verification code',
-    });
-  }
-
-  // OTP verified, consume it
-  resetOtpStore.delete(email);
-
-  const userResult = await db.query(
-    'SELECT user_id FROM users WHERE LOWER(email) = $1',
-    [email]
-  );
-  if (userResult.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'USER_NOT_FOUND',
-      message: 'User not found',
-    });
-  }
-
-  const userId = userResult.rows[0].user_id;
-  const serverAuthHash = await hashAuthHash(newAuthHash);
-
-  // Update credentials
-  await db.query(
-    `UPDATE users
-     SET auth_hash = $1, auth_salt = $2, updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = $3`,
-    [serverAuthHash, newAuthSalt, userId]
-  );
-
-  await db.query(
-    `INSERT INTO activity_logs (user_id, action_type, ip_address, details)
-     VALUES ($1, 'PASSWORD_RESET', '127.0.0.1', $2)`,
-    [userId, { email }]
-  );
-
-  await db.query(
-    `INSERT INTO audit_logs (actor_user_id, actor_role, event_action, event_severity, target_resource, ip_address, details)
-     VALUES ($1, 'user', 'PASSWORD_RESET_CONFIRMED', 'WARNING', 'users', '127.0.0.1', $2)`,
-    [userId, { email }]
-  );
-
-  return jsonResponse(200, {
-    status: 'success',
-    message: 'Password reset successfully. Please log in with your new Master Password.',
-  });
+export async function handleLocalAuth(subPath, body, headers) {
+  const route = routes[subPath];
+  if (!route) return cognitoError(404, 'ResourceNotFoundException', `Unknown local-auth action: ${subPath}`);
+  return route(body || {}, bearerClaims(headers || {}));
 }

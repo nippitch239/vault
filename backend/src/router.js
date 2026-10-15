@@ -1,25 +1,24 @@
 /**
- * Secure Vault Cloud — API Gateway v2 HTTP Event Router
+ * Secure Vault Cloud — API router (single Lambda behind API Gateway REST API)
  *
- * Implements:
- * 1. API Gateway v2 event routing mapping paths and HTTP methods to Lambda handlers.
- * 2. URL parameter pattern matching (:vaultId, :itemId, :userId, :shareId).
- * 3. CORS preflight OPTIONS handling.
- * 4. Error boundaries and metrics collection.
- *
- * Ponytail minimalism: Pure regex path matching, zero external router dependencies.
+ * - Accepts REST API (v1) and HTTP API (v2) events; see http/event.js.
+ * - Every response gets the same CORS headers and error envelope (http/response.js).
+ * - Unhandled errors are logged as structured JSON to CloudWatch and returned as a generic
+ *   500 without internal details.
+ * - Requests are cut off shortly before the Lambda timeout with a 504 JSON response.
  */
 
+import { normalizeEvent } from './http/event.js';
+import { corsHeaders, fail } from './http/response.js';
+
 import {
-  registerHandler,
   getSaltHandler,
-  loginHandler,
-  mfaSetupHandler,
-  mfaVerifyHandler,
-  mfaValidateHandler,
-  resetPasswordRequestHandler,
-  resetPasswordConfirmHandler,
-} from './handlers/auth.js';
+  getMeHandler,
+  createMeHandler,
+  updateMeHandler,
+  updateKeysHandler,
+  recordSessionHandler,
+} from './handlers/users.js';
 
 import {
   listVaultsHandler,
@@ -83,19 +82,20 @@ import {
 } from './handlers/collection.js';
 
 // Route Definitions
+// Static path pattern accepting the optional /api/v1 or /api prefix.
+const R = (staticPath) => new RegExp(`^/(?:api/v1/|api/)?${staticPath}/?$`);
+
 const routes = [
   // Health
-  { method: 'GET', pattern: /^\/(?:api\/v1\/|api\/)?health\/?$/, handler: healthHandler },
+  { method: 'GET', pattern: /^\/(?:api\/v1\/|api\/)?health\/?$/, handler: healthHandler, public: true },
 
-  // Auth (UC-1, UC-2, UC-3, UC-7)
-  { method: 'POST', pattern: /^\/(?:api\/v1\/|api\/)?auth\/register\/?$/, handler: registerHandler },
-  { method: 'GET', pattern: /^\/(?:api\/v1\/|api\/)?auth\/salt\/?$/, handler: getSaltHandler },
-  { method: 'POST', pattern: /^\/(?:api\/v1\/|api\/)?auth\/login\/?$/, handler: loginHandler },
-  { method: 'POST', pattern: /^\/(?:api\/v1\/|api\/)?auth\/mfa\/setup\/?$/, handler: mfaSetupHandler },
-  { method: 'POST', pattern: /^\/(?:api\/v1\/|api\/)?auth\/mfa\/verify\/?$/, handler: mfaVerifyHandler },
-  { method: 'POST', pattern: /^\/(?:api\/v1\/|api\/)?auth\/mfa\/validate\/?$/, handler: mfaValidateHandler },
-  { method: 'POST', pattern: /^\/(?:api\/v1\/|api\/)?auth\/reset-password\/request\/?$/, handler: resetPasswordRequestHandler },
-  { method: 'POST', pattern: /^\/(?:api\/v1\/|api\/)?auth\/reset-password\/confirm\/?$/, handler: resetPasswordConfirmHandler },
+  // Auth & profile (UC-1, UC-2, UC-3, UC-7 — credentials themselves live in Cognito)
+  { method: 'GET', pattern: R('auth/salt'), handler: getSaltHandler, public: true },
+  { method: 'POST', pattern: R('auth/session'), handler: recordSessionHandler },
+  { method: 'GET', pattern: R('users/me'), handler: getMeHandler },
+  { method: 'POST', pattern: R('users/me'), handler: createMeHandler },
+  { method: 'PATCH', pattern: R('users/me'), handler: updateMeHandler },
+  { method: 'PUT', pattern: R('users/me/keys'), handler: updateKeysHandler },
 
   // Vaults & Items (UC-4, UC-5, UC-6)
   { method: 'GET', pattern: /^\/(?:api\/v1\/|api\/)?vaults\/?$/, handler: listVaultsHandler },
@@ -359,105 +359,95 @@ const routes = [
 ];
 
 /**
- * Main Lambda API Gateway v2 Router Entry Point
- * @param {object} event - API Gateway v2 HTTP event
- * @param {object} [context] - Lambda context
- * @returns {Promise<{ statusCode: number, headers: object, body: string }>}
+ * Routes that API Gateway exposes without the Cognito authorizer.
+ * (OPTIONS preflight is also unauthenticated.)
  */
-export async function router(event, context) {
-  const startTime = Date.now();
-  const method = (
-    event.requestContext?.http?.method ||
-    event.httpMethod ||
-    'GET'
-  ).toUpperCase();
+export function isPublicRoute(method, path) {
+  if (method === 'OPTIONS') return true;
+  return routes.some((r) => r.public && r.method === method && r.pattern.test(path));
+}
 
-  const path = event.rawPath || event.path || '/';
-
-  // Handle CORS preflight
-  if (method === 'OPTIONS') {
-    return {
-      statusCode: 204,
-      headers: {
-        'access-control-allow-origin': '*',
-        'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'access-control-allow-headers': 'Content-Type, Authorization, X-Requested-With',
-        'access-control-max-age': '86400',
-      },
-      body: '',
-    };
-  }
-
-  // Find matching route
+export function findRoute(method, path) {
   for (const route of routes) {
     if (route.method !== method) continue;
-
     const match = path.match(route.pattern);
-    if (match) {
-      // Extract path parameters
-      const pathParameters = { ...(event.pathParameters || {}) };
-      if (route.paramNames) {
-        route.paramNames.forEach((paramName, idx) => {
-          pathParameters[paramName] = match[idx + 1];
-        });
-      }
+    if (match) return { route, match };
+  }
+  return null;
+}
 
-      const enhancedEvent = {
-        ...event,
-        pathParameters,
-      };
+export const routeTable = routes;
 
-      try {
-        const response = await route.handler(enhancedEvent, context);
-        const latency = Date.now() - startTime;
-        recordRequestMetric(latency, response.statusCode >= 400);
+const TIMEOUT_MARGIN_MS = 500;
 
-        // Ensure default CORS header
-        const headers = {
-          'access-control-allow-origin': '*',
-          ...(response.headers || {}),
-        };
+function withTimeout(promise, context) {
+  const remaining = typeof context?.getRemainingTimeInMillis === 'function' ? context.getRemainingTimeInMillis() : 0;
+  if (!remaining) return promise;
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(
+      () => resolve(fail(504, 'TIMEOUT', 'The request took too long to complete. Please retry.')),
+      Math.max(remaining - TIMEOUT_MARGIN_MS, 0)
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
-        return {
-          ...response,
-          headers,
-        };
-      } catch (err) {
-        const latency = Date.now() - startTime;
-        recordRequestMetric(latency, true);
+function logError(event, err) {
+  console.error(
+    JSON.stringify({
+      level: 'error',
+      msg: 'Unhandled error in route handler',
+      requestId: event.requestContext?.requestId,
+      method: event.requestContext?.http?.method,
+      path: event.rawPath,
+      error: err?.message,
+      code: err?.code,
+      stack: err?.stack,
+    })
+  );
+}
 
-        return {
-          statusCode: 500,
-          headers: {
-            'content-type': 'application/json',
-            'access-control-allow-origin': '*',
-          },
-          body: JSON.stringify({
-            status: 'error',
-            error: 'INTERNAL_SERVER_ERROR',
-            message: err.message || 'An unexpected error occurred',
-          }),
-        };
-      }
-    }
+/**
+ * Lambda router entry point.
+ * @param {object} rawEvent API Gateway REST (v1) or HTTP API (v2) event
+ * @param {object} [context] Lambda context
+ */
+export async function router(rawEvent, context) {
+  const startTime = Date.now();
+  const event = normalizeEvent(rawEvent);
+  const method = event.requestContext.http.method;
+  const path = event.rawPath;
+  const cors = corsHeaders(event.headers?.origin);
+
+  if (method === 'OPTIONS') {
+    return { statusCode: 204, headers: cors, body: '' };
   }
 
-  // 404 Route Not Found
-  const latency = Date.now() - startTime;
-  recordRequestMetric(latency, true);
+  const found = findRoute(method, path);
+  if (!found) {
+    recordRequestMetric(Date.now() - startTime, true);
+    const res = fail(404, 'ROUTE_NOT_FOUND', `No handler found for ${method} ${path}`);
+    return { ...res, headers: { ...res.headers, ...cors } };
+  }
 
-  return {
-    statusCode: 404,
-    headers: {
-      'content-type': 'application/json',
-      'access-control-allow-origin': '*',
-    },
-    body: JSON.stringify({
-      status: 'fail',
-      error: 'ROUTE_NOT_FOUND',
-      message: `No handler found for ${method} ${path}`,
-    }),
-  };
+  const { route, match } = found;
+  const pathParameters = { ...(event.pathParameters || {}) };
+  (route.paramNames || []).forEach((name, idx) => {
+    pathParameters[name] = decodeURIComponent(match[idx + 1]);
+  });
+
+  let response;
+  try {
+    response = await withTimeout(Promise.resolve(route.handler({ ...event, pathParameters }, context)), context);
+  } catch (err) {
+    logError(event, err);
+    response = fail(500, 'INTERNAL_SERVER_ERROR', 'An unexpected error occurred. Please try again later.');
+  }
+
+  recordRequestMetric(Date.now() - startTime, response.statusCode >= 400);
+  // CORS is decided here, not by individual handlers.
+  return { ...response, headers: { ...(response.headers || {}), ...cors } };
 }
 
 export default router;

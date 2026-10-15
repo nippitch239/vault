@@ -40,7 +40,7 @@ function parseBody(event) {
  * Look up recipient by email to fetch their public key for client-side encryption
  */
 export async function lookupUserHandler(event) {
-  const { user: requestingUser, errorResponse } = authenticate(event, 'user');
+  const { errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
 
   const db = getDatabase();

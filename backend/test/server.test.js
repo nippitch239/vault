@@ -1,79 +1,105 @@
 /**
- * Secure Vault Cloud — Comprehensive Server Tests (UC-1 through UC-13)
+ * Secure Vault Cloud — backend tests (router, handlers, DB adapter, local simulator)
  *
- * Validates:
- * 1. Database adapter with in-memory SQLite and JSONB translation.
- * 2. Pure Lambda Handlers and API Gateway v2 event router.
- * 3. Local HTTP simulation server via real network fetch.
- * 4. End-to-end coverage of all 13 Use Cases with zero regressions.
+ * Requests are built as API Gateway REST API (payload v1) events with Cognito authorizer
+ * claims, exactly what the Lambda receives in production.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { getDatabase, resetDatabase } from '../src/db/adapter.js';
 import { router } from '../src/router.js';
+import { handler } from '../src/lambda.js';
 import { startLocalServer } from '../local/local-runner.js';
-import { signJwt, verifyJwt } from '../src/middleware/auth-guard.js';
-import { generateTotp } from '../src/handlers/auth.js';
-import { hashAuthHash } from '@vault/shared/crypto.js';
+import { resetLocalAuthStore } from '../local/local-auth.js';
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 
-// Helper to invoke router with synthetic API Gateway v2 event
-async function callRouter({
-  method = 'GET',
-  path = '/health',
-  headers = {},
-  body = null,
-  queryStringParameters = {},
-}) {
-  const event = {
-    version: '2.0',
-    rawPath: path,
-    rawQueryString: new URLSearchParams(queryStringParameters).toString(),
-    queryStringParameters,
-    headers: {
-      'content-type': 'application/json',
-      ...headers,
-    },
-    requestContext: {
-      http: {
-        method: method.toUpperCase(),
-        path,
-        sourceIp: '127.0.0.1',
-        userAgent: 'test-runner',
-      },
-    },
-    body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : null,
-  };
-
-  const response = await router(event);
-  let parsedBody = null;
-  if (response.body) {
-    try {
-      parsedBody = JSON.parse(response.body);
-    } catch {
-      parsedBody = response.body;
-    }
-  }
-
-  return {
-    statusCode: response.statusCode,
-    headers: response.headers,
-    data: parsedBody,
-  };
-}
-
-// Re-usable test fixtures
-const TEST_SALT = 'rK9v1k7Y5w4/1Z5b8lX9dQ==';
-const TEST_AUTH_HASH = 'a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e';
 const TEST_ENCRYPTED_PAYLOAD = {
   ciphertext: 'pL38Kz0987654321+secureCiphertextSample==',
   iv: '3d9FaK21L+xR7n4m',
-  auth_tag: 'q9Xm5h6Jk2L9p3Z0==',
+  authTag: 'q9Xm5h6Jk2L9p3Z0==',
   algorithm: 'AES-256-GCM',
-  key_version: 1,
+  keyVersion: 1,
 };
+const TEST_SALT = 'rK9v1k7Y5w4/1Z5b8lX9dQ==';
+
+/** Cognito ID-token claims for a test user. */
+function claimsFor(username, { admin = false, sub } = {}) {
+  return {
+    sub: sub || uuidFor(username),
+    email: `${username}@securevault.io`,
+    email_verified: 'true',
+    'cognito:username': username,
+    'cognito:groups': admin ? 'admin' : '',
+    token_use: 'id',
+  };
+}
+
+const subs = new Map();
+function uuidFor(username) {
+  if (!subs.has(username)) subs.set(username, crypto.randomUUID());
+  return subs.get(username);
+}
+
+// Invoke the router with a REST API (v1) event, optionally carrying authorizer claims.
+async function callRouter({ method = 'GET', path = '/health', headers = {}, body = null, queryStringParameters = null, claims = null, context }) {
+  const event = {
+    resource: '/{proxy+}',
+    path,
+    httpMethod: method.toUpperCase(),
+    headers: { 'content-type': 'application/json', ...headers },
+    queryStringParameters,
+    body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : null,
+    isBase64Encoded: false,
+    requestContext: {
+      requestId: crypto.randomUUID(),
+      identity: { sourceIp: '127.0.0.1', userAgent: 'test-runner' },
+      authorizer: claims ? { claims } : undefined,
+    },
+  };
+  const response = await router(event, context);
+  let data = null;
+  if (response.body) {
+    try {
+      data = JSON.parse(response.body);
+    } catch {
+      data = response.body;
+    }
+  }
+  return { statusCode: response.statusCode, headers: response.headers, data };
+}
+
+/** Creates the vault profile (POST /users/me) for a test user and returns its claims. */
+async function registerProfile(username, opts = {}) {
+  const claims = claimsFor(username, opts);
+  const res = await callRouter({
+    method: 'POST',
+    path: '/api/v1/users/me',
+    claims,
+    body: {
+      full_name: `${username} Tester`,
+      kdf_salt: TEST_SALT,
+      public_key: `MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA_${username}`,
+      encrypted_private_key: TEST_ENCRYPTED_PAYLOAD,
+      encrypted_vault_key: TEST_ENCRYPTED_PAYLOAD,
+    },
+  });
+  assert.equal(res.statusCode, 201, JSON.stringify(res.data));
+  return claims;
+}
+
+/** Inserts a bare users row (schema-level tests). */
+async function insertUser(db, username) {
+  const userId = crypto.randomUUID();
+  await db.query(
+    `INSERT INTO users (user_id, email, username, full_name, kdf_salt, public_key, encrypted_private_key, encrypted_vault_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [userId, `${username}@example.com`, username, username, TEST_SALT, 'pk', TEST_ENCRYPTED_PAYLOAD, TEST_ENCRYPTED_PAYLOAD]
+  );
+  return userId;
+}
 
 test('Database Adapter: Initialization, Constraints and JSONB query translation', async () => {
   const db = await resetDatabase();
@@ -81,25 +107,22 @@ test('Database Adapter: Initialization, Constraints and JSONB query translation'
   assert.equal(healthCheck.rows[0].live, 1);
 
   // Insert test row into users
-  const insertUser = await db.query(
-    `INSERT INTO users (email, username, full_name, auth_hash, auth_salt)
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    ['adapter_test@example.com', 'adapter_user', 'Adapter User', 'hash', 'salt']
-  );
-  assert.equal(insertUser.rowCount, 1);
-  assert.ok(insertUser.rows[0].user_id);
+  const adapterUserId = await insertUser(db, 'adapter_user');
+  const userRow = await db.query('SELECT * FROM users WHERE user_id = $1', [adapterUserId]);
+  assert.equal(userRow.rowCount, 1);
+  assert.equal(userRow.rows[0].encrypted_vault_key.algorithm, 'AES-256-GCM');
 
   // Insert vault item with JSONB
   const insertVault = await db.query(
     'INSERT INTO vaults (user_id, name) VALUES ($1, $2) RETURNING vault_id',
-    [insertUser.rows[0].user_id, 'Test Vault']
+    [adapterUserId, 'Test Vault']
   );
   const insertItem = await db.query(
     `INSERT INTO vault_items (vault_id, user_id, encrypted_data, metadata)
      VALUES ($1, $2, $3, $4) RETURNING *`,
     [
       insertVault.rows[0].vault_id,
-      insertUser.rows[0].user_id,
+      adapterUserId,
       TEST_ENCRYPTED_PAYLOAD,
       { title: 'Database Adapter Key', tags: ['db', 'adapter'] },
     ]
@@ -111,7 +134,7 @@ test('Database Adapter: Initialization, Constraints and JSONB query translation'
   // JSON extract translation: metadata->>'title'
   const extractQuery = await db.query(
     "SELECT item_id, metadata->>'title' as title FROM vault_items WHERE user_id = $1",
-    [insertUser.rows[0].user_id]
+    [adapterUserId]
   );
   assert.equal(extractQuery.rows[0].title, 'Database Adapter Key');
 });
@@ -145,12 +168,7 @@ test('Milestone 1 — Data Model & Schema Layer: 6 New Tables, Queryability & De
   }
 
   // 3. Seed User and Vault Item
-  const userRes = await db.query(
-    `INSERT INTO users (email, username, full_name, auth_hash, auth_salt)
-     VALUES ($1, $2, $3, $4, $5) RETURNING user_id`,
-    ['m1_user@example.com', 'm1_user', 'M1 User', 'hash', 'salt']
-  );
-  const userId = userRes.rows[0].user_id;
+  const userId = await insertUser(db, 'm1_user');
 
   const vaultRes = await db.query(
     'INSERT INTO vaults (user_id, name) VALUES ($1, $2) RETURNING vault_id',
@@ -241,17 +259,9 @@ test('Milestone 1 — Data Model & Schema Layer: Cascading Deletes, Unique & CHE
   const db = await resetDatabase();
 
   // 1. Seed two users and one vault item
-  const u1 = (await db.query(
-    `INSERT INTO users (email, username, full_name, auth_hash, auth_salt)
-     VALUES ($1, $2, $3, $4, $5) RETURNING user_id`,
-    ['cascade1@example.com', 'cascader1', 'User 1', 'h', 's']
-  )).rows[0].user_id;
+  const u1 = await insertUser(db, 'cascader1');
 
-  const u2 = (await db.query(
-    `INSERT INTO users (email, username, full_name, auth_hash, auth_salt)
-     VALUES ($1, $2, $3, $4, $5) RETURNING user_id`,
-    ['cascade2@example.com', 'cascader2', 'User 2', 'h', 's']
-  )).rows[0].user_id;
+  const u2 = await insertUser(db, 'cascader2');
 
   const vault = (await db.query(
     'INSERT INTO vaults (user_id, name) VALUES ($1, $2) RETURNING vault_id',
@@ -418,249 +428,210 @@ test('Milestone 1 — Data Model & Schema Layer: Cascading Deletes, Unique & CHE
   assert.equal(Number(userCheck.rows[0].cnt), 1, 'users must NOT be deleted when group is deleted');
 });
 
-test('JWT Middleware & RBAC: Token signing, verification, and role guard', () => {
-  const userPayload = {
-    sub: '11111111-2222-3333-4444-555555555555',
-    email: 'jwt_user@example.com',
-    username: 'jwt_user',
-    role: 'user',
-  };
-
-  const token = signJwt(userPayload, undefined, 60);
-  assert.ok(token);
-
-  const decoded = verifyJwt(token);
-  assert.equal(decoded.sub, userPayload.sub);
-  assert.equal(decoded.email, userPayload.email);
-  assert.equal(decoded.role, 'user');
-
-  // Tampered token throws error
-  const parts = token.split('.');
-  const tamperedToken = `${parts[0]}.${parts[1]}.tamperedSignature`;
-  assert.throws(() => verifyJwt(tamperedToken), /INVALID_SIGNATURE/);
-});
-
-test('UC-1: Registration & Pre-Login Salt Retrieval', async () => {
+test('Lambda entry: REST API v1 events, Cognito claims guard and uniform errors', async () => {
   await resetDatabase();
 
-  // 1. Missing fields should return 400
-  const badReq = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/register',
-    body: { email: 'bad@example.com' },
-  });
-  assert.equal(badReq.statusCode, 400);
-  assert.equal(badReq.data.status, 'fail');
+  // Missing authorizer claims -> 401 (defense in depth behind the API Gateway authorizer)
+  const noClaims = await callRouter({ method: 'GET', path: '/api/v1/users/me' });
+  assert.equal(noClaims.statusCode, 401);
+  assert.equal(noClaims.data.status, 'fail');
+  assert.equal(noClaims.data.error, 'UNAUTHORIZED');
 
-  // 2. Successful Registration
-  const regRes = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/register',
-    body: {
-      email: 'alice@securevault.io',
-      username: 'alice',
-      fullName: 'Alice Smith',
-      authHash: TEST_AUTH_HASH,
-      authSalt: TEST_SALT,
-      publicKey: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...',
-      role: 'user',
-    },
-  });
-
-  assert.equal(regRes.statusCode, 201);
-  assert.equal(regRes.data.status, 'success');
-  assert.ok(regRes.data.data.user_id);
-  assert.ok(regRes.data.data.default_vault_id);
-  assert.equal(regRes.data.data.email, 'alice@securevault.io');
-
-  // 3. Duplicate email returns 409
-  const dupEmail = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/register',
-    body: {
-      email: 'alice@securevault.io',
-      username: 'alice_different',
-      fullName: 'Alice Clone',
-      authHash: TEST_AUTH_HASH,
-      authSalt: TEST_SALT,
-    },
-  });
-  assert.equal(dupEmail.statusCode, 409);
-
-  // 4. Duplicate username returns 409
-  const dupUser = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/register',
-    body: {
-      email: 'another@securevault.io',
-      username: 'alice',
-      fullName: 'Bob Smith',
-      authHash: TEST_AUTH_HASH,
-      authSalt: TEST_SALT,
-    },
-  });
-  assert.equal(dupUser.statusCode, 409);
-
-  // 5. Pre-login Salt Lookup
-  const saltRes = await callRouter({
+  // Access tokens are rejected: the Cognito authorizer is configured for ID tokens
+  const accessToken = await callRouter({
     method: 'GET',
-    path: '/api/v1/auth/salt',
-    queryStringParameters: { email: 'alice@securevault.io' },
+    path: '/api/v1/users/me',
+    claims: { ...claimsFor('access_user'), token_use: 'access' },
   });
-  assert.equal(saltRes.statusCode, 200);
-  assert.equal(saltRes.data.data.salt, TEST_SALT);
+  assert.equal(accessToken.statusCode, 401);
 
-  // 6. Salt lookup for unknown user returns 404
-  const unknownSalt = await callRouter({
-    method: 'GET',
-    path: '/api/v1/auth/salt',
-    queryStringParameters: { email: 'nonexistent@example.com' },
-  });
-  assert.equal(unknownSalt.statusCode, 404);
+  // Unknown route -> uniform 404 envelope with CORS headers
+  const unknown = await callRouter({ method: 'GET', path: '/api/v1/does-not-exist' });
+  assert.equal(unknown.statusCode, 404);
+  assert.equal(unknown.data.error, 'ROUTE_NOT_FOUND');
+  assert.ok(unknown.headers['access-control-allow-origin']);
+
+  // CORS preflight
+  const preflight = await callRouter({ method: 'OPTIONS', path: '/api/v1/collections' });
+  assert.equal(preflight.statusCode, 204);
+  assert.match(preflight.headers['access-control-allow-methods'], /PATCH/);
+
+  // Malformed JSON -> 400 INVALID_JSON instead of a silent {}
+  const claims = claimsFor('json_user');
+  const badJson = await callRouter({ method: 'POST', path: '/api/v1/users/me', claims, body: '{not json' });
+  assert.equal(badJson.statusCode, 400);
+  assert.equal(badJson.data.error, 'INVALID_JSON');
+
+  // lambda.handler delegates to the router
+  const health = await handler(
+    { httpMethod: 'GET', path: '/health', headers: {}, requestContext: { identity: { sourceIp: '10.0.0.1' } } },
+    { getRemainingTimeInMillis: () => 3000 }
+  );
+  assert.equal(health.statusCode, 200);
 });
 
-test('UC-2: User Login & JWT Issuance', async () => {
-  // 1. Successful login
-  const loginRes = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: {
-      email: 'alice@securevault.io',
-      authHash: TEST_AUTH_HASH,
-    },
-  });
-
-  assert.equal(loginRes.statusCode, 200);
-  assert.equal(loginRes.data.status, 'success');
-  assert.ok(loginRes.data.token);
-  assert.equal(loginRes.data.user.email, 'alice@securevault.io');
-  assert.equal(loginRes.data.user.mfa_enabled, false);
-
-  // 2. Wrong authHash returns 401
-  const wrongPass = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: {
-      email: 'alice@securevault.io',
-      authHash: '0000000000000000000000000000000000000000000000000000000000000000',
-    },
-  });
-  assert.equal(wrongPass.statusCode, 401);
-
-  // 3. Unknown user returns 401
-  const unknownUser = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: {
-      email: 'ghost@securevault.io',
-      authHash: TEST_AUTH_HASH,
-    },
-  });
-  assert.equal(unknownUser.statusCode, 401);
+test('Router: unexpected errors are logged and returned without internal details', async () => {
+  await resetDatabase();
+  const claims = await registerProfile('err_user');
+  const db = getDatabase();
+  const original = db.query.bind(db);
+  db.query = async () => {
+    throw new Error('SQLite Query Error: secret table layout\nSQL: SELECT * FROM users');
+  };
+  const originalConsoleError = console.error;
+  const logged = [];
+  console.error = (line) => logged.push(line);
+  try {
+    const res = await callRouter({ method: 'GET', path: '/api/v1/users/me', claims });
+    assert.equal(res.statusCode, 500);
+    assert.equal(res.data.status, 'error');
+    assert.equal(res.data.error, 'INTERNAL_SERVER_ERROR');
+    assert.doesNotMatch(res.data.message, /SQL|SQLite|users/);
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /secret table layout/);
+  } finally {
+    db.query = original;
+    console.error = originalConsoleError;
+  }
 });
 
-test('UC-3: Multi-Factor Authentication (MFA Setup, Verify & Login Challenge)', async () => {
-  // Login to obtain JWT
-  const login = await callRouter({
+test('Router: requests are cut off with 504 before the Lambda timeout', async () => {
+  await resetDatabase();
+  const claims = await registerProfile('slow_user');
+  const db = getDatabase();
+  const original = db.query.bind(db);
+  db.query = () => new Promise(() => {});
+  try {
+    const res = await callRouter({
+      method: 'GET',
+      path: '/api/v1/users/me',
+      claims,
+      context: { getRemainingTimeInMillis: () => 600 },
+    });
+    assert.equal(res.statusCode, 504);
+    assert.equal(res.data.error, 'TIMEOUT');
+  } finally {
+    db.query = original;
+  }
+});
+
+test('UC-1: KDF salt lookup and vault profile creation (Cognito sub as user_id)', async () => {
+  await resetDatabase();
+
+  // Salt for an unknown identifier is deterministic (used for sign-up, prevents enumeration)
+  const s1 = await callRouter({ method: 'GET', path: '/api/v1/auth/salt', queryStringParameters: { identifier: 'Alice' } });
+  const s2 = await callRouter({ method: 'GET', path: '/api/v1/auth/salt', queryStringParameters: { identifier: 'alice' } });
+  assert.equal(s1.statusCode, 200);
+  assert.equal(s1.data.data.salt, s2.data.data.salt);
+  assert.ok(Buffer.from(s1.data.data.salt, 'base64').length >= 16);
+
+  const missing = await callRouter({ method: 'GET', path: '/api/v1/auth/salt' });
+  assert.equal(missing.statusCode, 400);
+
+  // Profile does not exist yet
+  const alice = claimsFor('alice');
+  const before = await callRouter({ method: 'GET', path: '/api/v1/users/me', claims: alice });
+  assert.equal(before.statusCode, 404);
+  assert.equal(before.data.error, 'PROFILE_NOT_FOUND');
+
+  // Validation
+  const invalid = await callRouter({ method: 'POST', path: '/api/v1/users/me', claims: alice, body: { full_name: 'Alice' } });
+  assert.equal(invalid.statusCode, 400);
+  assert.equal(invalid.data.error, 'VALIDATION_FAILED');
+  assert.ok(invalid.data.details.some((d) => d.field === 'encrypted_vault_key'));
+
+  // Create profile; role comes from Cognito groups, never from the request body
+  const created = await callRouter({
     method: 'POST',
-    path: '/api/v1/auth/login',
-    body: { email: 'alice@securevault.io', authHash: TEST_AUTH_HASH },
+    path: '/api/v1/users/me',
+    claims: alice,
+    body: {
+      full_name: 'Alice Smith',
+      role: 'admin',
+      kdf_salt: s1.data.data.salt,
+      public_key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA_ALICE',
+      encrypted_private_key: TEST_ENCRYPTED_PAYLOAD,
+      encrypted_vault_key: TEST_ENCRYPTED_PAYLOAD,
+    },
   });
-  const token = login.data.token;
+  assert.equal(created.statusCode, 201);
+  assert.equal(created.data.data.user_id, alice.sub);
+  assert.equal(created.data.data.role, 'user');
+  assert.equal(created.data.data.encrypted_vault_key.ciphertext, TEST_ENCRYPTED_PAYLOAD.ciphertext);
 
-  // 1. MFA Setup
-  const setupRes = await callRouter({
+  // Duplicate -> 409
+  const dup = await callRouter({
     method: 'POST',
-    path: '/api/v1/auth/mfa/setup',
-    headers: { authorization: `Bearer ${token}` },
+    path: '/api/v1/users/me',
+    claims: alice,
+    body: {
+      full_name: 'Alice Smith',
+      kdf_salt: TEST_SALT,
+      public_key: 'pk',
+      encrypted_private_key: TEST_ENCRYPTED_PAYLOAD,
+      encrypted_vault_key: TEST_ENCRYPTED_PAYLOAD,
+    },
   });
-  assert.equal(setupRes.statusCode, 200);
-  assert.ok(setupRes.data.data.secret);
-  assert.ok(setupRes.data.data.otpauth_url.includes('otpauth://totp/'));
+  assert.equal(dup.statusCode, 409);
 
-  const mfaSecret = setupRes.data.data.secret;
+  // A default personal vault was created
+  const vaults = await callRouter({ method: 'GET', path: '/api/v1/vaults', claims: alice });
+  assert.equal(vaults.statusCode, 200);
 
-  // 2. Verify with wrong code returns 400
-  const wrongCode = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/mfa/verify',
-    headers: { authorization: `Bearer ${token}` },
-    body: { token: '000000' },
+  // Salt lookup now returns the stored salt, by username or email
+  const byEmail = await callRouter({ method: 'GET', path: '/api/v1/auth/salt', queryStringParameters: { identifier: 'alice@securevault.io' } });
+  assert.equal(byEmail.data.data.salt, s1.data.data.salt);
+
+  // GET /users/me; admin role follows the Cognito group
+  const me = await callRouter({ method: 'GET', path: '/api/v1/users/me', claims: { ...alice, 'cognito:groups': 'admin' } });
+  assert.equal(me.statusCode, 200);
+  assert.equal(me.data.data.role, 'admin');
+  assert.equal(me.data.data.kdf_salt, s1.data.data.salt);
+});
+
+test('UC-2/UC-3/UC-7 support: session log, MFA flag and key rotation', async () => {
+  await resetDatabase();
+  const bob = await registerProfile('bob');
+
+  const session = await callRouter({ method: 'POST', path: '/api/v1/auth/session', claims: bob });
+  assert.equal(session.statusCode, 200);
+
+  const mfa = await callRouter({ method: 'PATCH', path: '/api/v1/users/me', claims: bob, body: { mfa_enabled: true } });
+  assert.equal(mfa.statusCode, 200);
+  assert.equal(mfa.data.data.mfa_enabled, true);
+
+  const badMfa = await callRouter({ method: 'PATCH', path: '/api/v1/users/me', claims: bob, body: { mfa_enabled: 'yes' } });
+  assert.equal(badMfa.statusCode, 400);
+
+  const rotated = { ...TEST_ENCRYPTED_PAYLOAD, ciphertext: 'rotatedVaultKeyCiphertext==' };
+  const keys = await callRouter({
+    method: 'PUT',
+    path: '/api/v1/users/me/keys',
+    claims: bob,
+    body: { kdf_salt: 'AAAAAAAAAAAAAAAAAAAAAA==', encrypted_vault_key: rotated, encrypted_private_key: TEST_ENCRYPTED_PAYLOAD, reason: 'change' },
   });
-  assert.equal(wrongCode.statusCode, 400);
+  assert.equal(keys.statusCode, 200);
+  assert.equal(keys.data.data.encrypted_vault_key.ciphertext, 'rotatedVaultKeyCiphertext==');
+  assert.equal(keys.data.data.kdf_salt, 'AAAAAAAAAAAAAAAAAAAAAA==');
 
-  // 3. Verify with valid TOTP code enables MFA
-  const validOtp = generateTotp(mfaSecret);
-  const verifyRes = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/mfa/verify',
-    headers: { authorization: `Bearer ${token}` },
-    body: { token: validOtp },
-  });
-  assert.equal(verifyRes.statusCode, 200);
-  assert.equal(verifyRes.data.status, 'success');
-
-  // 4. Next login requires MFA challenge
-  const mfaLogin = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: { email: 'alice@securevault.io', authHash: TEST_AUTH_HASH },
-  });
-  assert.equal(mfaLogin.statusCode, 200);
-  assert.equal(mfaLogin.data.status, 'mfa_required');
-  assert.ok(mfaLogin.data.mfa_session_token);
-
-  const sessionToken = mfaLogin.data.mfa_session_token;
-
-  // 5. Validate login challenge with invalid code returns 400
-  const badChallenge = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/mfa/validate',
-    body: { mfa_session_token: sessionToken, token: '999999' },
-  });
-  assert.equal(badChallenge.statusCode, 400);
-
-  // 6. Validate login challenge with valid code returns full JWT
-  const newValidOtp = generateTotp(mfaSecret);
-  const goodChallenge = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/mfa/validate',
-    body: { mfa_session_token: sessionToken, token: newValidOtp },
-  });
-  assert.equal(goodChallenge.statusCode, 200);
-  assert.ok(goodChallenge.data.token);
-  assert.equal(goodChallenge.data.user.mfa_enabled, true);
+  const activity = await callRouter({ method: 'GET', path: '/api/v1/user/activity-logs', claims: bob });
+  const actions = activity.data.data.map((a) => a.action_type);
+  assert.ok(actions.includes('LOGIN_SUCCESS'));
+  assert.ok(actions.includes('MFA_ENABLED'));
 });
 
 test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', async () => {
-  // Register Bob to have clean vault
-  const regBob = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/register',
-    body: {
-      email: 'bob@securevault.io',
-      username: 'bob',
-      fullName: 'Bob Builder',
-      authHash: TEST_AUTH_HASH,
-      authSalt: TEST_SALT,
-    },
-  });
-  const defaultVaultId = regBob.data.data.default_vault_id;
-
-  const loginBob = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: { email: 'bob@securevault.io', authHash: TEST_AUTH_HASH },
-  });
-  const bobToken = loginBob.data.token;
-  const bobHeaders = { authorization: `Bearer ${bobToken}` };
+  await resetDatabase();
+  const bobClaims = await registerProfile('bob');
+  const vaultsRes = await callRouter({ method: 'GET', path: '/api/v1/vaults', claims: bobClaims });
+  const defaultVaultId = vaultsRes.data.data[0].vault_id;
 
   // --- UC-4: Add Item ---
   // 1. Reject unencrypted / plaintext payload
   const rejectUnencrypted = await callRouter({
     method: 'POST',
     path: `/api/v1/vaults/${defaultVaultId}/items`,
-    headers: bobHeaders,
+    claims: bobClaims,
     body: {
       title: 'Leak Attempt',
       password: 'plainTextPassword123', // Server must reject!
@@ -673,7 +644,7 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   const addItemRes = await callRouter({
     method: 'POST',
     path: `/api/v1/vaults/${defaultVaultId}/items`,
-    headers: bobHeaders,
+    claims: bobClaims,
     body: {
       item_type: 'login',
       encrypted_data: TEST_ENCRYPTED_PAYLOAD,
@@ -696,7 +667,7 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   const listRes = await callRouter({
     method: 'GET',
     path: `/api/v1/vaults/${defaultVaultId}/items`,
-    headers: bobHeaders,
+    claims: bobClaims,
   });
   assert.equal(listRes.statusCode, 200);
   assert.equal(listRes.data.data.length, 1);
@@ -713,7 +684,7 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   const updateRes = await callRouter({
     method: 'PUT',
     path: `/api/v1/vaults/${defaultVaultId}/items/${itemId}`,
-    headers: bobHeaders,
+    claims: bobClaims,
     body: {
       version: 1, // Current version
       encrypted_data: updatedPayload,
@@ -731,7 +702,7 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   const conflictRes = await callRouter({
     method: 'PUT',
     path: `/api/v1/vaults/${defaultVaultId}/items/${itemId}`,
-    headers: bobHeaders,
+    claims: bobClaims,
     body: {
       version: 1, // Stale version! (Now it's 2)
       encrypted_data: updatedPayload,
@@ -743,7 +714,7 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   const historyRes = await callRouter({
     method: 'GET',
     path: `/api/v1/vaults/${defaultVaultId}/items/${itemId}/history`,
-    headers: bobHeaders,
+    claims: bobClaims,
   });
   assert.equal(historyRes.statusCode, 200);
   assert.equal(historyRes.data.history.length, 1);
@@ -757,7 +728,7 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   const rollbackRes = await callRouter({
     method: 'POST',
     path: `/api/v1/vaults/${defaultVaultId}/items/${itemId}/rollback`,
-    headers: bobHeaders,
+    claims: bobClaims,
     body: { version: 1 },
   });
   assert.equal(rollbackRes.statusCode, 200);
@@ -767,7 +738,7 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   const getItem = await callRouter({
     method: 'GET',
     path: `/api/v1/vaults/${defaultVaultId}/items/${itemId}`,
-    headers: bobHeaders,
+    claims: bobClaims,
   });
   assert.equal(
     getItem.data.data.encrypted_data.ciphertext,
@@ -778,7 +749,7 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   const deleteRes = await callRouter({
     method: 'DELETE',
     path: `/api/v1/vaults/${defaultVaultId}/items/${itemId}`,
-    headers: bobHeaders,
+    claims: bobClaims,
   });
   assert.equal(deleteRes.statusCode, 200);
   assert.equal(deleteRes.data.data.item_id, itemId);
@@ -787,106 +758,21 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   const afterDelete = await callRouter({
     method: 'GET',
     path: `/api/v1/vaults/${defaultVaultId}/items/${itemId}`,
-    headers: bobHeaders,
+    claims: bobClaims,
   });
   assert.equal(afterDelete.statusCode, 404);
 });
 
-test('UC-7: Password Reset Flow (OTP & New Auth Hash)', async () => {
-  // 1. Request password reset
-  const reqRes = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/reset-password/request',
-    body: { email: 'bob@securevault.io' },
-  });
-  assert.equal(reqRes.statusCode, 200);
-  const otpCode = reqRes.data.data?.debug_otp;
-  assert.ok(otpCode);
-
-  // 2. Confirm reset with wrong OTP returns 400
-  const wrongOtp = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/reset-password/confirm',
-    body: {
-      email: 'bob@securevault.io',
-      otpCode: '000000',
-      newAuthHash: 'b591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e',
-      newAuthSalt: 'newSalt1234567890==',
-    },
-  });
-  assert.equal(wrongOtp.statusCode, 400);
-
-  // 3. Confirm reset with valid OTP
-  const NEW_HASH = '111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000';
-  const NEW_SALT = 'freshNewSaltBytes32==';
-  const confirmRes = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/reset-password/confirm',
-    body: {
-      email: 'bob@securevault.io',
-      otpCode,
-      newAuthHash: NEW_HASH,
-      newAuthSalt: NEW_SALT,
-    },
-  });
-  assert.equal(confirmRes.statusCode, 200);
-  assert.equal(confirmRes.data.status, 'success');
-
-  // 4. Old password hash cannot login
-  const oldLogin = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: { email: 'bob@securevault.io', authHash: TEST_AUTH_HASH },
-  });
-  assert.equal(oldLogin.statusCode, 401);
-
-  // 5. New password hash logs in successfully
-  const newLogin = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: { email: 'bob@securevault.io', authHash: NEW_HASH },
-  });
-  assert.equal(newLogin.statusCode, 200);
-  assert.ok(newLogin.data.token);
-});
-
 test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
-  // Register Charlie (recipient)
-  const regCharlie = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/register',
-    body: {
-      email: 'charlie@securevault.io',
-      username: 'charlie',
-      fullName: 'Charlie Delta',
-      authHash: TEST_AUTH_HASH,
-      authSalt: TEST_SALT,
-      publicKey: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA_CHARLIE_PUBLIC_KEY...',
-    },
-  });
-
-  const loginBob = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: {
-      email: 'bob@securevault.io',
-      authHash: '111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000',
-    },
-  });
-  const bobHeaders = { authorization: `Bearer ${loginBob.data.token}` };
-
-  const loginCharlie = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: { email: 'charlie@securevault.io', authHash: TEST_AUTH_HASH },
-  });
-  const charlieHeaders = { authorization: `Bearer ${loginCharlie.data.token}` };
+  await resetDatabase();
+  const bobClaims = await registerProfile('bob');
+  const charlieClaims = await registerProfile('charlie');
 
   // 1. Bob creates an item to share
   const bobItem = await callRouter({
     method: 'POST',
     path: '/api/v1/items',
-    headers: bobHeaders,
+    claims: bobClaims,
     body: {
       encrypted_data: TEST_ENCRYPTED_PAYLOAD,
       metadata: { title: 'Shared Server Key' },
@@ -898,7 +784,7 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
   const lookupRes = await callRouter({
     method: 'GET',
     path: '/api/v1/users/lookup',
-    headers: bobHeaders,
+    claims: bobClaims,
     queryStringParameters: { email: 'charlie@securevault.io' },
   });
   assert.equal(lookupRes.statusCode, 200);
@@ -908,7 +794,7 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
   const selfShare = await callRouter({
     method: 'POST',
     path: `/api/v1/items/${itemId}/share`,
-    headers: bobHeaders,
+    claims: bobClaims,
     body: {
       recipient_email: 'bob@securevault.io',
       permission_level: 'read',
@@ -921,7 +807,7 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
   const shareRes = await callRouter({
     method: 'POST',
     path: `/api/v1/items/${itemId}/share`,
-    headers: bobHeaders,
+    claims: bobClaims,
     body: {
       recipient_email: 'charlie@securevault.io',
       permission_level: 'read',
@@ -938,7 +824,7 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
   const sharedList = await callRouter({
     method: 'GET',
     path: '/api/v1/shared-items',
-    headers: charlieHeaders,
+    claims: charlieClaims,
   });
   assert.equal(sharedList.statusCode, 200);
   assert.equal(sharedList.data.data.length, 1);
@@ -949,7 +835,7 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
   const charlieGet = await callRouter({
     method: 'GET',
     path: `/api/v1/items/${itemId}`,
-    headers: charlieHeaders,
+    claims: charlieClaims,
   });
   assert.equal(charlieGet.statusCode, 200);
   assert.ok(charlieGet.data.data.share_info);
@@ -958,7 +844,7 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
   const charlieUpdate = await callRouter({
     method: 'PUT',
     path: `/api/v1/items/${itemId}`,
-    headers: charlieHeaders,
+    claims: charlieClaims,
     body: { metadata: { title: 'Hacked by Charlie' } },
   });
   assert.equal(charlieUpdate.statusCode, 403);
@@ -966,8 +852,8 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
   // 8. Bob revokes share
   const revokeRes = await callRouter({
     method: 'DELETE',
-    path: `/api/v1/vaults/any/items/${itemId}/share/${regCharlie.data.data.user_id}`,
-    headers: bobHeaders,
+    path: `/api/v1/vaults/any/items/${itemId}/share/${charlieClaims.sub}`,
+    claims: bobClaims,
   });
   assert.equal(revokeRes.statusCode, 200);
 
@@ -975,47 +861,21 @@ test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
   const charlieDenied = await callRouter({
     method: 'GET',
     path: `/api/v1/items/${itemId}`,
-    headers: charlieHeaders,
+    claims: charlieClaims,
   });
   assert.equal(charlieDenied.statusCode, 403);
 });
 
 test('UC-8, UC-9, UC-12, UC-13: Security Notifications, Audit, Activity & Monitoring', async () => {
-  // Register Admin User
-  const regAdmin = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/register',
-    body: {
-      email: 'admin@securevault.io',
-      username: 'admin',
-      fullName: 'Super Admin',
-      authHash: TEST_AUTH_HASH,
-      authSalt: TEST_SALT,
-      role: 'admin',
-    },
-  });
-  assert.equal(regAdmin.statusCode, 201);
-
-  const loginAdmin = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: { email: 'admin@securevault.io', authHash: TEST_AUTH_HASH },
-  });
-  const adminHeaders = { authorization: `Bearer ${loginAdmin.data.token}` };
-
-  const loginRegular = await callRouter({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: { email: 'charlie@securevault.io', authHash: TEST_AUTH_HASH },
-  });
-  const regularHeaders = { authorization: `Bearer ${loginRegular.data.token}` };
+  const adminClaims = await registerProfile('admin', { admin: true });
+  const regularClaims = claimsFor('charlie');
 
   // --- UC-8: Security Notifications ---
   // Regular user is rejected with 403
   const userSecurityForbidden = await callRouter({
     method: 'GET',
     path: '/api/v1/admin/security/notifications',
-    headers: regularHeaders,
+    claims: regularClaims,
   });
   assert.equal(userSecurityForbidden.statusCode, 403);
 
@@ -1023,7 +883,7 @@ test('UC-8, UC-9, UC-12, UC-13: Security Notifications, Audit, Activity & Monito
   const simulateRes = await callRouter({
     method: 'POST',
     path: '/api/v1/admin/security/simulate-event',
-    headers: adminHeaders,
+    claims: adminClaims,
     body: {
       severity: 'CRITICAL',
       type: 'GuardDuty:PortProbeUnusual',
@@ -1036,7 +896,7 @@ test('UC-8, UC-9, UC-12, UC-13: Security Notifications, Audit, Activity & Monito
   const adminNotifications = await callRouter({
     method: 'GET',
     path: '/api/v1/admin/security/notifications',
-    headers: adminHeaders,
+    claims: adminClaims,
   });
   assert.equal(adminNotifications.statusCode, 200);
   assert.ok(adminNotifications.data.data.length >= 1);
@@ -1046,7 +906,7 @@ test('UC-8, UC-9, UC-12, UC-13: Security Notifications, Audit, Activity & Monito
   const userAuditForbidden = await callRouter({
     method: 'GET',
     path: '/api/v1/admin/audit-logs',
-    headers: regularHeaders,
+    claims: regularClaims,
   });
   assert.equal(userAuditForbidden.statusCode, 403);
 
@@ -1054,7 +914,7 @@ test('UC-8, UC-9, UC-12, UC-13: Security Notifications, Audit, Activity & Monito
   const auditJson = await callRouter({
     method: 'GET',
     path: '/api/v1/admin/audit-logs',
-    headers: adminHeaders,
+    claims: adminClaims,
   });
   assert.equal(auditJson.statusCode, 200);
   assert.ok(auditJson.data.data.length > 0);
@@ -1064,7 +924,7 @@ test('UC-8, UC-9, UC-12, UC-13: Security Notifications, Audit, Activity & Monito
   const auditCsv = await callRouter({
     method: 'GET',
     path: '/api/v1/admin/audit-logs',
-    headers: adminHeaders,
+    claims: adminClaims,
     queryStringParameters: { format: 'csv' },
   });
   assert.equal(auditCsv.statusCode, 200);
@@ -1075,7 +935,7 @@ test('UC-8, UC-9, UC-12, UC-13: Security Notifications, Audit, Activity & Monito
   const activityRes = await callRouter({
     method: 'GET',
     path: '/api/v1/user/activity-logs',
-    headers: regularHeaders,
+    claims: regularClaims,
   });
   assert.equal(activityRes.statusCode, 200);
   assert.ok(Array.isArray(activityRes.data.data));
@@ -1091,7 +951,7 @@ test('UC-8, UC-9, UC-12, UC-13: Security Notifications, Audit, Activity & Monito
   const metricsRes = await callRouter({
     method: 'GET',
     path: '/api/v1/admin/monitoring/metrics',
-    headers: adminHeaders,
+    claims: adminClaims,
   });
   assert.equal(metricsRes.statusCode, 200);
   assert.equal(metricsRes.data.metrics.system_health, 'HEALTHY');
@@ -1100,6 +960,8 @@ test('UC-8, UC-9, UC-12, UC-13: Security Notifications, Audit, Activity & Monito
 });
 
 test('Local Simulation HTTP Server: End-to-End Live HTTP Network Parity', async () => {
+  await resetDatabase();
+  resetLocalAuthStore();
   // Start server on ephemeral port (port 0)
   const sim = await startLocalServer(0);
   const baseUrl = `http://127.0.0.1:${sim.port}`;
@@ -1112,47 +974,39 @@ test('Local Simulation HTTP Server: End-to-End Live HTTP Network Parity', async 
     assert.equal(dataHealth.status, 'healthy');
     assert.equal(dataHealth.database, 'connected');
 
-    // 2. Live registration over HTTP
-    const regRes = await fetch(`${baseUrl}/api/v1/auth/register`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        email: 'network_test@securevault.io',
-        username: 'netuser',
-        fullName: 'Network User',
-        authHash: TEST_AUTH_HASH,
-        authSalt: TEST_SALT,
-      }),
-    });
-    assert.equal(regRes.status, 201);
-    const regData = await regRes.json();
-    assert.equal(regData.status, 'success');
+    // 2. Requests without a Cognito ID token are rejected like the API Gateway authorizer does
+    const anonymous = await fetch(`${baseUrl}/api/v1/items`);
+    assert.equal(anonymous.status, 401);
 
-    // 3. Live login over HTTP
-    const loginRes = await fetch(`${baseUrl}/api/v1/auth/login`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        email: 'network_test@securevault.io',
-        authHash: TEST_AUTH_HASH,
-      }),
-    });
-    assert.equal(loginRes.status, 200);
-    const loginData = await loginRes.json();
-    assert.ok(loginData.token);
+    // 3. Local Cognito: sign-up -> confirm -> sign-in -> ID token
+    const post = (path, body, token) =>
+      fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(body),
+      });
+    const signUp = await (await post('/local-auth/sign-up', { username: 'netuser', email: 'network_test@securevault.io', password: 'Aa1!local-password' })).json();
+    assert.equal(signUp.nextStep, 'CONFIRM_SIGN_UP');
+    const confirm = await post('/local-auth/confirm-sign-up', { username: 'netuser', code: signUp.devCode });
+    assert.equal(confirm.status, 200);
+    const signIn = await (await post('/local-auth/sign-in', { username: 'network_test@securevault.io', password: 'Aa1!local-password' })).json();
+    assert.equal(signIn.nextStep, 'DONE');
+    const token = signIn.idToken;
 
-    // 4. Live vault item create over HTTP
-    const itemRes = await fetch(`${baseUrl}/api/v1/items`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${loginData.token}`,
+    // 4. Create vault profile and an item through the simulated API Gateway
+    const profile = await post(
+      '/api/v1/users/me',
+      {
+        full_name: 'Network User',
+        kdf_salt: TEST_SALT,
+        public_key: 'pk',
+        encrypted_private_key: TEST_ENCRYPTED_PAYLOAD,
+        encrypted_vault_key: TEST_ENCRYPTED_PAYLOAD,
       },
-      body: JSON.stringify({
-        encrypted_data: TEST_ENCRYPTED_PAYLOAD,
-        metadata: { title: 'Network Vault Item' },
-      }),
-    });
+      token
+    );
+    assert.equal(profile.status, 201);
+    const itemRes = await post('/api/v1/items', { encrypted_data: TEST_ENCRYPTED_PAYLOAD, metadata: { title: 'Network Vault Item' } }, token);
     assert.equal(itemRes.status, 201);
     const itemData = await itemRes.json();
     assert.ok(itemData.data.item_id);

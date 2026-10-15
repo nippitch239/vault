@@ -1,20 +1,19 @@
 /**
- * Secure Vault Cloud — Dual-Engine Database Adapter (IDatabase)
+ * Secure Vault Cloud — Dual-Engine Database Adapter
  *
- * Implements:
- * 1. Local Simulation Engine: In-memory node:sqlite (DatabaseSync from Node 22 native stdlib)
- *    with automatic JSONB translation (->> to json_extract) and zero external dependencies.
- * 2. Production Engine: PostgreSQL driver connection pooling (pg.Pool) for Amazon RDS.
- * 3. Auto-initialization of schema tables from schema.sql on startup.
- *
- * Ponytail minimalism: Native Node 22 stdlib first, zero external database dependencies for local dev.
+ * 1. Production (AWS Lambda -> RDS PostgreSQL): one pg.Pool per Lambda container, created
+ *    lazily in module scope and reused by every warm invocation. Credentials come from
+ *    Secrets Manager (DB_SECRET_ARN); TLS is verified against the RDS CA bundle that the
+ *    Lambda Node.js runtime ships (NODE_EXTRA_CA_CERTS=/var/runtime/ca-cert.pem).
+ * 2. Local / tests: node:sqlite (Node >= 22.13) with JSONB / placeholder translation.
+ *    node:sqlite is imported lazily so it is never loaded inside Lambda.
  */
 
-import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getSecretJson, clearSecretCache } from '../config/secrets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,6 +26,7 @@ const JSON_COLUMNS = new Set([
   'encrypted_private_key',
   'encrypted_key_for_recipient',
   'encryptedKeyForRecipient',
+  'encrypted_vault_key',
   'details',
 ]);
 
@@ -122,185 +122,248 @@ export function normalizeSqliteRow(row) {
 }
 
 /**
- * SQLite Local In-Memory Database Implementation
+ * SQLite database for local development and tests.
  */
 export class SqliteDatabase {
   constructor(location = ':memory:') {
     this.type = 'sqlite';
     this.location = location;
-    this.db = new DatabaseSync(location);
-
-    // Register PostgreSQL compatibility functions
-    this.db.function('gen_random_uuid', () => crypto.randomUUID());
-
-    // Enable foreign keys
-    this.db.exec('PRAGMA foreign_keys = ON;');
+    this.db = null;
+    this.ready = this.#open();
   }
 
-  /**
-   * Execute parameterized query
-   * @param {string} sql
-   * @param {any[]} params
-   * @returns {Promise<{ rows: any[], rowCount: number }>}
-   */
+  async #open() {
+    const { DatabaseSync } = await import('node:sqlite');
+    this.db = new DatabaseSync(this.location);
+    this.db.function('gen_random_uuid', () => crypto.randomUUID());
+    this.db.exec('PRAGMA foreign_keys = ON;');
+    this.db.exec(pgToSqliteSchema(readSchema()));
+  }
+
   async query(sql, params = []) {
+    await this.ready;
     const { sql: translatedSql, params: normalizedParams } = translateQueryForSqlite(sql, params);
 
-    // Check if query produces a result set (SELECT, WITH ... SELECT, or has RETURNING)
     const cleanedSql = translatedSql.replace(/^(\s*(--[^\n]*\r?\n|\/\*[\s\S]*?\*\/))*/g, '');
     const isSelect = /^\s*(?:SELECT|WITH)\b/i.test(cleanedSql);
     const hasReturning = /\bRETURNING\b/i.test(translatedSql);
 
     try {
       const stmt = this.db.prepare(translatedSql);
-
       if (isSelect || hasReturning) {
-        const rawRows = stmt.all(...normalizedParams);
-        const rows = rawRows.map(normalizeSqliteRow);
-        return {
-          rows,
-          rowCount: rows.length,
-        };
-      } else {
-        const result = stmt.run(...normalizedParams);
-        return {
-          rows: [],
-          rowCount: result.changes ?? 0,
-          lastInsertRowid: result.lastInsertRowid,
-        };
+        const rows = stmt.all(...normalizedParams).map(normalizeSqliteRow);
+        return { rows, rowCount: rows.length };
       }
+      const result = stmt.run(...normalizedParams);
+      return { rows: [], rowCount: result.changes ?? 0 };
     } catch (err) {
-      // Enhance error message with query context for debugging
+      // Keep the SQL for local debugging; the router never sends error messages to clients.
       const error = new Error(`SQLite Query Error: ${err.message}\nSQL: ${translatedSql}`);
       error.originalError = err;
       error.code = err.code;
+      error.isUniqueViolation = /UNIQUE constraint failed/i.test(err.message);
+      error.isForeignKeyViolation = /FOREIGN KEY constraint failed/i.test(err.message);
       throw error;
     }
   }
 
   /**
-   * Execute raw SQL string directly (e.g. DDL schema)
-   * @param {string} ddlSql
+   * Runs fn inside BEGIN/COMMIT. node:sqlite has a single connection, so this is only
+   * meant for local development / tests.
    */
+  async transaction(fn) {
+    await this.ready;
+    this.db.exec('BEGIN');
+    try {
+      const result = await fn(this);
+      this.db.exec('COMMIT');
+      return result;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
   async exec(ddlSql) {
+    await this.ready;
     this.db.exec(ddlSql);
   }
 
-  /**
-   * Close database connection
-   */
   async close() {
+    await this.ready;
     this.db.close();
   }
 }
 
 /**
- * PostgreSQL Production Database Implementation (RDS)
+ * Resolves pg.Pool options. Order: DB_SECRET_ARN (Secrets Manager) > DATABASE_URL.
+ */
+export async function resolvePgConfig() {
+  const ssl = process.env.DB_SSL === 'false' ? undefined : { rejectUnauthorized: true };
+  const common = {
+    max: Number(process.env.DB_POOL_MAX || 2),
+    idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS || 10000),
+    connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000),
+    statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS || 8000),
+    query_timeout: Number(process.env.DB_QUERY_TIMEOUT_MS || 9000),
+    ssl,
+  };
+
+  if (process.env.DB_SECRET_ARN) {
+    const secret = await getSecretJson(process.env.DB_SECRET_ARN);
+    return {
+      ...common,
+      host: process.env.DB_HOST || secret.host,
+      port: Number(process.env.DB_PORT || secret.port || 5432),
+      database: process.env.DB_NAME || secret.dbname || 'securevault',
+      user: secret.username,
+      password: secret.password,
+    };
+  }
+  if (process.env.DATABASE_URL) {
+    return { ...common, connectionString: process.env.DATABASE_URL };
+  }
+  throw new Error('Database is not configured: set DB_SECRET_ARN (+ DB_HOST) or DATABASE_URL');
+}
+
+const PG_AUTH_FAILED = '28P01';
+
+/**
+ * PostgreSQL (Amazon RDS) implementation.
  */
 export class PostgresDatabase {
   constructor(options = {}) {
     this.type = 'postgres';
     this.options = options;
-    this.pool = null;
+    this.poolPromise = null;
   }
 
-  async initPool() {
-    if (!this.pool) {
-      const pgModule = await import('pg');
-      const { Pool } = pgModule.default || pgModule;
-      this.pool = new Pool({
-        connectionString: this.options.connectionString || process.env.DATABASE_URL,
-        max: this.options.max || 2, // Serverless concurrency limit
-        idleTimeoutMillis: 15000,
-        connectionTimeoutMillis: 3000,
-        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+  async getPool() {
+    if (!this.poolPromise) {
+      this.poolPromise = (async () => {
+        const pgModule = await import('pg');
+        const { Pool } = pgModule.default || pgModule;
+        const pool = new Pool({ ...(await resolvePgConfig()), ...this.options });
+        // An idle client erroring (e.g. RDS failover) must not crash the container.
+        pool.on('error', (err) => console.error(JSON.stringify({ level: 'error', msg: 'pg pool error', error: err.message })));
+        return pool;
+      })().catch((err) => {
+        this.poolPromise = null;
+        throw err;
       });
     }
-    return this.pool;
+    return this.poolPromise;
+  }
+
+  async #resetOnAuthFailure(err) {
+    if (err?.code === PG_AUTH_FAILED) {
+      clearSecretCache();
+      const pool = await this.poolPromise?.catch(() => null);
+      this.poolPromise = null;
+      await pool?.end().catch(() => {});
+    }
+  }
+
+  static #mapError(err) {
+    err.isUniqueViolation = err.code === '23505';
+    err.isForeignKeyViolation = err.code === '23503';
+    return err;
   }
 
   async query(sql, params = []) {
-    const pool = await this.initPool();
-    const result = await pool.query(sql, params);
-    return {
-      rows: result.rows,
-      rowCount: result.rowCount ?? result.rows.length,
+    const pool = await this.getPool();
+    try {
+      const result = await pool.query(sql, params);
+      return { rows: result.rows, rowCount: result.rowCount ?? result.rows.length };
+    } catch (err) {
+      await this.#resetOnAuthFailure(err);
+      throw PostgresDatabase.#mapError(err);
+    }
+  }
+
+  async transaction(fn) {
+    const pool = await this.getPool();
+    const client = await pool.connect();
+    const tx = {
+      type: 'postgres',
+      query: async (sql, params = []) => {
+        try {
+          const result = await client.query(sql, params);
+          return { rows: result.rows, rowCount: result.rowCount ?? result.rows.length };
+        } catch (err) {
+          throw PostgresDatabase.#mapError(err);
+        }
+      },
     };
+    try {
+      await client.query('BEGIN');
+      const result = await fn(tx);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async exec(ddlSql) {
-    const pool = await this.initPool();
+    const pool = await this.getPool();
     await pool.query(ddlSql);
   }
 
   async close() {
-    if (this.pool) {
-      await this.pool.end();
-      this.pool = null;
-    }
+    const pool = await this.poolPromise?.catch(() => null);
+    this.poolPromise = null;
+    await pool?.end();
   }
 }
 
+export function readSchema() {
+  return fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+}
+
 /**
- * Initializes database schema using schema.sql
- * @param {SqliteDatabase|PostgresDatabase} database
+ * Applies schema.sql (idempotent: CREATE ... IF NOT EXISTS).
  */
 export async function initSchema(database) {
-  const schemaPath = path.join(__dirname, 'schema.sql');
-  const ddl = fs.readFileSync(schemaPath, 'utf8');
-
   if (database.type === 'sqlite') {
-    const sqliteDdl = pgToSqliteSchema(ddl);
-    // Split and execute statements or exec entire block
-    database.exec(sqliteDdl);
-  } else {
-    await database.exec(ddl);
+    await database.ready;
+    return;
   }
+  await database.exec(readSchema());
 }
 
-/**
- * Factory to create database instance
- * @param {object} config
- * @returns {SqliteDatabase|PostgresDatabase}
- */
+function useSqlite() {
+  return !process.env.DB_SECRET_ARN && !process.env.DATABASE_URL;
+}
+
 export function createDatabase(config = {}) {
-  const engine = config.engine || (process.env.DATABASE_URL ? 'postgres' : 'sqlite');
+  const engine = config.engine || (useSqlite() ? 'sqlite' : 'postgres');
   if (engine === 'postgres') {
-    return new PostgresDatabase(config);
+    return new PostgresDatabase(config.pool);
   }
   const isTest =
     process.env.NODE_ENV === 'test' ||
     Boolean(process.env.NODE_TEST_CONTEXT) ||
     (process.execArgv && process.execArgv.includes('--test'));
-  const defaultLocation = isTest
-    ? ':memory:'
-    : DEFAULT_SQLITE_PATH;
-  const location = config.location || process.env.SQLITE_DB_PATH || defaultLocation;
+  const location = config.location || process.env.SQLITE_DB_PATH || (isTest ? ':memory:' : DEFAULT_SQLITE_PATH);
   return new SqliteDatabase(location);
 }
 
-// Global singleton instance for local server and Lambda
+// Module scope => one instance (and one pg pool) per Lambda container.
 let globalDbInstance = null;
 
-/**
- * Get or initialize global database instance
- * @param {object} [config]
- * @returns {SqliteDatabase|PostgresDatabase}
- */
 export function getDatabase(config = {}) {
   if (!globalDbInstance) {
     globalDbInstance = createDatabase(config);
-    // Auto-initialize schema for local SQLite instance
-    if (globalDbInstance.type === 'sqlite') {
-      initSchema(globalDbInstance);
-    }
   }
   return globalDbInstance;
 }
 
 /**
- * Resets global database instance (useful for clean test runs)
- * @param {object} [config]
+ * Closes and recreates the global instance (tests).
  */
 export async function resetDatabase(config = {}) {
   if (globalDbInstance) {
@@ -311,7 +374,9 @@ export async function resetDatabase(config = {}) {
     }
     globalDbInstance = null;
   }
-  return getDatabase(config);
+  const db = getDatabase(config);
+  if (db.ready) await db.ready;
+  return db;
 }
 
 export default getDatabase;

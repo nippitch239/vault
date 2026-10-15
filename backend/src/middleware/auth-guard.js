@@ -1,233 +1,70 @@
 /**
- * Secure Vault Cloud — Authentication & RBAC Middleware (Auth Guard)
+ * Secure Vault Cloud — Authentication & RBAC Middleware
  *
- * Implements:
- * 1. Lightweight HS256 JWT signing and verification using native node:crypto.
- * 2. Role-Based Access Control (RBAC: 'user' vs 'admin').
- * 3. Support for API Gateway v2 HTTP events with Bearer Authorization header or authorizer claims.
+ * Authentication is done by Amazon Cognito. API Gateway (REST API, Cognito User Pool
+ * authorizer) validates the ID token and forwards its claims in
+ * requestContext.authorizer.claims; the router normalizes them to
+ * requestContext.authorizer.jwt.claims. This module never verifies tokens itself — a
+ * request that reaches the Lambda without claims is rejected with 401.
  *
- * Ponytail minimalism: Pure native standard library node:crypto, zero external JWT libraries.
+ * Roles: membership of the Cognito group named by ADMIN_GROUP (default "admin") => 'admin'.
  */
 
-import crypto from 'node:crypto';
+import { unauthorized, forbidden } from '../http/response.js';
 
-// Secret key for JWT signing (defaults to environment or default secret)
-export const JWT_SECRET = process.env.JWT_SECRET || 'securevault-jwt-insecure-default-secret-key-32b';
+export const ADMIN_GROUP = process.env.COGNITO_ADMIN_GROUP || 'admin';
 
 /**
- * Encodes Buffer or string to Base64URL
- * @param {Buffer|string} input
- * @returns {string}
+ * Cognito group claims arrive as an array (HTTP API / local runner), a JSON-ish string
+ * "[admin users]" or a comma separated string "admin,users" (REST API authorizer).
  */
-export function toBase64Url(input) {
-  const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
-  return buf.toString('base64url');
+export function parseGroups(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map(String);
+  return String(raw)
+    .replace(/^\[|\]$/g, '')
+    .split(/[\s,]+/)
+    .map((g) => g.trim())
+    .filter(Boolean);
 }
 
-/**
- * Decodes Base64URL string to Buffer
- * @param {string} str
- * @returns {Buffer}
- */
-export function fromBase64Url(str) {
-  return Buffer.from(str, 'base64url');
+export function getClaims(event) {
+  const rc = event?.requestContext;
+  return rc?.authorizer?.jwt?.claims || rc?.authorizer?.claims || null;
 }
 
-/**
- * Signs a JWT payload with HS256
- * @param {object} payload
- * @param {string} [secret=JWT_SECRET]
- * @param {number} [expiresIn=3600] - Expiration time in seconds
- * @returns {string} - Complete JWT token
- */
-export function signJwt(payload, secret = JWT_SECRET, expiresIn = 3600) {
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const now = Math.floor(Date.now() / 1000);
-
-  const fullPayload = {
-    iss: 'securevault-api',
-    iat: now,
-    exp: now + expiresIn,
-    ...payload,
+export function userFromClaims(claims) {
+  const groups = parseGroups(claims['cognito:groups']);
+  return {
+    user_id: claims.sub,
+    email: claims.email ? String(claims.email).toLowerCase() : undefined,
+    email_verified: claims.email_verified === true || claims.email_verified === 'true',
+    username: claims['cognito:username'] || claims.username || claims.preferred_username,
+    full_name: claims.name,
+    role: groups.includes(ADMIN_GROUP) ? 'admin' : 'user',
+    groups,
   };
-
-  const encodedHeader = toBase64Url(JSON.stringify(header));
-  const encodedPayload = toBase64Url(JSON.stringify(fullPayload));
-  const data = `${encodedHeader}.${encodedPayload}`;
-
-  const signature = crypto
-    .createHmac('sha256', secret)
-    .update(data)
-    .digest('base64url');
-
-  return `${data}.${signature}`;
 }
 
 /**
- * Verifies a JWT token and returns its payload if valid
- * @param {string} token
- * @param {string} [secret=JWT_SECRET]
- * @returns {object} - Decoded payload
- * @throws {Error} - If token is invalid, tampered, or expired
- */
-export function verifyJwt(token, secret = JWT_SECRET) {
-  if (!token || typeof token !== 'string') {
-    throw new Error('MISSING_TOKEN: Token must be a non-empty string');
-  }
-
-  const parts = token.split('.');
-  if (parts.length !== 3) {
-    throw new Error('INVALID_TOKEN_FORMAT: JWT must contain 3 parts');
-  }
-
-  const [headerB64, payloadB64, signatureB64] = parts;
-  const data = `${headerB64}.${payloadB64}`;
-
-  // Verify HMAC signature in constant time
-  const expectedSignature = crypto
-    .createHmac('sha256', secret)
-    .update(data)
-    .digest('base64url');
-
-  const sigBuf = Buffer.from(signatureB64);
-  const expSigBuf = Buffer.from(expectedSignature);
-
-  if (sigBuf.length !== expSigBuf.length || !crypto.timingSafeEqual(sigBuf, expSigBuf)) {
-    throw new Error('INVALID_SIGNATURE: Token signature does not match');
-  }
-
-  // Parse header and payload
-  let payload;
-  try {
-    payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
-  } catch {
-    throw new Error('INVALID_PAYLOAD: Failed to parse token payload');
-  }
-
-  // Validate expiration
-  const now = Math.floor(Date.now() / 1000);
-  if (payload.exp && payload.exp < now) {
-    const err = new Error('TOKEN_EXPIRED: Token has expired');
-    err.code = 'TOKEN_EXPIRED';
-    throw err;
-  }
-
-  return payload;
-}
-
-/**
- * Extracts bearer token from event headers
- * @param {object} headers
- * @returns {string|null}
- */
-export function extractBearerToken(headers = {}) {
-  const authHeader = headers?.authorization || headers?.Authorization;
-  if (!authHeader || typeof authHeader !== 'string') {
-    return null;
-  }
-  const parts = authHeader.trim().split(/\s+/);
-  if (parts.length === 2 && parts[0].toLowerCase() === 'bearer') {
-    return parts[1];
-  }
-  return null;
-}
-
-/**
- * Middleware to authenticate requests and enforce RBAC
- * Supports API Gateway v2 event structure
- *
- * @param {object} event - API Gateway v2 HTTP event
- * @param {'user'|'admin'|'any'} [requiredRole='user']
+ * @param {object} event normalized API Gateway event
+ * @param {'user'|'admin'} [requiredRole='user']
  * @returns {{ user: object|null, errorResponse: object|null }}
  */
 export function authenticate(event, requiredRole = 'user') {
-  // Check if claims are already resolved by API Gateway authorizer
-  const claims = event?.requestContext?.authorizer?.jwt?.claims;
-  if (claims && claims.sub) {
-    const user = {
-      user_id: claims.sub,
-      email: claims.email,
-      username: claims.username,
-      role: claims.role || 'user',
-      mfa_verified: claims.mfa_verified === true || claims.mfa_verified === 'true',
-    };
-
-    if (requiredRole === 'admin' && user.role !== 'admin') {
-      return {
-        user: null,
-        errorResponse: {
-          statusCode: 403,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            status: 'fail',
-            error: 'FORBIDDEN',
-            message: 'Admin privileges required to access this resource',
-          }),
-        },
-      };
-    }
-
-    return { user, errorResponse: null };
+  const claims = getClaims(event);
+  if (!claims || !claims.sub) {
+    return { user: null, errorResponse: unauthorized('Missing or invalid Cognito credentials') };
+  }
+  if (claims.token_use && claims.token_use !== 'id') {
+    return { user: null, errorResponse: unauthorized('An ID token is required', 'INVALID_TOKEN_USE') };
   }
 
-  // Fallback to Bearer token verification from headers
-  const token = extractBearerToken(event?.headers);
-  if (!token) {
-    return {
-      user: null,
-      errorResponse: {
-        statusCode: 401,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          status: 'fail',
-          error: 'UNAUTHORIZED',
-          message: 'Missing or invalid Authorization header',
-        }),
-      },
-    };
+  const user = userFromClaims(claims);
+  if (requiredRole === 'admin' && user.role !== 'admin') {
+    return { user: null, errorResponse: forbidden('Admin privileges required to access this resource') };
   }
-
-  try {
-    const decoded = verifyJwt(token);
-    const user = {
-      user_id: decoded.sub,
-      email: decoded.email,
-      username: decoded.username,
-      role: decoded.role || 'user',
-      mfa_verified: decoded.mfa_verified ?? true,
-    };
-
-    if (requiredRole === 'admin' && user.role !== 'admin') {
-      return {
-        user: null,
-        errorResponse: {
-          statusCode: 403,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            status: 'fail',
-            error: 'FORBIDDEN',
-            message: 'Admin privileges required to access this resource',
-          }),
-        },
-      };
-    }
-
-    return { user, errorResponse: null };
-  } catch (err) {
-    const statusCode = err.code === 'TOKEN_EXPIRED' ? 401 : 401;
-    return {
-      user: null,
-      errorResponse: {
-        statusCode,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          status: 'fail',
-          error: err.code || 'INVALID_TOKEN',
-          message: err.message,
-        }),
-      },
-    };
-  }
+  return { user, errorResponse: null };
 }
 
 // ============================================================================

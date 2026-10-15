@@ -5,20 +5,23 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- 1. USERS TABLE
+-- 1. USERS TABLE (vault profile)
+-- Authentication (password, MFA, reset) lives in Amazon Cognito. user_id is the Cognito
+-- `sub`; this table only stores the zero-knowledge key material the client needs:
+--   kdf_salt              Argon2id salt for the master password
+--   encrypted_vault_key   random Vault Key wrapped (AES-256-GCM) with the client-side KEK
+--   encrypted_private_key RSA private key encrypted with the Vault Key
 CREATE TABLE IF NOT EXISTS users (
-    user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID PRIMARY KEY,
     email VARCHAR(255) NOT NULL,
     username VARCHAR(64) NOT NULL,
     full_name VARCHAR(128) NOT NULL,
-    auth_hash VARCHAR(255) NOT NULL,
-    auth_salt VARCHAR(128) NOT NULL,
+    kdf_salt VARCHAR(128) NOT NULL,
     role VARCHAR(32) NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
     mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-    mfa_secret VARCHAR(255) DEFAULT NULL,
-    mfa_type VARCHAR(32) DEFAULT 'totp' CHECK (mfa_type IN ('totp', 'sms')),
-    public_key TEXT DEFAULT NULL,
-    encrypted_private_key JSONB DEFAULT NULL,
+    public_key TEXT NOT NULL,
+    encrypted_private_key JSONB NOT NULL,
+    encrypted_vault_key JSONB NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'pending')),
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,

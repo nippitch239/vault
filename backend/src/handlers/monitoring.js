@@ -70,7 +70,7 @@ export async function healthHandler() {
  * Aggregated administrative metrics view
  */
 export async function getMonitoringMetricsHandler(event) {
-  const { user, errorResponse } = authenticate(event, 'admin');
+  const { errorResponse } = authenticate(event, 'admin');
   if (errorResponse) return errorResponse;
 
   const db = getDatabase();
