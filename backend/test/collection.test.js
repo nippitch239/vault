@@ -75,3 +75,45 @@ test('C1: a collection writer cannot attach (and then read) another user\'s vaul
   });
   assert.equal(ok.statusCode, 201);
 });
+
+test('C2: only collection admins can distribute wrapped keys, and only to members', async () => {
+  await resetDatabase();
+  const admin = await registerProfile('keyadmin');
+  const reader = await registerProfile('reader');
+  const outsider = await registerProfile('outsider');
+  const collectionId = await createCollection(admin);
+  await grant(admin, collectionId, reader.sub, 'read');
+
+  const attackerKey = { ...WRAPPED, ciphertext: 'YXR0YWNrZXIta2V5' };
+  // A reader must not replace the admin's key (key substitution)
+  const overwrite = await callRouter({
+    method: 'POST',
+    path: `/api/v1/collections/${collectionId}/keys`,
+    claims: reader,
+    body: { userId: admin.sub, encryptedKeyForRecipient: attackerKey },
+  });
+  assert.equal(overwrite.statusCode, 403);
+  const adminKey = await callRouter({ method: 'GET', path: `/api/v1/collections/${collectionId}/keys`, claims: admin });
+  assert.equal(adminKey.data.key.encryptedKeyForRecipient.ciphertext, WRAPPED.ciphertext);
+
+  // Keys can only be stored for users who already have access
+  const noAccess = await callRouter({
+    method: 'POST',
+    path: `/api/v1/collections/${collectionId}/keys`,
+    claims: admin,
+    body: { userId: outsider.sub, encryptedKeyForRecipient: WRAPPED },
+  });
+  assert.equal(noAccess.statusCode, 400);
+  assert.equal(noAccess.data.error, 'TARGET_HAS_NO_ACCESS');
+
+  // Admin -> member works
+  const ok = await callRouter({
+    method: 'POST',
+    path: `/api/v1/collections/${collectionId}/keys`,
+    claims: admin,
+    body: { userId: reader.sub, encryptedKeyForRecipient: WRAPPED },
+  });
+  assert.equal(ok.statusCode, 201);
+  const readerKey = await callRouter({ method: 'GET', path: `/api/v1/collections/${collectionId}/keys`, claims: reader });
+  assert.equal(readerKey.statusCode, 200);
+});

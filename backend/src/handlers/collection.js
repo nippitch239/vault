@@ -654,12 +654,14 @@ export async function storeCollectionKeyHandler(event) {
     });
   }
 
+  // Distributing (or replacing) a wrapped key is an admin action: otherwise any member
+  // could overwrite another member's key with one they control (key substitution).
   const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (!perm) {
+  if (perm !== 'admin') {
     return jsonResponse(403, {
       status: 'fail',
       error: 'FORBIDDEN',
-      message: 'Forbidden: No collection access',
+      message: 'Forbidden: Admin permission required to distribute collection keys',
     });
   }
 
@@ -689,6 +691,16 @@ export async function storeCollectionKeyHandler(event) {
       status: 'fail',
       error: 'NOT_FOUND',
       message: 'Target user not found',
+    });
+  }
+
+  // Grant access first, then distribute the key: never store keys for non-members.
+  const targetPerm = await getEffectiveCollectionPermission(db, collectionId, targetUserId);
+  if (!targetPerm) {
+    return jsonResponse(400, {
+      status: 'fail',
+      error: 'TARGET_HAS_NO_ACCESS',
+      message: 'Grant the user access to the collection before storing their key',
     });
   }
 

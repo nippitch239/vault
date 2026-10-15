@@ -296,7 +296,14 @@ export function CollectionsView() {
           return;
         }
 
-        // Wrap collection key for recipient if collection key available and recipient has public key
+        // Grant access first: the server only accepts keys for users who are members.
+        await api.collections.grantAccess(colId, {
+          targetType: 'user',
+          targetId: foundRecipient.user_id,
+          permission: selectedPermission,
+        });
+
+        // Then wrap the collection key for the recipient
         if (collectionKey && foundRecipient.public_key) {
           const wrappedForRecipient = await ClientCrypto.wrapCollectionKey(
             collectionKey,
@@ -307,13 +314,6 @@ export function CollectionsView() {
             encryptedKeyForRecipient: wrappedForRecipient,
           });
         }
-
-        // Grant access on server
-        await api.collections.grantAccess(colId, {
-          targetType: 'user',
-          targetId: foundRecipient.user_id,
-          permission: selectedPermission,
-        });
 
         addToast(`มอบสิทธิ์ให้ ${foundRecipient.username || foundRecipient.email} สำเร็จ`, 'success');
         setFoundRecipient(null);
