@@ -7,7 +7,7 @@ function cn(...inputs) {
 export const Card = React.forwardRef(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn('rounded-lg border bg-card text-card-foreground shadow-sm', className)}
+    className={cn('rounded-lg border border-border bg-card text-card-foreground', className)}
     {...props}
   />
 ));
@@ -25,7 +25,7 @@ CardHeader.displayName = 'CardHeader';
 export const CardTitle = React.forwardRef(({ className, as: Component = 'h3', ...props }, ref) => (
   <Component
     ref={ref}
-    className={cn('text-lg font-semibold leading-none tracking-tight', className)}
+    className={cn('text-base font-strong leading-snug tracking-tight', className)}
     {...props}
   />
 ));

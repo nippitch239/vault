@@ -11,3 +11,5 @@ export * from './Sheet.jsx';
 export * from './DropdownMenu.jsx';
 export * from './Table.jsx';
 export * from './Slider.jsx';
+export * from './Form.jsx';
+export * from './Feedback.jsx';
