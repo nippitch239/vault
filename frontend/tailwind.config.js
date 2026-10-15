@@ -23,17 +23,6 @@ export default {
         primary: {
           DEFAULT: 'hsl(var(--primary) / <alpha-value>)',
           foreground: 'hsl(var(--primary-foreground) / <alpha-value>)',
-          50: '#f0fdf4',
-          100: '#dcfce7',
-          200: '#bbf7d0',
-          300: '#86efac',
-          400: '#4ade80',
-          500: '#22c55e',
-          600: '#16a34a',
-          700: '#15803d',
-          800: '#166534',
-          900: '#14532d',
-          950: '#052e16',
         },
         secondary: {
           DEFAULT: 'hsl(var(--secondary) / <alpha-value>)',
@@ -85,14 +74,32 @@ export default {
           border: 'hsl(var(--sidebar-border) / <alpha-value>)',
           ring: 'hsl(var(--sidebar-ring) / <alpha-value>)',
         },
-        vault: {
-          dark: '#0f172a',
-          card: '#1e293b',
-          border: '#334155',
-          text: '#f8fafc',
-          muted: '#94a3b8',
-          accent: '#10b981',
-        },
+        overlay: 'hsl(var(--overlay) / <alpha-value>)',
+      },
+      // Linear-inspired system (design/DESIGN.md, design/TOKENS.md)
+      fontFamily: {
+        sans: ['var(--font-sans)'],
+        mono: ['var(--font-mono)'],
+      },
+      fontWeight: {
+        ui: '510',
+        strong: '590',
+      },
+      fontSize: {
+        caption: ['0.8125rem', { lineHeight: '1.5' }],
+      },
+      boxShadow: {
+        raised: '0 2px 4px rgb(0 0 0 / 0.4), 0 0 0 1px rgb(255 255 255 / 0.05)',
+        dialog:
+          '0 8px 2px rgb(0 0 0 / 0), 0 5px 2px rgb(0 0 0 / 0.01), 0 3px 2px rgb(0 0 0 / 0.04), 0 1px 1px rgb(0 0 0 / 0.07), 0 0 1px rgb(0 0 0 / 0.08), 0 24px 48px -12px rgb(0 0 0 / 0.5)',
+        inset: 'inset 0 0 12px rgb(0 0 0 / 0.2)',
+      },
+      transitionTimingFunction: {
+        standard: 'var(--ease-standard)',
+      },
+      transitionDuration: {
+        fast: '150ms',
+        base: '200ms',
       },
       borderRadius: {
         '2xl': 'calc(var(--radius) + 8px)',
