@@ -10,7 +10,7 @@ export const badgeVariants = ({
   className = '',
 } = {}) => {
   const base =
-    'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-ui leading-5 transition-colors';
+    'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-ui leading-5 transition-colors';
 
   const variants = {
     default: 'border-transparent bg-primary text-primary-foreground hover:bg-primary/80',

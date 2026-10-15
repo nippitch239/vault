@@ -39,6 +39,10 @@ export function formatCollection(row, effectivePermission = null) {
     updatedAt,
     updated_at: updatedAt,
   };
+  if (row.item_count !== undefined) {
+    obj.itemCount = Number(row.item_count);
+    obj.item_count = obj.itemCount;
+  }
   if (perm) {
     obj.effectivePermission = perm;
     obj.effective_permission = perm;
@@ -68,6 +72,9 @@ export function formatCollectionAccess(row) {
     targetId,
     target_id: targetId,
     permission,
+    targetName: row.target_type === 'group' ? row.target_group_name || null : row.target_full_name || row.target_username || null,
+    targetUsername: row.target_username || null,
+    targetEmail: row.target_email || null,
     createdAt,
     created_at: createdAt,
     updatedAt,

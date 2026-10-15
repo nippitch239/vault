@@ -14,8 +14,10 @@ export async function findCollection(db, collectionId) {
   return res.rows[0] || null;
 }
 
+const ITEM_COUNT_SQL = '(SELECT COUNT(*) FROM collection_items ci WHERE ci.collection_id = c.collection_id) AS item_count';
+
 export async function listAllCollections(db) {
-  const res = await db.query('SELECT * FROM collections ORDER BY created_at DESC');
+  const res = await db.query(`SELECT c.*, ${ITEM_COUNT_SQL} FROM collections c ORDER BY c.created_at DESC`);
   return res.rows;
 }
 
@@ -41,7 +43,7 @@ export async function listAccessibleCollections(db, userId) {
        UNION ALL
        SELECT collection_id, 3 AS perm_rank FROM collections WHERE created_by = $1
      )
-     SELECT c.*, MAX(g.perm_rank) AS max_rank
+     SELECT c.*, ${ITEM_COUNT_SQL}, MAX(g.perm_rank) AS max_rank
      FROM collections c
      JOIN grants g ON g.collection_id = c.collection_id
      GROUP BY c.collection_id
@@ -88,7 +90,18 @@ export async function deleteCollection(db, collectionId) {
 // --- access grants -----------------------------------------------------------
 
 export async function listAccess(db, collectionId) {
-  const res = await db.query('SELECT * FROM collection_access WHERE collection_id = $1 ORDER BY created_at ASC', [collectionId]);
+  // Names for display so the UI never has to show raw UUIDs.
+  const res = await db.query(
+    `SELECT ca.*,
+            u.username AS target_username, u.full_name AS target_full_name, u.email AS target_email,
+            g.name AS target_group_name
+     FROM collection_access ca
+     LEFT JOIN users u ON ca.target_type = 'user' AND u.user_id = ca.target_id
+     LEFT JOIN groups g ON ca.target_type = 'group' AND g.group_id = ca.target_id
+     WHERE ca.collection_id = $1
+     ORDER BY ca.created_at ASC`,
+    [collectionId]
+  );
   return res.rows;
 }
 

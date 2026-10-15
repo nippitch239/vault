@@ -73,6 +73,12 @@ export const DialogContent = React.forwardRef(
   ({ className, children, hideCloseButton = false, closeLabel = 'ปิด', dismissible = true, ...props }, ref) => {
     const { open, setOpen, titleId, descriptionId } = useDialog();
     const contentRef = useRef(null);
+    // Latest callbacks in refs: the effect below must run only when the dialog opens or
+    // closes — re-running it on every render would steal focus while the user types.
+    const setOpenRef = useRef(setOpen);
+    const dismissibleRef = useRef(dismissible);
+    setOpenRef.current = setOpen;
+    dismissibleRef.current = dismissible;
 
     useEffect(() => {
       if (!open) return undefined;
@@ -83,9 +89,12 @@ export const DialogContent = React.forwardRef(
       initial?.focus();
 
       const handleKeyDown = (e) => {
-        if (e.key === 'Escape' && dismissible) {
+        // With stacked dialogs (e.g. a confirm over a form) only the topmost one reacts.
+        const open = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+        if (open[open.length - 1] !== node) return;
+        if (e.key === 'Escape' && dismissibleRef.current) {
           e.stopPropagation();
-          setOpen(false);
+          setOpenRef.current(false);
           return;
         }
         if (e.key !== 'Tab' || !node) return;
@@ -109,7 +118,7 @@ export const DialogContent = React.forwardRef(
         document.removeEventListener('keydown', handleKeyDown);
         if (previouslyFocused && typeof previouslyFocused.focus === 'function') previouslyFocused.focus();
       };
-    }, [open, setOpen, dismissible]);
+    }, [open]);
 
     if (!open) return null;
 

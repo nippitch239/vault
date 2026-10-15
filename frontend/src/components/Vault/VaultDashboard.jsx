@@ -38,7 +38,7 @@ function ListIcon({ className = 'w-4 h-4' }) {
   );
 }
 
-export function VaultDashboard() {
+export function VaultDashboard({ initialCollectionFilter = null } = {}) {
   const { mek, privateKey, isVaultUnlocked, unlockVault } = useAuth();
   const { addToast, copyPasswordWithAutoClear } = useToast();
 
@@ -67,7 +67,10 @@ export function VaultDashboard() {
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [filterFavorites, setFilterFavorites] = useState(false);
   const [collections, setCollections] = useState([]);
-  const [selectedCollectionFilter, setSelectedCollectionFilter] = useState('ALL');
+  const [selectedCollectionFilter, setSelectedCollectionFilter] = useState(initialCollectionFilter || 'ALL');
+  useEffect(() => {
+    if (initialCollectionFilter) setSelectedCollectionFilter(initialCollectionFilter);
+  }, [initialCollectionFilter]);
 
   // Modals state
   const [activeModal, setActiveModal] = useState(null); // 'add' | 'edit' | 'delete' | 'share' | 'history'

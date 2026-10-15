@@ -385,3 +385,24 @@ test('D3: collection writers can edit (not delete) items in the collection; read
   const outsiderView = await callRouter({ method: 'GET', path: `/api/v1/items/${itemId}`, claims: outsider });
   assert.equal(outsiderView.statusCode, 403);
 });
+
+test('UI support: access entries carry display names, collections carry item counts', async () => {
+  await resetDatabase();
+  const owner = await registerProfile('uiowner');
+  const friend = await registerProfile('uifriend');
+  const collectionId = await createCollection(owner, 'UI');
+  const group = await callRouter({ method: 'POST', path: '/api/v1/groups', claims: owner, body: { name: 'Design team' } });
+  const groupId = group.data.group.group_id || group.data.group.id;
+  await grant(owner, collectionId, friend.sub, 'read');
+  await grant(owner, collectionId, groupId, 'write', 'group');
+  const itemId = await createItem(owner);
+  await callRouter({ method: 'POST', path: `/api/v1/collections/${collectionId}/items`, claims: owner, body: { itemId } });
+
+  const access = await callRouter({ method: 'GET', path: `/api/v1/collections/${collectionId}/access`, claims: owner });
+  const names = Object.fromEntries(access.data.access.map((a) => [a.targetId, a.targetName]));
+  assert.equal(names[friend.sub], 'uifriend Tester');
+  assert.equal(names[groupId], 'Design team');
+
+  const list = await callRouter({ method: 'GET', path: '/api/v1/collections', claims: owner });
+  assert.equal(list.data.collections[0].itemCount, 1);
+});

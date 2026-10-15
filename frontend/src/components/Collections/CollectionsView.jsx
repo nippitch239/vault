@@ -1,82 +1,106 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
 import ClientCrypto from '../../services/crypto.js';
-import {
-  PlusIcon,
-  SearchIcon,
-  EditIcon,
-  TrashIcon,
-  CloseIcon,
-  CheckIcon,
-  RefreshIcon,
-  ShieldIcon,
-} from '../Common/Icons.jsx';
+import { PlusIcon, SearchIcon, EditIcon, TrashIcon, RefreshIcon, ShieldIcon, KeyIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
+import {
+  Button,
+  Badge,
+  Card,
+  Input,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  Field,
+  Textarea,
+  Select,
+  Alert,
+  Skeleton,
+  EmptyState,
+  ConfirmDialog,
+} from '../ui/index.js';
 
-function CollectionIcon({ className = 'w-5 h-5' }) {
+const NAME_MAX = 255;
+const DESCRIPTION_MAX = 2000;
+
+export const PERMISSION_LABELS = {
+  admin: 'ผู้ดูแล',
+  write: 'แก้ไขได้',
+  read: 'อ่านอย่างเดียว',
+};
+
+const PERMISSION_HINTS = {
+  read: 'ดูและคัดลอกรหัสผ่านในคอลเลกชันได้',
+  write: 'เพิ่มและแก้ไขรายการในคอลเลกชันได้',
+  admin: 'จัดการสิทธิ์ ส่งคีย์ แก้ไขและลบคอลเลกชันได้',
+};
+
+const PERMISSION_BADGE = { admin: 'info', write: 'success', read: 'outline' };
+
+function FolderIcon({ className = 'size-5' }) {
   return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
     </svg>
   );
 }
 
-function LockKeyIcon({ className = 'w-5 h-5' }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-      />
-    </svg>
-  );
-}
+const charCount = (s) => [...(s || '')].length;
+const formatDate = (value) => (value ? new Date(value).toLocaleDateString('th-TH', { dateStyle: 'medium' }) : '—');
 
-export function CollectionsView() {
+export function CollectionsView({ onOpenCollection }) {
   const { user, privateKey, isAdmin } = useAuth();
   const { addToast } = useToast();
 
+  // List
   const [collections, setCollections] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [loadError, setLoadError] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Modals state: 'create' | 'edit' | 'delete' | 'access' | null
-  const [activeModal, setActiveModal] = useState(null);
-  const [selectedCollection, setSelectedCollection] = useState(null);
-  const [actionLoading, setActionLoading] = useState(false);
-
-  // Form state for Create / Edit
+  // Create / edit
+  const [editor, setEditor] = useState(null); // { mode: 'create' | 'edit', collection? }
   const [formData, setFormData] = useState({ name: '', description: '' });
+  const [formErrors, setFormErrors] = useState({});
+  const [saving, setSaving] = useState(false);
 
-  // Access modal state
+  // Delete
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // Access management
+  const [accessCollection, setAccessCollection] = useState(null);
   const [accessList, setAccessList] = useState([]);
   const [pendingKeys, setPendingKeys] = useState([]);
-  const [distributing, setDistributing] = useState(false);
   const [loadingAccess, setLoadingAccess] = useState(false);
-  const [targetType, setTargetType] = useState('user'); // 'user' | 'group'
+  const [accessError, setAccessError] = useState(null);
+  const [targetType, setTargetType] = useState('user');
   const [recipientEmail, setRecipientEmail] = useState('');
   const [foundRecipient, setFoundRecipient] = useState(null);
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupError, setLookupError] = useState(null);
-  const [selectedPermission, setSelectedPermission] = useState('read'); // 'read' | 'write' | 'admin'
+  const [selectedPermission, setSelectedPermission] = useState('read');
   const [userGroups, setUserGroups] = useState([]);
   const [selectedGroupId, setSelectedGroupId] = useState('');
+  const [granting, setGranting] = useState(false);
+  const [distributing, setDistributing] = useState(false);
+  const [revokeTarget, setRevokeTarget] = useState(null);
+  const [revoking, setRevoking] = useState(false);
+
+  const collectionIdOf = (c) => c?.collection_id || c?.id;
 
   const loadCollections = useCallback(async () => {
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     try {
       const res = await api.collections.list();
       setCollections(res?.collections || []);
     } catch (err) {
-      setError(err.message || 'ไม่สามารถโหลดรายการคอลเลกชันได้');
+      setLoadError(err.message || 'ไม่สามารถโหลดรายการคอลเลกชันได้');
     } finally {
       setLoading(false);
     }
@@ -86,10 +110,10 @@ export function CollectionsView() {
     loadCollections();
   }, [loadCollections]);
 
-  // Load access entries for selected collection
   const loadAccessList = useCallback(async (collectionId) => {
     if (!collectionId) return;
     setLoadingAccess(true);
+    setAccessError(null);
     try {
       const [res, pending] = await Promise.all([
         api.collections.listAccess(collectionId),
@@ -98,212 +122,156 @@ export function CollectionsView() {
       setAccessList(res?.access || []);
       setPendingKeys(pending?.pending || []);
     } catch (err) {
-      addToast(err.message || 'ไม่สามารถโหลดสิทธิ์การเข้าถึงได้', 'error');
+      setAccessError(err.message || 'ไม่สามารถโหลดรายการสิทธิ์ได้');
     } finally {
       setLoadingAccess(false);
     }
-  }, [addToast]);
-
-  // Load user groups for group assignment
-  const loadUserGroups = useCallback(async () => {
-    try {
-      const res = await api.groups.list();
-      const grps = res?.groups || [];
-      setUserGroups(grps);
-      if (grps.length > 0) {
-        setSelectedGroupId(grps[0].group_id || grps[0].id);
-      }
-    } catch {
-      // non-blocking
-    }
   }, []);
 
-  const handleOpenCreateModal = () => {
-    setSelectedCollection(null);
+  // ---------------------------------------------------------------- create / edit
+
+  const openCreate = () => {
     setFormData({ name: '', description: '' });
-    setActiveModal('create');
+    setFormErrors({});
+    setEditor({ mode: 'create' });
   };
 
-  const handleOpenEditModal = (col) => {
-    setSelectedCollection(col);
-    setFormData({
-      name: col.name || '',
-      description: col.description || '',
-    });
-    setActiveModal('edit');
+  const openEdit = (collection) => {
+    setFormData({ name: collection.name || '', description: collection.description || '' });
+    setFormErrors({});
+    setEditor({ mode: 'edit', collection });
   };
 
-  const handleOpenDeleteModal = (col) => {
-    setSelectedCollection(col);
-    setActiveModal('delete');
+  const validateForm = () => {
+    const errors = {};
+    const name = formData.name.trim();
+    if (!name) errors.name = 'กรุณาระบุชื่อคอลเลกชัน';
+    else if (charCount(name) > NAME_MAX) errors.name = `ชื่อยาวได้ไม่เกิน ${NAME_MAX} ตัวอักษร`;
+    if (charCount(formData.description.trim()) > DESCRIPTION_MAX) {
+      errors.description = `คำอธิบายยาวได้ไม่เกิน ${DESCRIPTION_MAX.toLocaleString('th-TH')} ตัวอักษร`;
+    }
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
   };
 
-  const handleOpenAccessModal = (col) => {
-    setSelectedCollection(col);
+  const getUserPublicKey = async () => {
+    if (user?.public_key) return user.public_key;
+    if (!user?.email) return null;
+    const lookup = await api.sharing.lookupUser(user.email).catch(() => null);
+    return lookup?.data?.public_key || null;
+  };
+
+  const getUnwrappedCollectionKey = async (collectionId) => {
+    if (!privateKey) throw new Error('คลังรหัสผ่านถูกล็อกอยู่ กรุณาปลดล็อกก่อน');
+    const keyRes = await api.collections.getKeys(collectionId);
+    return ClientCrypto.unwrapCollectionKey(keyRes?.key?.encryptedKeyForRecipient, privateKey);
+  };
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!validateForm()) return;
+    setSaving(true);
+    try {
+      const payload = { name: formData.name.trim(), description: formData.description.trim() || null };
+      if (editor.mode === 'edit') {
+        await api.collections.update(collectionIdOf(editor.collection), payload);
+        addToast('บันทึกการแก้ไขคอลเลกชันแล้ว', 'success');
+      } else {
+        // Zero knowledge: a fresh 256-bit collection key, wrapped for the creator.
+        const publicKey = await getUserPublicKey();
+        if (!publicKey) throw new Error('ไม่พบคีย์สาธารณะของบัญชีนี้ กรุณาเข้าสู่ระบบใหม่');
+        const wrappedKey = await ClientCrypto.wrapCollectionKey(ClientCrypto.generateCollectionKey(), publicKey);
+        await api.collections.create({ ...payload, encryptedKeyForRecipient: wrappedKey });
+        addToast('สร้างคอลเลกชันแล้ว', 'success');
+      }
+      setEditor(null);
+      loadCollections();
+    } catch (err) {
+      const fieldErrors = err?.data?.details;
+      if (Array.isArray(fieldErrors)) {
+        setFormErrors(Object.fromEntries(fieldErrors.map((d) => [d.field, d.message])));
+      } else {
+        setFormErrors({ form: err.message || 'บันทึกคอลเลกชันไม่สำเร็จ' });
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ---------------------------------------------------------------- delete
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.collections.delete(collectionIdOf(deleteTarget));
+      addToast(`ลบคอลเลกชัน “${deleteTarget.name}” แล้ว`, 'success');
+      setDeleteTarget(null);
+      loadCollections();
+    } catch (err) {
+      addToast(err.message || 'ลบคอลเลกชันไม่สำเร็จ', 'error');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // ---------------------------------------------------------------- access
+
+  const openAccess = async (collection) => {
+    setAccessCollection(collection);
     setTargetType('user');
     setRecipientEmail('');
     setFoundRecipient(null);
     setLookupError(null);
     setSelectedPermission('read');
-    setActiveModal('access');
-    loadAccessList(col.collection_id || col.id);
-    loadUserGroups();
-  };
-
-  // Helper to obtain user's public key
-  const getUserPublicKey = async () => {
-    let pubKey = user?.public_key || user?.publicKey;
-    if (!pubKey && user?.email) {
-      try {
-        const lookup = await api.sharing.lookupUser(user.email);
-        pubKey = lookup?.data?.public_key;
-      } catch {
-        // fallback
-      }
-    }
-    return pubKey;
-  };
-
-  // Helper to get unwrapped collection key for the current user
-  const getUnwrappedCollectionKey = async (collectionId) => {
-    if (!privateKey) {
-      throw new Error('คีย์ส่วนตัวถูกล็อกอยู่ กรุณาปลดล็อกคลังรหัสผ่านก่อนดำเนินการ');
-    }
-    const keyRes = await api.collections.getKeys(collectionId);
-    const wrappedObj =
-      keyRes?.key?.encrypted_key_for_recipient ||
-      keyRes?.key?.encryptedKeyForRecipient ||
-      keyRes?.encrypted_key_for_recipient ||
-      keyRes?.encryptedKeyForRecipient ||
-      keyRes?.key ||
-      keyRes;
-
-    return await ClientCrypto.unwrapCollectionKey(wrappedObj, privateKey);
-  };
-
-  const handleSaveCollection = async (e) => {
-    e.preventDefault();
-    if (!formData.name.trim()) {
-      addToast('กรุณาระบุชื่อคอลเลกชัน (Collection name is required)', 'error');
-      return;
-    }
-    if ([...formData.name.trim()].length > 255) {
-      addToast('ชื่อคอลเลกชันยาวได้ไม่เกิน 255 ตัวอักษร', 'error');
-      return;
-    }
-    if ([...formData.description.trim()].length > 2000) {
-      addToast('คำอธิบายยาวได้ไม่เกิน 2,000 ตัวอักษร', 'error');
-      return;
-    }
-
-    setActionLoading(true);
+    setAccessList([]);
+    setPendingKeys([]);
+    loadAccessList(collectionIdOf(collection));
     try {
-      if (activeModal === 'edit' && selectedCollection) {
-        const colId = selectedCollection.collection_id || selectedCollection.id;
-        await api.collections.update(colId, {
-          name: formData.name.trim(),
-          description: formData.description.trim() || null,
-        });
-        addToast('แก้ไขข้อมูลคอลเลกชันสำเร็จ', 'success');
-      } else {
-        // Zero-Knowledge Collection Creation:
-        // 1. Generate fresh 32-byte symmetric collection key
-        const collectionKey = ClientCrypto.generateCollectionKey();
-
-        // 2. Obtain creator public key
-        const creatorPubKey = await getUserPublicKey();
-        if (!creatorPubKey) {
-          throw new Error('ไม่พบคีย์สาธารณะของผู้สร้างบัญชี กรุณาเข้าสู่ระบบใหม่');
-        }
-
-        // 3. Wrap collection key using RSA-OAEP
-        const wrappedKey = await ClientCrypto.wrapCollectionKey(collectionKey, creatorPubKey);
-
-        // 4. Create collection on server
-        await api.collections.create({
-          name: formData.name.trim(),
-          description: formData.description.trim() || null,
-          encryptedKeyForRecipient: wrappedKey,
-        });
-
-        addToast('สร้างคอลเลกชันใหม่พร้อมเข้ารหัส Zero-Knowledge สำเร็จ', 'success');
-      }
-
-      setActiveModal(null);
-      setSelectedCollection(null);
-      loadCollections();
-    } catch (err) {
-      addToast(err.message || 'เกิดข้อผิดพลาดในการบันทึกคอลเลกชัน', 'error');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleDeleteCollection = async () => {
-    if (!selectedCollection) return;
-    setActionLoading(true);
-    try {
-      const colId = selectedCollection.collection_id || selectedCollection.id;
-      await api.collections.delete(colId);
-      addToast('ลบคอลเลกชันสำเร็จ', 'success');
-      setActiveModal(null);
-      setSelectedCollection(null);
-      loadCollections();
-    } catch (err) {
-      addToast(err.message || 'ไม่สามารถลบคอลเลกชันได้', 'error');
-    } finally {
-      setActionLoading(false);
+      const res = await api.groups.list();
+      const groups = res?.groups || [];
+      setUserGroups(groups);
+      setSelectedGroupId(groups[0]?.group_id || groups[0]?.id || '');
+    } catch {
+      setUserGroups([]);
     }
   };
 
   const handleLookupRecipient = async (e) => {
     e.preventDefault();
-    if (!recipientEmail.trim()) {
-      setLookupError('กรุณากรอกอีเมลผู้รับ');
+    const email = recipientEmail.trim().toLowerCase();
+    if (!email) {
+      setLookupError('กรุณากรอกอีเมลของผู้รับ');
       return;
     }
-
     setLookupLoading(true);
     setLookupError(null);
     setFoundRecipient(null);
-
     try {
-      const res = await api.sharing.lookupUser(recipientEmail.trim().toLowerCase());
-      if (res?.data && res.data.public_key) {
-        setFoundRecipient(res.data);
-      } else if (res?.data) {
-        setLookupError('ผู้ใช้นี้ยังไม่มีคีย์สาธารณะในระบบ');
-      } else {
-        setLookupError('ไม่พบผู้ใช้ที่มีอีเมลนี้ในระบบ');
-      }
+      const res = await api.sharing.lookupUser(email);
+      if (res?.data?.user_id === user?.user_id) setLookupError('นี่คือบัญชีของคุณเอง');
+      else if (res?.data?.public_key) setFoundRecipient(res.data);
+      else setLookupError('ผู้ใช้นี้ยังไม่ได้ตั้งค่าบัญชีให้เสร็จ จึงยังรับคีย์ไม่ได้');
     } catch (err) {
-      setLookupError(err.message || 'ไม่พบผู้ใช้ที่มีอีเมลนี้ในระบบ');
+      setLookupError(err?.status === 404 ? 'ไม่พบบัญชีผู้ใช้นี้ในระบบ' : err.message || 'ค้นหาไม่สำเร็จ');
     } finally {
       setLookupLoading(false);
     }
   };
 
   const handleGrantAccess = async () => {
-    if (!selectedCollection) return;
-    const colId = selectedCollection.collection_id || selectedCollection.id;
-
+    if (!accessCollection) return;
+    const colId = collectionIdOf(accessCollection);
     if (targetType === 'user' && !foundRecipient) {
-      addToast('กรุณาค้นหาและเลือกผู้รับก่อนมอบสิทธิ์', 'error');
+      setLookupError('กรุณาค้นหาผู้รับก่อน');
       return;
     }
-    if (targetType === 'user' && !foundRecipient.public_key) {
-      addToast('ผู้รับยังไม่มีคีย์สาธารณะ จึงไม่สามารถส่งคีย์คอลเลกชันให้ได้', 'error');
-      return;
-    }
-    if (targetType === 'group' && !selectedGroupId) {
-      addToast('กรุณาเลือกกลุ่มที่ต้องการมอบสิทธิ์', 'error');
-      return;
-    }
+    if (targetType === 'group' && !selectedGroupId) return;
 
-    setActionLoading(true);
+    setGranting(true);
     try {
       // Without the collection key the recipients could not decrypt anything, so stop
-      // before granting access instead of granting "empty" access.
+      // before granting instead of granting "empty" access.
       let collectionKey;
       try {
         collectionKey = await getUnwrappedCollectionKey(colId);
@@ -316,38 +284,20 @@ export function CollectionsView() {
       }
 
       if (targetType === 'user') {
-        // Grant first: the server only accepts keys for users who are members.
-        await api.collections.grantAccess(colId, {
-          targetType: 'user',
-          targetId: foundRecipient.user_id,
-          permission: selectedPermission,
-        });
-        const wrappedForRecipient = await ClientCrypto.wrapCollectionKey(collectionKey, foundRecipient.public_key);
-        await api.collections.storeKey(colId, {
-          userId: foundRecipient.user_id,
-          encryptedKeyForRecipient: wrappedForRecipient,
-        });
-
-        addToast(`มอบสิทธิ์ให้ ${foundRecipient.username || foundRecipient.email} สำเร็จ`, 'success');
+        await api.collections.grantAccess(colId, { targetType: 'user', targetId: foundRecipient.user_id, permission: selectedPermission });
+        const wrapped = await ClientCrypto.wrapCollectionKey(collectionKey, foundRecipient.public_key);
+        await api.collections.storeKey(colId, { userId: foundRecipient.user_id, encryptedKeyForRecipient: wrapped });
+        addToast(`ให้สิทธิ์ ${foundRecipient.full_name || foundRecipient.username} แล้ว`, 'success');
         setFoundRecipient(null);
         setRecipientEmail('');
       } else {
-        await api.collections.grantAccess(colId, {
-          targetType: 'group',
-          targetId: selectedGroupId,
-          permission: selectedPermission,
-        });
-
-        // Distribute the wrapped key to every current member and report who missed out.
-        const mbrRes = await api.groups.listMembers(selectedGroupId);
-        const members = mbrRes?.members || [];
+        await api.collections.grantAccess(colId, { targetType: 'group', targetId: selectedGroupId, permission: selectedPermission });
+        const members = (await api.groups.listMembers(selectedGroupId))?.members || [];
         const results = await Promise.allSettled(
           members.map(async (mbr) => {
             const memberUserId = mbr.user_id || mbr.userId;
             let pubKey = mbr.public_key || mbr.publicKey;
-            if (!pubKey && mbr.email) {
-              pubKey = (await api.sharing.lookupUser(mbr.email))?.data?.public_key;
-            }
+            if (!pubKey && mbr.email) pubKey = (await api.sharing.lookupUser(mbr.email))?.data?.public_key;
             if (!pubKey) throw new Error(`no public key for ${memberUserId}`);
             const wrapped = await ClientCrypto.wrapCollectionKey(collectionKey, pubKey);
             await api.collections.storeKey(colId, { userId: memberUserId, encryptedKeyForRecipient: wrapped });
@@ -355,28 +305,23 @@ export function CollectionsView() {
         );
         const failed = results.filter((r) => r.status === 'rejected').length;
         if (failed > 0) {
-          addToast(
-            `มอบสิทธิ์ให้กลุ่มแล้ว แต่ส่งคีย์ไม่สำเร็จ ${failed} จาก ${members.length} คน สมาชิกเหล่านี้จะยังเปิดรายการในคอลเลกชันไม่ได้ กรุณาลองมอบสิทธิ์ใหม่อีกครั้ง`,
-            'error',
-            8000
-          );
+          addToast(`ให้สิทธิ์กลุ่มแล้ว แต่ส่งคีย์ไม่สำเร็จ ${failed} จาก ${members.length} คน — ดูรายชื่อในหัวข้อ “รอรับคีย์”`, 'error', 8000);
         } else {
-          addToast(`มอบสิทธิ์และส่งคีย์ให้สมาชิกกลุ่ม ${members.length} คนสำเร็จ`, 'success');
+          addToast(`ให้สิทธิ์และส่งคีย์ให้สมาชิกกลุ่ม ${members.length} คนแล้ว`, 'success');
         }
       }
-
       loadAccessList(colId);
+      loadCollections();
     } catch (err) {
-      addToast(err.message || 'ไม่สามารถมอบสิทธิ์ได้', 'error');
+      addToast(err.message || 'ให้สิทธิ์ไม่สำเร็จ', 'error');
     } finally {
-      setActionLoading(false);
+      setGranting(false);
     }
   };
 
-  // Members who have access (e.g. joined a group later) but no wrapped key yet.
   const handleDistributePendingKeys = async () => {
-    if (!selectedCollection || pendingKeys.length === 0) return;
-    const colId = selectedCollection.collection_id || selectedCollection.id;
+    if (!accessCollection || pendingKeys.length === 0) return;
+    const colId = collectionIdOf(accessCollection);
     setDistributing(true);
     try {
       let collectionKey;
@@ -393,11 +338,11 @@ export function CollectionsView() {
         })
       );
       const failed = results.filter((r) => r.status === 'rejected').length;
-      if (failed) {
-        addToast(`ส่งคีย์สำเร็จ ${pendingKeys.length - failed} คน ไม่สำเร็จ ${failed} คน`, 'error', 6000);
-      } else {
-        addToast(`ส่งคีย์ให้สมาชิก ${pendingKeys.length} คนสำเร็จ`, 'success');
-      }
+      addToast(
+        failed ? `ส่งคีย์สำเร็จ ${pendingKeys.length - failed} คน ไม่สำเร็จ ${failed} คน` : `ส่งคีย์ให้ ${pendingKeys.length} คนแล้ว`,
+        failed ? 'error' : 'success',
+        failed ? 6000 : undefined
+      );
       loadAccessList(colId);
     } catch (err) {
       addToast(err.message || 'ส่งคีย์ไม่สำเร็จ', 'error');
@@ -406,587 +351,439 @@ export function CollectionsView() {
     }
   };
 
-  const handleRevokeAccess = async (entry) => {
-    if (!selectedCollection) return;
-    const colId = selectedCollection.collection_id || selectedCollection.id;
-    const tType = entry.target_type || entry.targetType;
-    const tId = entry.target_id || entry.targetId;
-
+  const handleRevoke = async () => {
+    if (!accessCollection || !revokeTarget) return;
+    const colId = collectionIdOf(accessCollection);
+    setRevoking(true);
     try {
-      await api.collections.revokeAccess(colId, tType, tId);
-      addToast('เพิกถอนสิทธิ์สำเร็จ', 'success');
+      await api.collections.revokeAccess(colId, revokeTarget.targetType || revokeTarget.target_type, revokeTarget.targetId || revokeTarget.target_id);
+      addToast(`เพิกถอนสิทธิ์ของ ${revokeTarget.targetName || 'ผู้ใช้'} แล้ว`, 'success');
+      setRevokeTarget(null);
       loadAccessList(colId);
     } catch (err) {
-      addToast(err.message || 'ไม่สามารถเพิกถอนสิทธิ์ได้', 'error');
+      addToast(err.message || 'เพิกถอนสิทธิ์ไม่สำเร็จ', 'error');
+    } finally {
+      setRevoking(false);
     }
   };
 
-  const filteredCollections = collections.filter((c) => {
-    if (!searchQuery.trim()) return true;
-    const q = searchQuery.toLowerCase();
-    const matchName = (c.name || '').toLowerCase().includes(q);
-    const matchDesc = (c.description || '').toLowerCase().includes(q);
-    return matchName || matchDesc;
-  });
+  // ---------------------------------------------------------------- render
+
+  const filteredCollections = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return collections;
+    return collections.filter((c) => `${c.name || ''} ${c.description || ''}`.toLowerCase().includes(q));
+  }, [collections, searchQuery]);
 
   return (
     <div className="space-y-6">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-700/60">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center space-x-2.5">
-            <CollectionIcon className="w-7 h-7 text-emerald-400" />
-            <span>คอลเลกชัน (Collections)</span>
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">
-            แบ่งปันรหัสผ่านแบบกลุ่มและรายบุคคลด้วยสถาปัตยกรรม Zero-Knowledge (AES-256 + RSA-OAEP)
+          <h1 className="text-2xl tracking-tight">คอลเลกชัน</h1>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            แชร์รหัสผ่านให้ทีมหรือบุคคลอย่างปลอดภัย รายการในคอลเลกชันถูกเข้ารหัสด้วยคีย์ที่มีเฉพาะสมาชิกเท่านั้น
           </p>
         </div>
+        <Button onClick={openCreate} className="w-full sm:w-auto">
+          <PlusIcon />
+          สร้างคอลเลกชัน
+        </Button>
+      </header>
 
-        <div className="flex items-center space-x-3">
-          <button
-            type="button"
-            onClick={loadCollections}
-            disabled={loading}
-            className="p-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-xl transition-colors"
-            title="รีเฟรชข้อมูล"
-          >
-            <RefreshIcon className={`w-4 h-4 ${loading ? 'animate-spin text-emerald-400' : ''}`} />
-          </button>
-
-          <button
-            type="button"
-            onClick={handleOpenCreateModal}
-            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-xl text-sm transition-all shadow-lg shadow-emerald-950/40 flex items-center space-x-2"
-          >
-            <PlusIcon className="w-4 h-4" />
-            <span>สร้างคอลเลกชัน (Create Collection)</span>
-          </button>
+      <div className="flex items-center gap-2">
+        <div className="relative w-full sm:max-w-sm">
+          <label htmlFor="collection-search" className="sr-only">
+            ค้นหาคอลเลกชัน
+          </label>
+          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            id="collection-search"
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="ค้นหาจากชื่อหรือคำอธิบาย"
+            className="pl-9"
+          />
         </div>
+        <Button variant="outline" size="icon" onClick={loadCollections} disabled={loading} aria-label="โหลดรายการคอลเลกชันใหม่">
+          <RefreshIcon className={loading ? 'animate-spin' : ''} />
+        </Button>
       </div>
 
-      {error && (
-        <div className="p-4 bg-rose-950/80 border border-rose-500/50 rounded-2xl text-rose-200 text-sm">
-          {error}
-        </div>
-      )}
-
-      {/* Search Bar */}
-      <div className="relative max-w-md">
-        <SearchIcon className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="ค้นหาชื่อคอลเลกชัน หรือคำอธิบาย..."
-          className="w-full pl-10 pr-4 py-2.5 bg-slate-800/80 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
-        />
-      </div>
-
-      {/* Collections List */}
-      {loading ? (
-        <div className="py-20 text-center text-slate-400">
-          <div className="inline-block w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-3" />
-          <p className="text-sm">กำลังโหลดรายการคอลเลกชัน...</p>
-        </div>
-      ) : filteredCollections.length === 0 ? (
-        <div className="py-16 text-center bg-slate-800/40 border border-slate-700/50 rounded-3xl p-8">
-          <div className="w-16 h-16 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto mb-4">
-            <CollectionIcon className="w-8 h-8" />
+      <section aria-live="polite" aria-busy={loading}>
+        {loading ? (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <Card key={i} className="space-y-3 p-5">
+                <Skeleton className="h-5 w-2/3" />
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-8 w-1/2" />
+              </Card>
+            ))}
+            <span className="sr-only">กำลังโหลดรายการคอลเลกชัน</span>
           </div>
-          <h3 className="text-lg font-semibold text-white">ไม่พบคอลเลกชัน</h3>
-          <p className="text-sm text-slate-400 mt-1 max-w-md mx-auto mb-5">
-            {searchQuery
-              ? 'ไม่พบคอลเลกชันที่ตรงกับคำค้นหาของคุณ'
-              : 'สร้างคอลเลกชันเพื่อแชร์รหัสผ่านอย่างปลอดภัยให้กับทีมหรือผู้ใช้เฉพาะกลุ่ม'}
-          </p>
-          <button
-            type="button"
-            onClick={handleOpenCreateModal}
-            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-xl text-sm transition-colors inline-flex items-center space-x-2 shadow-lg shadow-emerald-950/40"
+        ) : loadError ? (
+          <Alert
+            variant="error"
+            title="โหลดรายการคอลเลกชันไม่สำเร็จ"
+            action={
+              <Button variant="outline" size="sm" onClick={loadCollections}>
+                ลองอีกครั้ง
+              </Button>
+            }
           >
-            <PlusIcon className="w-4 h-4" />
-            <span>สร้างคอลเลกชัน (Create Collection)</span>
-          </button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredCollections.map((col) => {
-            const id = col.collection_id || col.id;
-            const perm = (col.effective_permission || col.effectivePermission || 'read').toLowerCase();
-            const canAdmin = perm === 'admin' || isAdmin;
-
-            const permBadgeStyle =
-              perm === 'admin'
-                ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
-                : perm === 'write'
-                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                : 'bg-blue-500/10 text-blue-400 border-blue-500/30';
-
-            return (
-              <div
-                key={id}
-                className="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-5 hover:border-slate-600 transition-all flex flex-col justify-between shadow-lg"
-              >
-                <div>
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center space-x-2.5">
-                      <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-                        <CollectionIcon className="w-5 h-5" />
+            {loadError}
+          </Alert>
+        ) : collections.length === 0 ? (
+          <EmptyState
+            icon={<FolderIcon />}
+            title="ยังไม่มีคอลเลกชัน"
+            description="สร้างคอลเลกชันเพื่อเก็บรหัสผ่านที่ใช้ร่วมกับทีม แล้วให้สิทธิ์สมาชิกเป็นรายคนหรือเป็นกลุ่ม"
+            action={
+              <Button onClick={openCreate}>
+                <PlusIcon />
+                สร้างคอลเลกชันแรก
+              </Button>
+            }
+          />
+        ) : filteredCollections.length === 0 ? (
+          <EmptyState
+            icon={<SearchIcon className="size-5" />}
+            title="ไม่พบคอลเลกชันที่ตรงกับคำค้นหา"
+            description={`ไม่มีคอลเลกชันที่มีคำว่า “${searchQuery.trim()}”`}
+            action={
+              <Button variant="outline" onClick={() => setSearchQuery('')}>
+                ล้างคำค้นหา
+              </Button>
+            }
+          />
+        ) : (
+          <>
+            <p className="mb-3 text-caption text-muted-foreground">{filteredCollections.length.toLocaleString('th-TH')} คอลเลกชัน</p>
+            <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {filteredCollections.map((col) => {
+                const perm = String(col.effectivePermission || col.effective_permission || 'read').toLowerCase();
+                const canAdmin = perm === 'admin' || isAdmin;
+                const itemCount = Number(col.itemCount ?? col.item_count ?? 0);
+                return (
+                  <li key={collectionIdOf(col)}>
+                    <Card className="flex h-full flex-col p-5 transition-colors duration-fast hover:border-input">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-secondary text-muted-foreground">
+                            <FolderIcon className="size-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <h2 className="truncate text-base" title={col.name}>
+                              {col.name}
+                            </h2>
+                            <p className="text-caption text-muted-foreground">
+                              {itemCount.toLocaleString('th-TH')} รายการ · สร้างเมื่อ {formatDate(col.created_at)}
+                            </p>
+                          </div>
+                        </div>
+                        <Badge variant={PERMISSION_BADGE[perm] || 'outline'}>{PERMISSION_LABELS[perm] || perm}</Badge>
                       </div>
-                      <div>
-                        <h3 className="text-base font-bold text-white tracking-tight truncate max-w-[180px]">
-                          {col.name}
-                        </h3>
-                        <span className="text-[11px] text-slate-400 block">
-                          สร้างเมื่อ {col.created_at ? new Date(col.created_at).toLocaleDateString() : '-'}
-                        </span>
+
+                      <p className={`mt-3 line-clamp-2 flex-1 text-sm ${col.description ? 'text-secondary-foreground' : 'italic text-muted-foreground'}`}>
+                        {col.description || 'ไม่มีคำอธิบาย'}
+                      </p>
+
+                      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
+                        <Button variant="secondary" size="sm" onClick={() => onOpenCollection?.(collectionIdOf(col))}>
+                          เปิดดูรายการ
+                        </Button>
+                        {canAdmin && (
+                          <>
+                            <Button variant="ghost" size="sm" onClick={() => openAccess(col)}>
+                              <ShieldIcon />
+                              จัดการสิทธิ์
+                            </Button>
+                            <div className="ml-auto flex items-center gap-1">
+                              <Button variant="ghost" size="icon-sm" onClick={() => openEdit(col)} aria-label={`แก้ไขคอลเลกชัน ${col.name}`}>
+                                <EditIcon />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                className="hover:bg-error hover:text-error-foreground"
+                                onClick={() => setDeleteTarget(col)}
+                                aria-label={`ลบคอลเลกชัน ${col.name}`}
+                              >
+                                <TrashIcon />
+                              </Button>
+                            </div>
+                          </>
+                        )}
                       </div>
-                    </div>
+                    </Card>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
+        )}
+      </section>
 
-                    <span
-                      className={`text-[10px] uppercase font-mono px-2.5 py-0.5 rounded-full border ${permBadgeStyle}`}
-                    >
-                      {perm}
-                    </span>
-                  </div>
+      {/* Create / edit */}
+      <Dialog open={Boolean(editor)} onOpenChange={(open) => !open && !saving && setEditor(null)}>
+        <DialogContent>
+          <form onSubmit={handleSave} noValidate className="grid gap-5">
+            <DialogHeader>
+              <DialogTitle>{editor?.mode === 'edit' ? 'แก้ไขคอลเลกชัน' : 'สร้างคอลเลกชันใหม่'}</DialogTitle>
+              <DialogDescription>
+                {editor?.mode === 'edit'
+                  ? 'เปลี่ยนชื่อหรือคำอธิบาย สิทธิ์และรายการในคอลเลกชันจะไม่เปลี่ยน'
+                  : 'ระบบจะสร้างคีย์เข้ารหัสใหม่สำหรับคอลเลกชันนี้บนเครื่องของคุณ'}
+              </DialogDescription>
+            </DialogHeader>
 
-                  {col.description ? (
-                    <p className="text-xs text-slate-300 mb-4 line-clamp-2 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800">
-                      {col.description}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-slate-500 italic mb-4">ไม่มีคำอธิบาย</p>
-                  )}
-                </div>
+            {formErrors.form && <Alert variant="error">{formErrors.form}</Alert>}
 
-                {/* Card Action Buttons */}
-                <div className="pt-3 border-t border-slate-700/60 flex items-center justify-between">
-                  {canAdmin ? (
-                    <button
-                      type="button"
-                      onClick={() => handleOpenAccessModal(col)}
-                      className="px-3 py-1.5 bg-slate-700/80 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-xl transition-colors flex items-center space-x-1.5"
-                    >
-                      <ShieldIcon className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>จัดการสิทธิ์ (Access)</span>
-                    </button>
-                  ) : (
-                    <span className="text-[11px] text-slate-500 flex items-center space-x-1">
-                      <LockKeyIcon className="w-3 h-3" />
-                      <span>เข้าถึงแบบ {perm}</span>
-                    </span>
-                  )}
-
-                  {canAdmin && (
-                    <div className="flex items-center space-x-1">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenEditModal(col)}
-                        className="p-1.5 text-slate-400 hover:text-emerald-400 rounded-lg hover:bg-slate-700/60 transition-colors"
-                        title="แก้ไขคอลเลกชัน"
-                      >
-                        <EditIcon className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleOpenDeleteModal(col)}
-                        className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-slate-700/60 transition-colors"
-                        title="ลบคอลเลกชัน"
-                      >
-                        <TrashIcon className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Modal: Create / Edit Collection */}
-      {(activeModal === 'create' || activeModal === 'edit') && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-slate-800 border border-slate-700/80 rounded-3xl max-w-md w-full p-6 shadow-2xl relative">
-            <button
-              type="button"
-              onClick={() => setActiveModal(null)}
-              className="absolute right-5 top-5 text-slate-400 hover:text-slate-200 transition-colors"
-            >
-              <CloseIcon className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center space-x-3 mb-5">
-              <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-                <CollectionIcon className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-lg font-bold text-white">
-                  {activeModal === 'edit' ? 'แก้ไขคอลเลกชัน' : 'สร้างคอลเลกชันใหม่'}
-                </h3>
-                <p className="text-xs text-slate-400">
-                  {activeModal === 'edit'
-                    ? 'อัปเดตชื่อหรือคำอธิบายคอลเลกชัน'
-                    : 'สร้างคีย์สมมาตร 256 บิตและห่อหุ้มด้วย RSA-OAEP อัตโนมัติ'}
-                </p>
-              </div>
-            </div>
-
-            <form onSubmit={handleSaveCollection} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  ชื่อคอลเลกชัน (Collection Name) *
-                </label>
-                <input
-                  type="text"
+            <Field label="ชื่อคอลเลกชัน" required error={formErrors.name}>
+              {(props) => (
+                <Input
+                  {...props}
+                  data-autofocus
                   value={formData.name}
+                  maxLength={NAME_MAX}
+                  autoComplete="off"
+                  placeholder="เช่น ทีมวิศวกรรม — Production"
                   onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
-                  placeholder="เช่น Engineering Production, IT Passwords"
-                  maxLength={255}
-                  className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  required
                 />
-              </div>
+              )}
+            </Field>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  คำอธิบาย (Description)
-                </label>
-                <textarea
+            <Field
+              label="คำอธิบาย"
+              error={formErrors.description}
+              hint={`${charCount(formData.description).toLocaleString('th-TH')} / ${DESCRIPTION_MAX.toLocaleString('th-TH')} ตัวอักษร`}
+            >
+              {(props) => (
+                <Textarea
+                  {...props}
                   rows={3}
                   value={formData.description}
+                  maxLength={DESCRIPTION_MAX}
+                  placeholder="ใช้เก็บอะไร ใครควรได้สิทธิ์"
                   onChange={(e) => setFormData((prev) => ({ ...prev, description: e.target.value }))}
-                  placeholder="รายละเอียดหรือวัตถุประสงค์ของคอลเลกชัน..."
-                  maxLength={2000}
-                  className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
                 />
-              </div>
-
-              <div className="flex space-x-3 pt-3">
-                <button
-                  type="button"
-                  onClick={() => setActiveModal(null)}
-                  className="flex-1 py-2.5 px-4 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-xl transition-colors"
-                >
-                  ยกเลิก
-                </button>
-                <button
-                  type="submit"
-                  disabled={actionLoading}
-                  className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors flex items-center justify-center space-x-1.5 shadow-lg shadow-emerald-950/40"
-                >
-                  <CheckIcon className="w-4 h-4" />
-                  <span>{actionLoading ? 'กำลังบันทึก...' : 'บันทึก'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Delete Collection */}
-      {activeModal === 'delete' && selectedCollection && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-slate-800 border border-slate-700/80 rounded-3xl max-w-sm w-full p-6 shadow-2xl relative">
-            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center mx-auto mb-4">
-              <TrashIcon className="w-6 h-6" />
-            </div>
-            <h3 className="text-lg font-bold text-white text-center mb-1">ยืนยันการลบคอลเลกชัน</h3>
-            <p className="text-xs text-slate-300 text-center mb-6">
-              คุณแน่ใจหรือไม่ว่าต้องการลบคอลเลกชัน{' '}
-              <span className="font-semibold text-rose-300">“{selectedCollection.name}”</span>?
-              สิทธิ์การเข้าถึงทั้งหมดจะถูกยกเลิก (Admin Only)
-            </p>
-
-            <div className="flex space-x-3">
-              <button
-                type="button"
-                onClick={() => setActiveModal(null)}
-                className="flex-1 py-2.5 px-4 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-xl transition-colors"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="button"
-                onClick={handleDeleteCollection}
-                disabled={actionLoading}
-                className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors"
-              >
-                {actionLoading ? 'กำลังลบ...' : 'ลบคอลเลกชัน'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Manage Access (RBAC + Key Wrapping) */}
-      {activeModal === 'access' && selectedCollection && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn overflow-y-auto">
-          <div className="bg-slate-800 border border-slate-700/80 rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl relative my-8">
-            <button
-              type="button"
-              onClick={() => setActiveModal(null)}
-              className="absolute right-5 top-5 text-slate-400 hover:text-slate-200 transition-colors"
-            >
-              <CloseIcon className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center space-x-3 mb-5">
-              <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-                <ShieldIcon className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-lg font-bold text-white">
-                  จัดการสิทธิ์: {selectedCollection.name}
-                </h3>
-                <p className="text-xs text-slate-400">
-                  มอบสิทธิ์ให้กับบุคคลหรือกลุ่มผู้ใช้ พร้อมส่งต่อคีย์แบบ Zero-Knowledge
-                </p>
-              </div>
-            </div>
-
-            {/* Grant Access Section */}
-            <div className="bg-slate-900/80 border border-slate-700 rounded-2xl p-4 mb-5">
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">
-                  มอบสิทธิ์การเข้าถึงใหม่
-                </h4>
-
-                {/* Target Type Toggle */}
-                <div className="flex bg-slate-950 rounded-xl p-0.5 border border-slate-800 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTargetType('user');
-                      setFoundRecipient(null);
-                      setLookupError(null);
-                    }}
-                    className={`px-3 py-1 rounded-lg transition-colors ${
-                      targetType === 'user' ? 'bg-emerald-600 text-white font-medium' : 'text-slate-400'
-                    }`}
-                  >
-                    รายบุคคล (User)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTargetType('group');
-                      setFoundRecipient(null);
-                      setLookupError(null);
-                    }}
-                    className={`px-3 py-1 rounded-lg transition-colors ${
-                      targetType === 'group' ? 'bg-emerald-600 text-white font-medium' : 'text-slate-400'
-                    }`}
-                  >
-                    กลุ่มผู้ใช้ (Group)
-                  </button>
-                </div>
-              </div>
-
-              {targetType === 'user' ? (
-                <>
-                  <form onSubmit={handleLookupRecipient} className="flex gap-2 mb-3">
-                    <input
-                      type="email"
-                      value={recipientEmail}
-                      onChange={(e) => setRecipientEmail(e.target.value)}
-                      placeholder="กรอกอีเมลผู้รับสิทธิ์..."
-                      className="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                    <button
-                      type="submit"
-                      disabled={lookupLoading}
-                      className="px-3 py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-medium rounded-xl transition-colors whitespace-nowrap"
-                    >
-                      {lookupLoading ? 'กำลังค้นหา...' : 'ค้นหาผู้ใช้'}
-                    </button>
-                  </form>
-
-                  {lookupError && <p className="text-xs text-rose-400 mb-2">{lookupError}</p>}
-
-                  {foundRecipient && (
-                    <div className="p-3 bg-slate-950/80 border border-emerald-500/30 rounded-xl flex items-center justify-between gap-3 animate-fadeIn">
-                      <div>
-                        <p className="text-xs font-semibold text-white">
-                          {foundRecipient.full_name || foundRecipient.username}
-                        </p>
-                        <p className="text-[11px] text-slate-400">{foundRecipient.email}</p>
-                      </div>
-
-                      <div className="flex items-center space-x-2">
-                        <select
-                          value={selectedPermission}
-                          onChange={(e) => setSelectedPermission(e.target.value)}
-                          className="px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 text-xs focus:outline-none"
-                        >
-                          <option value="read">Read (อ่านอย่างเดียว)</option>
-                          <option value="write">Write (เพิ่ม/แก้ไข)</option>
-                          <option value="admin">Admin (จัดการสิทธิ์)</option>
-                        </select>
-
-                        <button
-                          type="button"
-                          onClick={handleGrantAccess}
-                          disabled={actionLoading}
-                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors flex items-center space-x-1"
-                        >
-                          <CheckIcon className="w-3.5 h-3.5" />
-                          <span>{actionLoading ? 'กำลังมอบ...' : 'มอบสิทธิ์'}</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="flex items-center gap-3">
-                  <div className="flex-1">
-                    {userGroups.length === 0 ? (
-                      <p className="text-xs text-slate-400 italic">ไม่พบกลุ่มผู้ใช้ที่คุณเป็นสมาชิก</p>
-                    ) : (
-                      <select
-                        value={selectedGroupId}
-                        onChange={(e) => setSelectedGroupId(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                      >
-                        {userGroups.map((g) => (
-                          <option key={g.group_id || g.id} value={g.group_id || g.id}>
-                            {g.name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  <select
-                    value={selectedPermission}
-                    onChange={(e) => setSelectedPermission(e.target.value)}
-                    className="px-2 py-2 bg-slate-950 border border-slate-700 rounded-xl text-slate-200 text-xs focus:outline-none"
-                  >
-                    <option value="read">Read (อ่านอย่างเดียว)</option>
-                    <option value="write">Write (เพิ่ม/แก้ไข)</option>
-                    <option value="admin">Admin (จัดการสิทธิ์)</option>
-                  </select>
-
-                  <button
-                    type="button"
-                    onClick={handleGrantAccess}
-                    disabled={actionLoading || userGroups.length === 0}
-                    className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-medium rounded-xl transition-colors flex items-center space-x-1 whitespace-nowrap"
-                  >
-                    <CheckIcon className="w-3.5 h-3.5" />
-                    <span>{actionLoading ? 'กำลังมอบ...' : 'มอบสิทธิ์ให้กลุ่ม'}</span>
-                  </button>
-                </div>
               )}
+            </Field>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEditor(null)} disabled={saving}>
+                ยกเลิก
+              </Button>
+              <Button type="submit" loading={saving}>
+                {editor?.mode === 'edit' ? 'บันทึก' : 'สร้างคอลเลกชัน'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete */}
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title={`ลบคอลเลกชัน “${deleteTarget?.name || ''}”?`}
+        description="สิทธิ์และคีย์ของสมาชิกทุกคนจะถูกลบ รายการรหัสผ่านจะไม่ถูกลบ แต่สมาชิกคนอื่นจะเปิดดูไม่ได้อีก การลบนี้ย้อนกลับไม่ได้"
+        confirmLabel="ลบคอลเลกชัน"
+        loading={deleting}
+        onConfirm={handleDelete}
+      />
+
+      {/* Access management */}
+      <Dialog open={Boolean(accessCollection)} onOpenChange={(open) => !open && !granting && setAccessCollection(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>จัดการสิทธิ์ · {accessCollection?.name}</DialogTitle>
+            <DialogDescription>เมื่อให้สิทธิ์ ระบบจะส่งคีย์ของคอลเลกชันที่เข้ารหัสสำหรับผู้รับแต่ละคนไปด้วย</DialogDescription>
+          </DialogHeader>
+
+          {pendingKeys.length > 0 && (
+            <Alert
+              variant="warning"
+              title={`มี ${pendingKeys.length.toLocaleString('th-TH')} คนที่ได้สิทธิ์แล้วแต่ยังไม่ได้รับคีย์`}
+              action={
+                <Button size="sm" variant="outline" onClick={handleDistributePendingKeys} loading={distributing}>
+                  <KeyIcon />
+                  ส่งคีย์ให้ทั้งหมด
+                </Button>
+              }
+            >
+              {pendingKeys.map((m) => m.full_name || m.username).join(', ')} — จะเปิดรายการในคอลเลกชันไม่ได้จนกว่าจะได้รับคีย์
+            </Alert>
+          )}
+
+          <section aria-labelledby="grant-heading" className="grid gap-4 rounded-lg border border-border bg-card p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h3 id="grant-heading" className="text-sm">
+                ให้สิทธิ์เพิ่ม
+              </h3>
+              <div role="radiogroup" aria-label="ให้สิทธิ์กับ" className="inline-flex rounded-md border border-border p-0.5">
+                {[
+                  ['user', 'รายบุคคล'],
+                  ['group', 'กลุ่ม'],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    aria-checked={targetType === value}
+                    onClick={() => {
+                      setTargetType(value);
+                      setFoundRecipient(null);
+                      setLookupError(null);
+                    }}
+                    className={`rounded px-3 py-1 text-sm font-ui transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      targetType === value ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            {/* Members with access but without a wrapped key */}
-            {pendingKeys.length > 0 && (
-              <div className="mb-5 p-4 rounded-2xl border border-amber-500/30 bg-amber-950/30" role="status">
-                <div className="flex items-center justify-between gap-3 mb-2">
-                  <h4 className="text-xs font-semibold text-amber-300 uppercase tracking-wider">
-                    รอรับคีย์ ({pendingKeys.length} คน)
-                  </h4>
-                  <button
-                    type="button"
-                    onClick={handleDistributePendingKeys}
-                    disabled={distributing}
-                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-medium rounded-lg"
-                  >
-                    {distributing ? 'กำลังส่งคีย์...' : 'ส่งคีย์ให้ทั้งหมด'}
-                  </button>
+            {targetType === 'user' ? (
+              <form onSubmit={handleLookupRecipient} noValidate className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                <Field label="อีเมลของผู้รับ" error={lookupError}>
+                  {(props) => (
+                    <Input
+                      {...props}
+                      type="email"
+                      autoComplete="off"
+                      value={recipientEmail}
+                      placeholder="name@example.com"
+                      onChange={(e) => {
+                        setRecipientEmail(e.target.value);
+                        setLookupError(null);
+                      }}
+                    />
+                  )}
+                </Field>
+                <Button type="submit" variant="outline" loading={lookupLoading} className={lookupError ? 'sm:mb-6' : ''}>
+                  ค้นหา
+                </Button>
+              </form>
+            ) : userGroups.length === 0 ? (
+              <p className="text-sm text-muted-foreground">คุณยังไม่ได้เป็นสมาชิกกลุ่มใด สร้างกลุ่มได้ที่เมนู “กลุ่ม”</p>
+            ) : (
+              <Field label="กลุ่ม">
+                {(props) => (
+                  <Select {...props} value={selectedGroupId} onChange={(e) => setSelectedGroupId(e.target.value)}>
+                    {userGroups.map((g) => (
+                      <option key={g.group_id || g.id} value={g.group_id || g.id}>
+                        {g.name}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </Field>
+            )}
+
+            {targetType === 'user' && foundRecipient && (
+              <div className="flex items-center gap-3 rounded-md border border-border bg-secondary px-3 py-2">
+                <div className="flex size-8 items-center justify-center rounded-full bg-accent text-sm font-ui" aria-hidden="true">
+                  {(foundRecipient.full_name || foundRecipient.username || '?').charAt(0).toUpperCase()}
                 </div>
-                <p className="text-xs text-amber-200/80 mb-2">
-                  สมาชิกเหล่านี้มีสิทธิ์แล้วแต่ยังเปิดรายการในคอลเลกชันไม่ได้ จนกว่าจะได้รับคีย์
-                </p>
-                <ul className="text-xs text-slate-200 space-y-1">
-                  {pendingKeys.map((m) => (
-                    <li key={m.user_id}>
-                      {m.full_name || m.username} <span className="text-slate-400">({m.email})</span>
-                    </li>
-                  ))}
-                </ul>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-ui">{foundRecipient.full_name || foundRecipient.username}</p>
+                  <p className="truncate text-caption text-muted-foreground">{foundRecipient.email}</p>
+                </div>
               </div>
             )}
 
-            {/* Existing Access Entries List */}
-            <div>
-              <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-                รายการสิทธิ์ที่กำหนดไว้ ({accessList.length} รายการ)
-              </h4>
+            {(targetType === 'group' ? userGroups.length > 0 : Boolean(foundRecipient)) && (
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                <Field label="ระดับสิทธิ์" hint={PERMISSION_HINTS[selectedPermission]}>
+                  {(props) => (
+                    <Select {...props} value={selectedPermission} onChange={(e) => setSelectedPermission(e.target.value)}>
+                      {['read', 'write', 'admin'].map((p) => (
+                        <option key={p} value={p}>
+                          {PERMISSION_LABELS[p]}
+                        </option>
+                      ))}
+                    </Select>
+                  )}
+                </Field>
+                <Button onClick={handleGrantAccess} loading={granting} className="sm:mb-6">
+                  ให้สิทธิ์
+                </Button>
+              </div>
+            )}
+          </section>
 
-              {loadingAccess ? (
-                <div className="py-8 text-center text-slate-400 text-xs">
-                  กำลังโหลดรายการสิทธิ์...
-                </div>
-              ) : accessList.length === 0 ? (
-                <div className="py-6 text-center text-slate-500 text-xs bg-slate-900/40 rounded-xl border border-slate-800">
-                  ยังไม่มีการมอบสิทธิ์เพิ่มเติมในคอลเลกชันนี้
-                </div>
-              ) : (
-                <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
-                  {accessList.map((entry) => {
-                    const tType = (entry.target_type || entry.targetType || 'user').toLowerCase();
-                    const tId = entry.target_id || entry.targetId;
-                    const perm = (entry.permission || 'read').toLowerCase();
-
-                    const permBadgeStyle =
-                      perm === 'admin'
-                        ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
-                        : perm === 'write'
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                        : 'bg-blue-500/10 text-blue-400 border-blue-500/30';
-
-                    return (
-                      <div
-                        key={entry.id || entry.access_id || `${tType}-${tId}`}
-                        className="p-3 bg-slate-900/60 border border-slate-700/60 rounded-xl flex items-center justify-between"
-                      >
-                        <div className="flex items-center space-x-2.5">
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 uppercase font-mono border border-slate-700">
-                            {tType}
-                          </span>
-                          <span className="text-xs font-mono text-slate-200 truncate max-w-[200px]">
-                            {tId}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center space-x-2">
-                          <span
-                            className={`text-[10px] uppercase font-mono px-2 py-0.5 rounded-full border ${permBadgeStyle}`}
-                          >
-                            {perm}
-                          </span>
-
-                          <button
-                            type="button"
-                            onClick={() => handleRevokeAccess(entry)}
-                            className="p-1 text-slate-400 hover:text-rose-400 rounded hover:bg-slate-800 transition-colors"
-                            title="เพิกถอนสิทธิ์"
-                          >
-                            <TrashIcon className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            <div className="pt-5 mt-4 border-t border-slate-700 text-right">
-              <button
-                type="button"
-                onClick={() => setActiveModal(null)}
-                className="py-2 px-4 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded-xl transition-colors"
+          <section aria-labelledby="access-heading" className="grid gap-2">
+            <h3 id="access-heading" className="text-sm">
+              ผู้ที่มีสิทธิ์ {!loadingAccess && !accessError && `(${accessList.length.toLocaleString('th-TH')})`}
+            </h3>
+            {loadingAccess ? (
+              <div className="grid gap-2" aria-busy="true">
+                <Skeleton className="h-12" />
+                <Skeleton className="h-12" />
+              </div>
+            ) : accessError ? (
+              <Alert
+                variant="error"
+                action={
+                  <Button size="sm" variant="outline" onClick={() => loadAccessList(collectionIdOf(accessCollection))}>
+                    ลองอีกครั้ง
+                  </Button>
+                }
               >
-                ปิด
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+                {accessError}
+              </Alert>
+            ) : accessList.length === 0 ? (
+              <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">ยังไม่มีการให้สิทธิ์</p>
+            ) : (
+              <ul className="divide-y divide-border rounded-lg border border-border">
+                {accessList.map((entry) => {
+                  const type = String(entry.targetType || entry.target_type).toLowerCase();
+                  const perm = String(entry.permission || 'read').toLowerCase();
+                  const isSelf = type === 'user' && (entry.targetId || entry.target_id) === user?.user_id;
+                  const name = entry.targetName || (type === 'group' ? 'กลุ่มที่ถูกลบ' : 'ผู้ใช้ที่ถูกลบ');
+                  return (
+                    <li key={entry.id || `${type}-${entry.targetId}`} className="flex items-center gap-3 px-3 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-ui">
+                          {name}
+                          {isSelf && <span className="text-muted-foreground"> (คุณ)</span>}
+                        </p>
+                        <p className="truncate text-caption text-muted-foreground">{type === 'group' ? 'กลุ่ม' : entry.targetEmail || 'ผู้ใช้'}</p>
+                      </div>
+                      <Badge variant={PERMISSION_BADGE[perm] || 'outline'}>{PERMISSION_LABELS[perm] || perm}</Badge>
+                      {!isSelf && (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="hover:bg-error hover:text-error-foreground"
+                          onClick={() => setRevokeTarget({ ...entry, targetName: name })}
+                          aria-label={`เพิกถอนสิทธิ์ของ ${name}`}
+                        >
+                          <TrashIcon />
+                        </Button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(revokeTarget)}
+        onOpenChange={(open) => !open && setRevokeTarget(null)}
+        title={`เพิกถอนสิทธิ์ของ ${revokeTarget?.targetName || ''}?`}
+        description="ผู้นี้จะเปิดคอลเลกชันไม่ได้ทันที และคีย์ที่เก็บไว้บนเซิร์ฟเวอร์จะถูกลบ หากเคยเปิดดูรหัสผ่านไปแล้ว ควรเปลี่ยนรหัสผ่านที่สำคัญ"
+        confirmLabel="เพิกถอนสิทธิ์"
+        loading={revoking}
+        onConfirm={handleRevoke}
+      />
     </div>
   );
 }

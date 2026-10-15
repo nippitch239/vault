@@ -39,7 +39,9 @@ function MainApp() {
   }, []);
 
   // Dashboard tab state when logged in
-  const [currentTab, setCurrentTab] = useState('vault'); // 'vault' | 'generator' | 'shared' | 'collections' | 'groups' | 'activity' | 'audit' | 'monitoring'
+  const [currentTab, setCurrentTab] = useState('vault');
+  // Collection to pre-select in the vault when opened from the Collections page.
+  const [vaultCollectionFilter, setVaultCollectionFilter] = useState(null); // 'vault' | 'generator' | 'shared' | 'collections' | 'groups' | 'activity' | 'audit' | 'monitoring'
 
   // Layout & UI Shell state
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
@@ -154,7 +156,7 @@ function MainApp() {
   const renderCurrentTab = () => {
     switch (currentTab) {
       case 'vault':
-        return <VaultDashboard />;
+        return <VaultDashboard initialCollectionFilter={vaultCollectionFilter} />;
       case 'generator':
         return (
           <div className="max-w-2xl mx-auto py-2 sm:py-4">
@@ -164,7 +166,14 @@ function MainApp() {
       case 'shared':
         return <SharedItemsView />;
       case 'collections':
-        return <CollectionsView />;
+        return (
+          <CollectionsView
+            onOpenCollection={(collectionId) => {
+              setVaultCollectionFilter(collectionId);
+              setCurrentTab('vault');
+            }}
+          />
+        );
       case 'groups':
         return <GroupsView />;
       case 'activity':
