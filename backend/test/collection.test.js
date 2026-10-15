@@ -117,3 +117,28 @@ test('C2: only collection admins can distribute wrapped keys, and only to member
   const readerKey = await callRouter({ method: 'GET', path: `/api/v1/collections/${collectionId}/keys`, claims: reader });
   assert.equal(readerKey.statusCode, 200);
 });
+
+test('Groups: a manager cannot escalate to group admin (which would inherit collection admin)', async () => {
+  await resetDatabase();
+  const owner = await registerProfile('gowner');
+  const manager = await registerProfile('gmanager');
+  const friend = await registerProfile('gfriend');
+
+  const group = await callRouter({ method: 'POST', path: '/api/v1/groups', claims: owner, body: { name: 'Ops' } });
+  const groupId = group.data.group.group_id || group.data.group.id;
+  const addManager = await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: owner, body: { userId: manager.sub, role: 'manager' } });
+  assert.equal(addManager.statusCode, 201);
+
+  const escalate = await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: manager, body: { userId: friend.sub, role: 'admin' } });
+  assert.equal(escalate.statusCode, 403);
+  const member = await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: manager, body: { userId: friend.sub, role: 'member' } });
+  assert.equal(member.statusCode, 201);
+
+  // A manager cannot remove the group admin (the owner)
+  const removeOwner = await callRouter({ method: 'DELETE', path: `/api/v1/groups/${groupId}/members/${owner.sub}`, claims: manager });
+  assert.equal(removeOwner.statusCode, 403);
+
+  // Non-string role no longer crashes with 500
+  const badRole = await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: owner, body: { userId: friend.sub, role: 42 } });
+  assert.notEqual(badRole.statusCode, 500);
+});

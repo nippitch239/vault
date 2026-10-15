@@ -14,6 +14,8 @@ import crypto from 'node:crypto';
 import { getDatabase } from '../db/adapter.js';
 import { authenticate } from '../middleware/auth-guard.js';
 
+const GROUP_ROLE_RANK = { member: 1, manager: 2, admin: 3 };
+
 function jsonResponse(statusCode, data) {
   return {
     statusCode,
@@ -356,6 +358,9 @@ export async function addGroupMemberHandler(event) {
   }
 
   const group = res.rows[0];
+  // Group membership grants collection permissions, so nobody may hand out a group role
+  // above their own: managers add members/managers, only group admins add admins.
+  let actorRank = GROUP_ROLE_RANK.admin;
   if (user.role !== 'admin' && group.created_by !== user.user_id) {
     const mbr = await db.query(
       'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
@@ -369,11 +374,12 @@ export async function addGroupMemberHandler(event) {
         message: 'Only group admin or manager can add members',
       });
     }
+    actorRank = GROUP_ROLE_RANK[role];
   }
 
   const body = parseBody(event);
   const targetUserId = body.userId || body.user_id;
-  const role = (body.role || 'member').toLowerCase();
+  const role = typeof body.role === 'string' ? body.role.toLowerCase() : 'member';
 
   if (!targetUserId) {
     return jsonResponse(400, {
@@ -388,6 +394,14 @@ export async function addGroupMemberHandler(event) {
       status: 'fail',
       error: 'BAD_REQUEST',
       message: 'Invalid role. Must be member, manager, or admin',
+    });
+  }
+
+  if (GROUP_ROLE_RANK[role] > actorRank) {
+    return jsonResponse(403, {
+      status: 'fail',
+      error: 'FORBIDDEN',
+      message: 'You cannot assign a group role higher than your own',
     });
   }
 
@@ -503,7 +517,7 @@ export async function removeGroupMemberHandler(event) {
 
   const group = res.rows[0];
   const targetMember = await db.query(
-    'SELECT group_member_id FROM group_members WHERE group_id = $1 AND user_id = $2',
+    'SELECT group_member_id, role FROM group_members WHERE group_id = $1 AND user_id = $2',
     [groupId, targetUserId]
   );
   if (!targetMember.rows || targetMember.rows.length === 0) {
@@ -525,6 +539,14 @@ export async function removeGroupMemberHandler(event) {
         status: 'fail',
         error: 'FORBIDDEN',
         message: 'Insufficient permission to remove member',
+      });
+    }
+    // A manager cannot remove someone with a higher group role (e.g. a group admin).
+    if (GROUP_ROLE_RANK[targetMember.rows[0].role] > GROUP_ROLE_RANK[curRole]) {
+      return jsonResponse(403, {
+        status: 'fail',
+        error: 'FORBIDDEN',
+        message: 'You cannot remove a member with a higher group role than your own',
       });
     }
   }
