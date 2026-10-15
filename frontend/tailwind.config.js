@@ -23,6 +23,7 @@ export default {
         primary: {
           DEFAULT: 'hsl(var(--primary) / <alpha-value>)',
           foreground: 'hsl(var(--primary-foreground) / <alpha-value>)',
+          glow: 'hsl(var(--primary-glow) / <alpha-value>)',
         },
         secondary: {
           DEFAULT: 'hsl(var(--secondary) / <alpha-value>)',
@@ -76,14 +77,14 @@ export default {
         },
         overlay: 'hsl(var(--overlay) / <alpha-value>)',
       },
-      // Linear-inspired system (design/DESIGN.md, design/TOKENS.md)
+      // Vault theme (design/TOKENS.md)
       fontFamily: {
         sans: ['var(--font-sans)'],
         mono: ['var(--font-mono)'],
       },
       fontWeight: {
-        ui: '510',
-        strong: '590',
+        ui: '400',
+        strong: '500',
       },
       fontSize: {
         caption: ['0.8125rem', { lineHeight: '1.5' }],
@@ -93,6 +94,8 @@ export default {
         dialog:
           '0 8px 2px rgb(0 0 0 / 0), 0 5px 2px rgb(0 0 0 / 0.01), 0 3px 2px rgb(0 0 0 / 0.04), 0 1px 1px rgb(0 0 0 / 0.07), 0 0 1px rgb(0 0 0 / 0.08), 0 24px 48px -12px rgb(0 0 0 / 0.5)',
         inset: 'inset 0 0 12px rgb(0 0 0 / 0.2)',
+        glow: '0 0 0 1px hsl(var(--primary-glow) / 0.55), 0 8px 32px -6px hsl(var(--glow) / 0.65), inset 0 1px 0 rgb(255 255 255 / 0.18)',
+        'glow-sm': '0 0 0 1px hsl(var(--primary-glow) / 0.45), 0 4px 18px -6px hsl(var(--glow) / 0.55)',
       },
       transitionTimingFunction: {
         standard: 'var(--ease-standard)',
@@ -101,12 +104,13 @@ export default {
         fast: '150ms',
         base: '200ms',
       },
+      // Pills for buttons/chips (rounded-full), 12px controls, 20px cards, 24px panels.
       borderRadius: {
-        '2xl': 'calc(var(--radius) + 8px)',
-        xl: 'calc(var(--radius) + 4px)',
+        '2xl': '1.75rem',
+        xl: '1.5rem',
         lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)',
+        md: '0.75rem',
+        sm: '0.5rem',
       },
       keyframes: {
         'content-show': {

@@ -1,45 +1,49 @@
-# Design tokens (from `DESIGN.md`)
+# Design tokens — "Vault" theme
 
 Single source: `frontend/src/index.css` (CSS variables, light + dark) mapped in
-`frontend/tailwind.config.js`. Components use only token classes (`bg-background`,
-`text-muted-foreground`, `bg-primary`, `border-border`, `rounded-md`, `shadow-dialog`, …) —
-no hex values or Tailwind palette colors (`slate-*`, `emerald-*`).
+`frontend/tailwind.config.js`. Components use only token classes (`bg-background`, `bg-card`,
+`text-muted-foreground`, `bg-primary`, `border-border`, `rounded-lg`, `shadow-glow`, …) — no hex
+values or Tailwind palette colors.
+
+## History
+
+1. Step 3 started from the Open Design **Linear-inspired** system (`design/DESIGN.md`, kept for
+   reference with its Apache-2.0 license).
+2. The product owner then asked for the look of the Webflow **"Vault" SaaS template**
+   (https://webflow.com/templates/html/vault-saas-website-template). That template is a paid
+   product, so **none of its HTML, CSS, images, logo or text is used**; the theme below recreates
+   the *feel* (palette, typography, pill buttons, glow, layout) on our own tokens and components.
+   The token *names* did not change, so every page switched theme without per-page edits.
 
 ## Color
 
-| Token | Dark (default) | Light | Spec role |
+| Token | Dark (default) | Light | Role |
 |---|---|---|---|
-| `--background` | `#08090a` | `#f7f8f8` | Marketing black / light background |
-| `--card` | `#0f1011` | `#ffffff` | Panel dark / card surface |
-| `--popover` | `#191a1b` | `#ffffff` | Level-3 elevated surface |
-| `--secondary`, `--muted`, `--accent` | `#191a1b` / `#191a1b` / `#28282c` | `#f3f4f5` / `#f3f4f5` / `#eef0f2` | Surfaces, hover |
-| `--foreground` | `#f7f8f8` | `#0f1011` | Primary text (never pure white) |
-| `--muted-foreground` | `#8a8f98` (6.1:1) | `#62666d` (5.4:1) | Tertiary text |
-| `--border` / `--input` | `#23252a` / `#34343a` | `#e6e6e6` / `#d0d6e0` | Border primary / secondary |
-| `--primary` | `#5e6ad2` (white text 4.7:1) | `#4752c4` (white text 6.4:1) | Brand indigo — CTAs and active state only |
-| `--ring` | `#7170ff` | `#5e6ad2` | Accent violet focus ring |
-| `--destructive` | `#dc2626` | `#dc2626` | Danger |
-| `--success` / `-foreground` | `#0f2a18` / `#4cc76a` | `#e8f6ec` / `#1f7a35` | Status tint + text (≥ 4.8:1) |
-| `--warning` / `-foreground` | `#2b2410` / `#f5c542` | `#fdf6db` / `#8a5a00` | |
-| `--info` / `-foreground` | `#1b1d3a` / `#9ca3ff` | `#eceefc` / `#4752c4` | |
-| `--error` / `-foreground` | `#2d1416` / `#f87171` | `#fdecec` / `#b91c1c` | |
-
-Light mode uses `#4752c4` (the spec's pressed indigo) as primary because `#5e6ad2` on the light
-background is 4.4:1, below WCAG AA for text.
+| `--background` | `#050009` | `#f8f4fc` | Page; dark has violet corner glow (`--glow`) on `<body>` |
+| `--card` | `#0c0614` (80% + blur) | `#ffffff` | Cards (`card-glow` inner highlight) |
+| `--popover` | `#150b22` | `#ffffff` | Dialogs, menus |
+| `--secondary`, `--muted`, `--accent` | `#1e1230` | `#efe6f8` | Surfaces, hover |
+| `--foreground` | `#fffafa` (20:1) | `#14091f` (17.8:1) | Text |
+| `--secondary-foreground` | `#eed6fe` lavender | `#14091f` | Secondary text |
+| `--muted-foreground` | `#a99db5` (8.1:1) | `#625870` (6.1:1) | Tertiary text |
+| `--border` / `--input` | `#2b2238` / `#3b2f4a` | `#e4d9ef` / `#cdbfdc` | Hairlines, controls |
+| `--primary` / `--primary-glow` | `#6804ab` / `#8b2fd6` | same | CTA gradient (white text 9.3:1 / 5.8:1) |
+| `--ring` | `#b77cff` | `#6804ab` | Focus ring |
+| `--success/-warning/-info/-error` (+ `-foreground`) | dark tints with ≥ 7:1 text | light tints with ≥ 4.8:1 text | Status |
 
 ## Typography
 
-- `font-sans`: Inter (variable) + **Noto Sans Thai** for Thai glyphs, OpenType `cv01`, `ss03`.
-- `font-mono`: JetBrains Mono (Berkeley Mono in the spec is a paid font).
-- Weights: 400 body, **510** `font-ui` (labels, nav, buttons), **590** `font-strong` (headings); no 700.
-- Scale used in the app: 12 / 13 / 14 / 16 / 20 / 24 / 32 px; display tracking `-0.022em`.
+- `font-sans`: **Kanit** (Thai + Latin, Google Fonts, SIL OFL) 200–600; `font-mono`: JetBrains Mono.
+- Body 300, `font-ui` 400 (labels, buttons, nav), `font-strong` 500 (headings); no 700.
+- Landing hero: `text-4xl sm:text-6xl lg:text-7xl`, uppercase Latin, `.text-gradient`.
 
 ## Shape, depth, motion
 
 | Token | Value |
 |---|---|
-| `--radius` (cards `rounded-lg`) | 8px; `rounded-md` 6px (buttons, inputs); `rounded-sm` 4px; `rounded-xl` 12px (panels) |
-| `shadow-raised` | `0 2px 4px rgb(0 0 0 / .4), 0 0 0 1px rgb(255 255 255 / .05)` |
-| `shadow-dialog` | spec Level-5 multi-layer stack |
-| Motion | 150 ms (fast) / 200 ms (base), `cubic-bezier(0.2, 0, 0, 1)` |
-| Overlay | `bg-black/85`-style backdrop via `--overlay` |
+| Buttons, chips, badges | `rounded-full` pills |
+| `rounded-md` / `rounded-lg` / `rounded-xl` | 12px controls / 20px cards / 24px dialogs |
+| `shadow-glow`, `shadow-glow-sm` | violet glow for the main CTA / active items |
+| `.card-glow` | 1px inner highlight + soft violet drop glow |
+| `.bg-grid` | faint 56px grid behind hero sections |
+| Motion | 150 ms / 200 ms, `cubic-bezier(0.2, 0, 0, 1)`; `prefers-reduced-motion` respected |

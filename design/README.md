@@ -1,10 +1,14 @@
 # Design reference
 
+> **Current theme: "Vault"** — the product owner switched from the Open Design Linear-inspired
+> system to the look of the Webflow "Vault" SaaS template (inspiration only, no template code/assets;
+> it is a paid template). See `TOKENS.md`. `DESIGN.md` below is kept as the original step-3 reference.
+
 | File | What |
 |---|---|
 | `DESIGN.md` | Unmodified copy of the **Linear-inspired** design system from Open Design (`design-systems/linear-app/DESIGN.md`). Reference only — the app does not load it. |
 | `LICENSE-open-design.txt` | Apache License 2.0 of Open Design (required when redistributing the file above). |
-| `TOKENS.md` | How the spec was translated into the app's design tokens. |
+| `TOKENS.md` | Current "Vault" theme tokens and how they map to Tailwind. |
 
 ## Source
 

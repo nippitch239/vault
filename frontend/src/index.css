@@ -4,100 +4,105 @@
 
 @layer base {
   /*
-   * Design tokens — Linear-inspired system from Open Design (design/DESIGN.md).
-   * Mapping and contrast notes: design/TOKENS.md. Values are HSL triplets so Tailwind
-   * opacity modifiers work (bg-primary/90). Components must use these, not hex/palette colors.
+   * Design tokens — "Vault" theme: deep purple-black canvas, violet glow, pill buttons,
+   * thin translucent borders, Kanit (Thai + Latin). Inspired by the look of the Webflow
+   * "Vault" SaaS template chosen by the product owner; no template code or assets are used.
+   * Mapping and contrast notes: design/TOKENS.md. HSL triplets so opacity modifiers work.
    */
   :root {
-    /* Light theme */
-    --background: 180 6.7% 97.1%;        /* #f7f8f8 */
-    --foreground: 210 6.3% 6.3%;         /* #0f1011 */
+    /* Light theme (lavender-white) */
+    --background: 270 57.1% 97.3%;       /* #f8f4fc */
+    --foreground: 270 55% 7.8%;          /* #14091f */
     --card: 0 0% 100%;
-    --card-foreground: 210 6.3% 6.3%;
+    --card-foreground: 270 55% 7.8%;
     --popover: 0 0% 100%;
-    --popover-foreground: 210 6.3% 6.3%;
-    --primary: 235 51.4% 52.4%;          /* #4752c4 — AA for text on light */
-    --primary-foreground: 0 0% 100%;
-    --secondary: 210 9.1% 95.7%;         /* #f3f4f5 */
-    --secondary-foreground: 210 6.3% 6.3%;
-    --muted: 210 9.1% 95.7%;
-    --muted-foreground: 218 5.3% 40.6%;  /* #62666d */
-    --accent: 210 13.3% 94.1%;           /* #eef0f2 hover surface */
-    --accent-foreground: 210 6.3% 6.3%;
-    --destructive: 0 72.2% 50.6%;        /* #dc2626 */
+    --popover-foreground: 270 55% 7.8%;
+    --primary: 276 95.4% 34.3%;          /* #6804ab */
+    --primary-foreground: 0 100% 99%;
+    --primary-glow: 273 67.1% 51.2%;     /* #8b2fd6 */
+    --secondary: 270 56.3% 93.7%;        /* #efe6f8 */
+    --secondary-foreground: 270 55% 7.8%;
+    --muted: 270 56.3% 93.7%;
+    --muted-foreground: 265 12% 39.2%;   /* #625870 */
+    --accent: 270 56.3% 93.7%;
+    --accent-foreground: 270 55% 7.8%;
+    --destructive: 348 83% 47%;
     --destructive-foreground: 0 0% 100%;
 
     --success: 137 43.8% 93.7%;
-    --success-foreground: 135 59.5% 30%;
+    --success-foreground: 135 59.5% 28%;
     --warning: 48 89.5% 92.5%;
-    --warning-foreground: 39 100% 27.1%;
-    --info: 233 72.7% 95.7%;
-    --info-foreground: 235 51.4% 52.4%;
-    --error: 0 81% 95.9%;
-    --error-foreground: 0 73.7% 41.8%;
+    --warning-foreground: 39 100% 26%;
+    --info: 274 80% 95%;
+    --info-foreground: 276 95.4% 34.3%;
+    --error: 350 81% 95.5%;
+    --error-foreground: 348 75% 38%;
 
-    --border: 0 0% 90.2%;                /* #e6e6e6 */
-    --input: 217 20.5% 84.7%;            /* #d0d6e0 */
-    --ring: 234 56.3% 59.6%;             /* #5e6ad2 */
-    --overlay: 210 11.1% 3.5%;
+    --border: 270 40.7% 89.4%;           /* #e4d9ef */
+    --input: 269 29.3% 80.6%;            /* #cdbfdc */
+    --ring: 276 95.4% 34.3%;
+    --overlay: 270 55% 7.8%;
+    --glow: 273 67.1% 51.2%;
 
-    --radius: 0.5rem;                    /* 8px cards; md 6px controls */
+    --radius: 1.25rem;                   /* 20px cards */
 
-    --font-sans: 'Inter', 'Noto Sans Thai', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-sans: 'Kanit', 'Noto Sans Thai', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
     --ease-standard: cubic-bezier(0.2, 0, 0, 1);
 
     --sidebar-background: 0 0% 100%;
-    --sidebar-foreground: 218 5.3% 40.6%;
-    --sidebar-primary: 235 51.4% 52.4%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 210 13.3% 94.1%;
-    --sidebar-accent-foreground: 210 6.3% 6.3%;
-    --sidebar-border: 0 0% 90.2%;
-    --sidebar-ring: 234 56.3% 59.6%;
+    --sidebar-foreground: 265 12% 39.2%;
+    --sidebar-primary: 276 95.4% 34.3%;
+    --sidebar-primary-foreground: 0 100% 99%;
+    --sidebar-accent: 270 56.3% 93.7%;
+    --sidebar-accent-foreground: 270 55% 7.8%;
+    --sidebar-border: 270 40.7% 89.4%;
+    --sidebar-ring: 276 95.4% 34.3%;
   }
 
   .dark {
-    /* Dark theme (default): luminance steps instead of shadows */
-    --background: 210 11.1% 3.5%;        /* #08090a */
-    --foreground: 180 6.7% 97.1%;        /* #f7f8f8 */
-    --card: 210 6.3% 6.3%;               /* #0f1011 panel */
-    --card-foreground: 180 6.7% 97.1%;
-    --popover: 210 3.8% 10.2%;           /* #191a1b elevated */
-    --popover-foreground: 180 6.7% 97.1%;
-    --primary: 234 56.3% 59.6%;          /* #5e6ad2 brand indigo */
-    --primary-foreground: 0 0% 100%;
-    --secondary: 210 3.8% 10.2%;
-    --secondary-foreground: 217 20.5% 84.7%;
-    --muted: 210 3.8% 10.2%;
-    --muted-foreground: 219 6.4% 56.9%;  /* #8a8f98 */
-    --accent: 240 4.8% 16.5%;            /* #28282c hover */
-    --accent-foreground: 180 6.7% 97.1%;
-    --destructive: 0 72.2% 50.6%;
+    /* Dark theme (default): purple-black with violet light */
+    --background: 273 100% 1.8%;         /* #050009 */
+    --foreground: 0 100% 99%;            /* #fffafa */
+    --card: 266 53.8% 5.1%;              /* #0c0614 */
+    --card-foreground: 0 100% 99%;
+    --popover: 266 51.1% 8.8%;           /* #150b22 */
+    --popover-foreground: 0 100% 99%;
+    --primary: 276 95.4% 34.3%;          /* #6804ab — white text 9.3:1 */
+    --primary-foreground: 0 100% 99%;
+    --primary-glow: 273 67.1% 51.2%;     /* #8b2fd6 */
+    --secondary: 264 45.5% 12.9%;        /* #1e1230 */
+    --secondary-foreground: 276 95.2% 91.8%; /* #eed6fe lavender */
+    --muted: 264 45.5% 12.9%;
+    --muted-foreground: 270 14% 66.3%;   /* #a99db5 — 8.1:1 */
+    --accent: 264 45.5% 12.9%;
+    --accent-foreground: 0 100% 99%;
+    --destructive: 348 83% 47%;
     --destructive-foreground: 0 0% 100%;
 
-    --success: 140 47.4% 11.2%;
-    --success-foreground: 135 52.3% 53.9%;
-    --warning: 44 45.8% 11.6%;
+    --success: 150 47% 9.6%;
+    --success-foreground: 145 63% 57.3%;
+    --warning: 42 68% 9.8%;
     --warning-foreground: 44 89.9% 61%;
-    --info: 236 36.5% 16.7%;
-    --info-foreground: 236 100% 80.6%;
-    --error: 355 38.5% 12.7%;
-    --error-foreground: 0 90.6% 70.8%;
+    --info: 268 55% 13%;
+    --info-foreground: 271 100% 83%;
+    --error: 343 50% 11.8%;
+    --error-foreground: 350 100% 74%;
 
-    --border: 223 9.1% 15.1%;            /* #23252a */
-    --input: 240 5.5% 21.6%;             /* #34343a */
-    --ring: 240 100% 72%;                /* #7170ff */
-    --overlay: 0 0% 0%;
+    --border: 265 24.4% 17.6%;           /* #2b2238 */
+    --input: 267 22.3% 23.7%;            /* #3b2f4a */
+    --ring: 267 100% 74.3%;              /* #b77cff */
+    --overlay: 273 100% 1.8%;
+    --glow: 273 67.1% 51.2%;
 
-    --sidebar-background: 210 6.3% 6.3%;
-    --sidebar-foreground: 217 20.5% 84.7%;
-    --sidebar-primary: 234 56.3% 59.6%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 210 3.8% 10.2%;
-    --sidebar-accent-foreground: 180 6.7% 97.1%;
-    --sidebar-border: 223 9.1% 15.1%;
-    --sidebar-ring: 240 100% 72%;
+    --sidebar-background: 266 53.8% 5.1%;
+    --sidebar-foreground: 270 14% 66.3%;
+    --sidebar-primary: 276 95.4% 34.3%;
+    --sidebar-primary-foreground: 0 100% 99%;
+    --sidebar-accent: 264 45.5% 12.9%;
+    --sidebar-accent-foreground: 0 100% 99%;
+    --sidebar-border: 265 24.4% 17.6%;
+    --sidebar-ring: 267 100% 74.3%;
   }
 
   * {
@@ -107,12 +112,21 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family: var(--font-sans);
-    font-feature-settings: 'cv01', 'ss03';
+    font-weight: 300;
+    /* Violet light in the corners, like a glow behind the content */
+    background-image:
+      radial-gradient(48rem 32rem at 100% 0%, hsl(var(--glow) / 0.22), transparent 60%),
+      radial-gradient(40rem 28rem at 0% 100%, hsl(var(--glow) / 0.10), transparent 60%);
+    background-attachment: fixed;
   }
 
   h1, h2, h3, h4 {
-    font-weight: 590;
-    letter-spacing: -0.011em;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+  }
+
+  strong, b {
+    font-weight: 500;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -150,3 +164,25 @@
 .text-vault-text { color: hsl(var(--foreground)); }
 .text-vault-muted { color: hsl(var(--muted-foreground)); }
 .text-vault-accent { color: hsl(var(--primary)); }
+
+/* Vault theme helpers */
+@layer components {
+  /* Big uppercase headline with a fading gradient (landing hero) */
+  .text-gradient {
+    background: linear-gradient(90deg, hsl(var(--foreground) / 0.25), hsl(var(--foreground)) 55%, hsl(var(--foreground) / 0.85));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  /* Faint grid behind hero sections */
+  .bg-grid {
+    background-image:
+      linear-gradient(hsl(var(--foreground) / 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--foreground) / 0.04) 1px, transparent 1px);
+    background-size: 56px 56px;
+  }
+  /* Card with a thin light border and a subtle violet inner glow */
+  .card-glow {
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.06), 0 0 0 1px hsl(var(--foreground) / 0.04), 0 20px 60px -30px hsl(var(--glow) / 0.45);
+  }
+}
