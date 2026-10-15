@@ -1,16 +1,69 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../services/api.js';
-import { ChartBarIcon, RefreshIcon, ShieldIcon } from '../Common/Icons.jsx';
+import { RefreshIcon, ShieldIcon } from '../Common/Icons.jsx';
+import { Button, Badge, Card, Alert, Skeleton } from '../ui/index.js';
+
+function cn(...inputs) {
+  return inputs.flat().filter(Boolean).join(' ');
+}
+
+const STATUS_TONE = {
+  success: 'text-success-foreground',
+  warning: 'text-warning-foreground',
+  error: 'text-error-foreground',
+  neutral: 'text-muted-foreground',
+};
+
+const formatNumber = (n, opts) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString('th-TH', opts) : '—');
+
+function formatUptime(seconds) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s <= 0) return '—';
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const minutes = Math.floor((s % 3600) / 60);
+  if (days > 0) return `${days} วัน ${hours} ชม.`;
+  if (hours > 0) return `${hours} ชม. ${minutes} นาที`;
+  return `${minutes} นาที`;
+}
+
+function KpiCard({ label, value, unit, note, tone = 'neutral', noteLabel }) {
+  return (
+    <Card className="flex flex-col gap-1 p-4">
+      <p className="text-caption text-muted-foreground">{label}</p>
+      <p className="text-2xl font-strong tracking-tight tabular-nums text-foreground">
+        {value}
+        {unit && <span className="ml-1 text-sm font-ui text-muted-foreground">{unit}</span>}
+      </p>
+      {note && (
+        <p className={cn('text-caption', STATUS_TONE[tone])}>
+          {noteLabel && <span className="sr-only">{noteLabel}: </span>}
+          {note}
+        </p>
+      )}
+    </Card>
+  );
+}
+
+function DetailRow({ label, children }) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-2.5">
+      <dt className="text-sm text-muted-foreground">{label}</dt>
+      <dd className="text-right text-sm font-ui text-foreground tabular-nums">{children}</dd>
+    </div>
+  );
+}
 
 export function MonitoringDashboardView() {
-
   const [health, setHealth] = useState(null);
   const [metrics, setMetrics] = useState(null);
+  const [metricsError, setMetricsError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -20,6 +73,7 @@ export function MonitoringDashboardView() {
       ]);
 
       setHealth(healthRes);
+      setMetricsError(metricsRes?.error || null);
       const rawMetrics = metricsRes?.metrics || metricsRes?.data || metricsRes || {};
       const normalized = {
         uptime_seconds: rawMetrics?.uptime_seconds ?? 0,
@@ -37,199 +91,224 @@ export function MonitoringDashboardView() {
         ...rawMetrics,
       };
       setMetrics(normalized);
+      setLastUpdated(new Date());
     } catch (err) {
-      setError(err.message || 'ไม่สามารถโหลดข้อมูลระบบมอนิเตอร์ได้ในขณะนี้');
+      setError(err.message || 'โหลดข้อมูลสถานะระบบไม่สำเร็จ ลองอีกครั้ง');
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    loadData();
   }, []);
 
   useEffect(() => {
-    if (!autoRefresh) return;
+    loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    if (!autoRefresh) return undefined;
     const interval = setInterval(() => {
       loadData();
     }, 15000); // 15s interval
     return () => clearInterval(interval);
-  }, [autoRefresh]);
+  }, [autoRefresh, loadData]);
 
-  const isHealthy = health?.status === 'healthy';
+  const status = health?.status;
+  const statusInfo =
+    status === 'healthy'
+      ? { label: 'ทำงานปกติ', variant: 'success', tone: 'success' }
+      : status
+        ? { label: 'มีปัญหา', variant: 'destructive', tone: 'error' }
+        : { label: 'ไม่ทราบสถานะ', variant: 'outline', tone: 'neutral' };
+  const dbStatus = health?.database;
+  const dbLabel = dbStatus === 'connected' ? 'เชื่อมต่อแล้ว' : dbStatus === 'disconnected' ? 'ไม่ได้เชื่อมต่อ' : dbStatus || '—';
+
+  const errorRate = Number(metrics?.requests?.error_rate_percent ?? 0);
+  const errorRateOk = errorRate < 1;
+  const totalUsers = metrics?.inventory?.total_users ?? metrics?.database?.total_users ?? 0;
+  // The backend reports these under `inventory` / `security_indicators`; older shapes under `database`.
+  const totalItems = metrics?.inventory?.total_vault_items ?? metrics?.database?.total_vault_items ?? 0;
+  const failedLogins = metrics?.security_indicators?.failed_logins_last_hour ?? metrics?.database?.failed_login_events ?? 0;
+  const securityAlarms = metrics?.security_indicators?.active_security_alarms;
+
+  const initialLoading = loading && !metrics;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-700/60">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center space-x-2.5">
-            <ChartBarIcon className="w-7 h-7 text-emerald-400" />
-            <span>แดชบอร์ดตรวจสอบระบบ (UC-13 System Monitoring)</span>
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">
-            สถานะความพร้อมของระบบ (System Health), อัตราความหน่วง API และสถิติความปลอดภัยแบบเรียลไทม์
-          </p>
+          <h1 className="text-2xl tracking-tight">สถานะระบบ</h1>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">ความพร้อมของระบบ ความเร็วในการตอบสนอง และตัวชี้วัดด้านความปลอดภัย</p>
         </div>
-
-        <div className="flex items-center space-x-3">
-          <label className="flex items-center space-x-2 text-xs text-slate-400 bg-slate-800 px-3 py-2 rounded-xl border border-slate-700 cursor-pointer">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-md border border-border px-3 text-sm text-foreground">
             <input
               type="checkbox"
               checked={autoRefresh}
               onChange={(e) => setAutoRefresh(e.target.checked)}
-              className="rounded text-emerald-600 focus:ring-emerald-500 bg-slate-900 border-slate-600"
+              className="size-4 cursor-pointer rounded border-input accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             />
-            <span>Auto Refresh (15s)</span>
+            โหลดใหม่อัตโนมัติทุก 15 วินาที
           </label>
+          <Button variant="outline" onClick={loadData} disabled={loading} className="w-full sm:w-auto">
+            <RefreshIcon className={loading ? 'animate-spin' : ''} />
+            โหลดใหม่
+          </Button>
+        </div>
+      </header>
 
-          <button
-            type="button"
-            onClick={loadData}
-            disabled={loading}
-            className="p-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-xl transition-colors"
-            title="รีเฟรชข้อมูล"
+      <div aria-live="polite" className="space-y-4">
+        {error && (
+          <Alert
+            variant="error"
+            title="โหลดข้อมูลสถานะระบบไม่สำเร็จ"
+            action={
+              <Button variant="outline" size="sm" onClick={loadData}>
+                ลองอีกครั้ง
+              </Button>
+            }
           >
-            <RefreshIcon className={`w-4 h-4 ${loading ? 'animate-spin text-emerald-400' : ''}`} />
-          </button>
-        </div>
-      </div>
-
-      {error && (
-        <div className="p-4 bg-rose-950/80 border border-rose-500/50 rounded-2xl text-rose-200 text-sm">
-          {error}
-        </div>
-      )}
-
-      {/* System Health Status Card */}
-      <div className="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-5 shadow-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div className="flex items-center space-x-4">
-          <div
-            className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
-              isHealthy ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border border-rose-500/30 text-rose-400'
-            }`}
+            {error}
+          </Alert>
+        )}
+        {!error && metricsError && !loading && (
+          <Alert
+            variant="error"
+            title="โหลดตัวชี้วัดไม่สำเร็จ ตัวเลขด้านล่างอาจไม่ถูกต้อง"
+            action={
+              <Button variant="outline" size="sm" onClick={loadData}>
+                ลองอีกครั้ง
+              </Button>
+            }
           >
-            <ShieldIcon className="w-6 h-6" />
-          </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <h2 className="text-lg font-bold text-white">สถานะระบบ (System Status):</h2>
-              <span
-                className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider border ${
-                  isHealthy
-                    ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/50'
-                    : 'bg-rose-950/80 text-rose-300 border-rose-500/50'
-                }`}
-              >
-                {health?.status || 'Unknown'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 mt-1">
-              ฐานข้อมูล: <strong className="text-slate-200">{health?.database || 'Connected'}</strong> | เอนจิ้น: {health?.engine || 'RDS PostgreSQL'} | Version: {health?.version || '1.0.0'}
-            </p>
-          </div>
-        </div>
-
-        <div className="text-right text-xs text-slate-400 self-end sm:self-center">
-          <div>เวลาทำงาน (Uptime): <strong className="text-slate-200 font-mono">{metrics?.uptime_seconds ? `${Math.floor(metrics.uptime_seconds / 60)} นาที` : 'Online'}</strong></div>
-          <div>อัปเดตล่าสุด: {new Date().toLocaleTimeString('th-TH')}</div>
-        </div>
+            {metricsError}
+          </Alert>
+        )}
       </div>
 
-      {/* Key Metric Tiles */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {/* Total Requests */}
-        <div className="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-4 shadow">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-            คำขอทั้งหมด (Total Requests)
-          </span>
-          <div className="text-2xl font-bold font-mono text-white">
-            {metrics?.requests?.total ?? 0}
-          </div>
-          <span className="text-[11px] text-slate-500 mt-1 block">
-            ข้อผิดพลาด: {metrics?.requests?.errors ?? 0} ครั้ง
-          </span>
-        </div>
-
-        {/* Error Rate */}
-        <div className="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-4 shadow">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-            อัตราผิดพลาด (Error Rate)
-          </span>
-          <div className="text-2xl font-bold font-mono text-emerald-400">
-            {metrics?.requests?.error_rate_percent ?? 0}%
-          </div>
-          <span className="text-[11px] text-slate-500 mt-1 block">เกณฑ์มาตรฐาน &lt; 1%</span>
-        </div>
-
-        {/* Average Latency */}
-        <div className="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-4 shadow">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-            ความหน่วงเฉลี่ย (Avg Latency)
-          </span>
-          <div className="text-2xl font-bold font-mono text-cyan-400">
-            {metrics?.requests?.avg_latency_ms ?? 0} ms
-          </div>
-          <span className="text-[11px] text-slate-500 mt-1 block">API Gateway Response Time</span>
-        </div>
-
-        {/* MFA Adoption */}
-        <div className="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-4 shadow">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-            การใช้งาน MFA (Adoption)
-          </span>
-          <div className="text-2xl font-bold font-mono text-purple-400">
-            {metrics?.mfa_adoption_percent ?? 0}%
-          </div>
-          <span className="text-[11px] text-slate-500 mt-1 block">
-            {metrics?.database?.mfa_users ?? 0} จาก {metrics?.database?.total_users ?? 0} ผู้ใช้
-          </span>
-        </div>
-      </div>
-
-      {/* Latency & Security Anomaly Distribution */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Latency Simulation Chart */}
-        <div className="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-5 shadow">
-          <h3 className="text-sm font-bold text-white mb-3">การกระจายความหน่วงของ API (Latency Distribution)</h3>
-          <div className="h-40 flex items-end justify-between space-x-2 pt-4 px-2 border-b border-slate-700">
-            {[12, 18, 9, 25, 14, 8, 30, 22, 16, 11, 19, 15].map((val, idx) => (
-              <div key={idx} className="flex-1 flex flex-col items-center group relative">
-                <div
-                  className="w-full bg-emerald-500/70 hover:bg-emerald-400 rounded-t transition-all"
-                  style={{ height: `${val * 3}px` }}
-                />
-                <span className="text-[9px] text-slate-500 mt-1">{idx * 5}m</span>
+      <section aria-busy={loading} aria-label="ภาพรวม" className="space-y-6">
+        {/* Health summary */}
+        <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+          {initialLoading ? (
+            <div className="flex w-full items-center gap-4">
+              <Skeleton className="size-10 shrink-0" />
+              <div className="grid flex-1 gap-2">
+                <Skeleton className="h-5 w-40" />
+                <Skeleton className="h-4 w-64 max-w-full" />
               </div>
-            ))}
-          </div>
-          <div className="flex justify-between items-center text-xs text-slate-400 pt-3">
-            <span>ประสิทธิภาพ: สูง (Optimal)</span>
-            <span className="font-mono text-emerald-400">P99: &lt; 45ms</span>
-          </div>
+              <span className="sr-only">กำลังโหลดสถานะระบบ</span>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-4">
+                <div
+                  className={cn('flex size-10 shrink-0 items-center justify-center rounded-lg border border-border bg-secondary', STATUS_TONE[statusInfo.tone])}
+                  aria-hidden="true"
+                >
+                  <ShieldIcon className="size-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-base">สถานะระบบ</h2>
+                    <Badge variant={statusInfo.variant}>{statusInfo.label}</Badge>
+                  </div>
+                  <p className="mt-0.5 text-caption text-muted-foreground">
+                    ฐานข้อมูล: <span className={dbStatus === 'connected' ? 'text-success-foreground' : 'text-error-foreground'}>{dbLabel}</span>
+                    {health?.engine && <> · {health.engine}</>}
+                    {health?.version && <> · เวอร์ชัน {health.version}</>}
+                  </p>
+                </div>
+              </div>
+              <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-caption sm:text-right">
+                <dt className="text-muted-foreground">ทำงานต่อเนื่อง</dt>
+                <dd className="font-ui text-foreground">{formatUptime(metrics?.uptime_seconds)}</dd>
+                <dt className="text-muted-foreground">อัปเดตล่าสุด</dt>
+                <dd className="font-ui text-foreground">{lastUpdated ? lastUpdated.toLocaleTimeString('th-TH', { timeStyle: 'medium' }) : '—'}</dd>
+              </dl>
+            </>
+          )}
+        </Card>
+
+        {/* KPI grid */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {initialLoading ? (
+            [0, 1, 2, 3].map((i) => (
+              <Card key={i} className="grid gap-2 p-4">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-7 w-20" />
+                <Skeleton className="h-4 w-28" />
+              </Card>
+            ))
+          ) : (
+            <>
+              <KpiCard label="คำขอทั้งหมด" value={formatNumber(metrics?.requests?.total)} unit="ครั้ง" note={`ผิดพลาด ${formatNumber(metrics?.requests?.errors)} ครั้ง`} />
+              <KpiCard
+                label="อัตราข้อผิดพลาด"
+                value={formatNumber(errorRate, { maximumFractionDigits: 2 })}
+                unit="%"
+                tone={errorRateOk ? 'success' : 'warning'}
+                noteLabel="สถานะ"
+                note={errorRateOk ? 'อยู่ในเกณฑ์ (ต่ำกว่า 1%)' : 'สูงกว่าเกณฑ์ 1%'}
+              />
+              <KpiCard
+                label="เวลาตอบสนอง (P95)"
+                value={formatNumber(metrics?.requests?.avg_latency_ms, { maximumFractionDigits: 1 })}
+                unit="มิลลิวินาที"
+                note="95% ของคำขอเร็วกว่าค่านี้"
+              />
+              <KpiCard
+                label="ผู้ใช้ที่เปิด 2FA"
+                value={formatNumber(metrics?.mfa_adoption_percent, { maximumFractionDigits: 1 })}
+                unit="%"
+                note={`จากผู้ใช้ทั้งหมด ${formatNumber(totalUsers)} คน`}
+              />
+            </>
+          )}
         </div>
 
-        {/* System Stats Overview */}
-        <div className="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-5 shadow flex flex-col justify-between">
-          <h3 className="text-sm font-bold text-white mb-3">สรุปปริมาณข้อมูลและความปลอดภัย</h3>
-          <div className="space-y-3 text-xs text-slate-300">
-            <div className="flex justify-between p-2.5 bg-slate-900/60 rounded-xl border border-slate-800">
-              <span className="text-slate-400">จำนวนรหัสผ่านทั้งหมดที่จัดเก็บ:</span>
-              <span className="font-bold font-mono text-white">{metrics?.database?.total_vault_items ?? 0} รายการ</span>
-            </div>
-            <div className="flex justify-between p-2.5 bg-slate-900/60 rounded-xl border border-slate-800">
-              <span className="text-slate-400">การพยายามเข้าสู่ระบบที่ล้มเหลว:</span>
-              <span className="font-bold font-mono text-amber-400">{metrics?.database?.failed_login_events ?? 0} ครั้ง</span>
-            </div>
-            <div className="flex justify-between p-2.5 bg-slate-900/60 rounded-xl border border-slate-800">
-              <span className="text-slate-400">โครงสร้างพื้นฐานคลาวด์:</span>
-              <span className="font-bold text-white">AWS Lambda + RDS PostgreSQL (Multi-AZ)</span>
-            </div>
-          </div>
-          <div className="text-[11px] text-slate-500 pt-3 text-right">
-            CloudWatch Log Group: <code className="text-slate-400">/aws/lambda/securevault-api</code>
-          </div>
+        {/* Detail panels */}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Card className="p-5">
+            <h2 className="text-sm">ข้อมูลในระบบ</h2>
+            {initialLoading ? (
+              <div className="mt-3 grid gap-2">
+                <Skeleton className="h-8" />
+                <Skeleton className="h-8" />
+              </div>
+            ) : (
+              <dl className="mt-2 divide-y divide-border">
+                <DetailRow label="ผู้ใช้ทั้งหมด">{formatNumber(totalUsers)} คน</DetailRow>
+                <DetailRow label="รายการรหัสผ่านที่จัดเก็บ">{formatNumber(totalItems)} รายการ</DetailRow>
+                {metrics?.active_db_connections != null && (
+                  <DetailRow label="การเชื่อมต่อฐานข้อมูล">{formatNumber(metrics.active_db_connections)}</DetailRow>
+                )}
+              </dl>
+            )}
+          </Card>
+
+          <Card className="p-5">
+            <h2 className="text-sm">ความปลอดภัย</h2>
+            {initialLoading ? (
+              <div className="mt-3 grid gap-2">
+                <Skeleton className="h-8" />
+                <Skeleton className="h-8" />
+              </div>
+            ) : (
+              <dl className="mt-2 divide-y divide-border">
+                <DetailRow label="การเข้าสู่ระบบที่ล้มเหลว">
+                  <span className={Number(failedLogins) > 0 ? 'text-warning-foreground' : ''}>{formatNumber(failedLogins)} ครั้ง</span>
+                </DetailRow>
+                {securityAlarms != null && (
+                  <DetailRow label="การแจ้งเตือนความปลอดภัยที่ยังเปิดอยู่">
+                    <span className={Number(securityAlarms) > 0 ? 'text-error-foreground' : 'text-success-foreground'}>
+                      {Number(securityAlarms) > 0 ? `${formatNumber(securityAlarms)} รายการ` : 'ไม่มี'}
+                    </span>
+                  </DetailRow>
+                )}
+                <DetailRow label="ผู้ใช้ที่เปิด 2FA">{formatNumber(metrics?.mfa_adoption_percent, { maximumFractionDigits: 1 })}%</DetailRow>
+              </dl>
+            )}
+          </Card>
         </div>
-      </div>
+      </section>
     </div>
   );
 }
