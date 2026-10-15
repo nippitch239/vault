@@ -14,12 +14,14 @@ export const buttonVariants = ({
 
   const variants = {
     // Glowing violet pill for the main action; outlined violet pill for secondary CTAs.
-    default: 'bg-gradient-to-b from-primary-glow to-primary text-primary-foreground shadow-glow hover:brightness-110',
+    // Solid violet underneath so the button is never transparent if the gradient is missing.
+    default: 'bg-primary bg-gradient-to-b from-primary-glow to-primary text-primary-foreground shadow-glow hover:brightness-110',
     destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
     outline: 'border border-primary-glow/50 bg-primary/10 text-foreground hover:bg-primary/25 hover:border-primary-glow/80',
     secondary: 'border border-border bg-secondary text-secondary-foreground hover:bg-accent hover:border-input',
     ghost: 'hover:bg-accent hover:text-accent-foreground',
-    link: 'text-primary underline-offset-4 hover:underline',
+    // ring = #b77cff on dark (7.3:1) / #6804ab on light (8.8:1); primary is too dark for text on black.
+    link: 'text-ring underline-offset-4 hover:underline',
   };
 
   const sizes = {

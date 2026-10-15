@@ -258,7 +258,7 @@ export function SharedItemsView({ onEditItem }) {
                                     href={fields.url}
                                     target="_blank"
                                     rel="noreferrer noopener"
-                                    className="inline-flex max-w-full items-center gap-1 text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+                                    className="inline-flex max-w-full items-center gap-1 text-ring underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
                                   >
                                     <span className="truncate">{fields.url}</span>
                                     <ExternalLinkIcon className="size-3.5 shrink-0" />
