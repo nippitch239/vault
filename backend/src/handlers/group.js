@@ -13,6 +13,7 @@
 import crypto from 'node:crypto';
 import { getDatabase } from '../db/adapter.js';
 import { authenticate } from '../middleware/auth-guard.js';
+import { pruneOrphanedCollectionKeys } from './collection.js';
 
 const GROUP_ROLE_RANK = { member: 1, manager: 2, admin: 3 };
 
@@ -555,6 +556,15 @@ export async function removeGroupMemberHandler(event) {
     'DELETE FROM group_members WHERE group_id = $1 AND user_id = $2',
     [groupId, targetUserId]
   );
+
+  // The removed member loses the group's collection access; drop their keys too.
+  const grants = await db.query(
+    "SELECT collection_id FROM collection_access WHERE target_type = 'group' AND target_id = $1",
+    [groupId]
+  );
+  for (const g of grants.rows || []) {
+    await pruneOrphanedCollectionKeys(db, g.collection_id);
+  }
 
   return jsonResponse(200, {
     status: 'success',

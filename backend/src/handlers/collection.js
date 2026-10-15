@@ -211,6 +211,24 @@ async function recordAuditLog(db, { actorUserId, actorRole = 'user', eventAction
   }
 }
 
+/**
+ * Deletes wrapped keys of users who no longer have any access to the collection
+ * (after a direct grant, a group grant or a group membership is removed).
+ * Their API access is already gone; this removes the key material as well.
+ */
+export async function pruneOrphanedCollectionKeys(db, collectionId) {
+  const keys = await db.query('SELECT user_id FROM collection_keys WHERE collection_id = $1', [collectionId]);
+  let removed = 0;
+  for (const row of keys.rows || []) {
+    const perm = await getEffectiveCollectionPermission(db, collectionId, row.user_id);
+    if (!perm) {
+      await db.query('DELETE FROM collection_keys WHERE collection_id = $1 AND user_id = $2', [collectionId, row.user_id]);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 // ============================================================================
 // Collection CRUD Handlers
 // ============================================================================
@@ -623,11 +641,13 @@ export async function revokeCollectionAccessHandler(event) {
     'DELETE FROM collection_access WHERE collection_id = $1 AND target_type = $2 AND target_id = $3',
     [collectionId, targetType, targetId]
   );
+  const keysRemoved = await pruneOrphanedCollectionKeys(db, collectionId);
 
   return jsonResponse(200, {
     status: 'success',
     success: true,
     message: 'Collection access revoked successfully',
+    keysRemoved,
   });
 }
 

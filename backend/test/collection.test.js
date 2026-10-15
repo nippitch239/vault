@@ -142,3 +142,33 @@ test('Groups: a manager cannot escalate to group admin (which would inherit coll
   const badRole = await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: owner, body: { userId: friend.sub, role: 42 } });
   assert.notEqual(badRole.statusCode, 500);
 });
+
+test('C3: revoking access (direct or via group) removes the user\'s wrapped key', async () => {
+  await resetDatabase();
+  const admin = await registerProfile('c3admin');
+  const direct = await registerProfile('c3direct');
+  const viaGroup = await registerProfile('c3group');
+  const collectionId = await createCollection(admin);
+
+  const group = await callRouter({ method: 'POST', path: '/api/v1/groups', claims: admin, body: { name: 'C3' } });
+  const groupId = group.data.group.group_id || group.data.group.id;
+  await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: admin, body: { userId: viaGroup.sub } });
+
+  await grant(admin, collectionId, direct.sub, 'read');
+  await grant(admin, collectionId, groupId, 'read', 'group');
+  for (const u of [direct, viaGroup]) {
+    const res = await callRouter({ method: 'POST', path: `/api/v1/collections/${collectionId}/keys`, claims: admin, body: { userId: u.sub, encryptedKeyForRecipient: WRAPPED } });
+    assert.equal(res.statusCode, 201);
+  }
+
+  const revoke = await callRouter({ method: 'DELETE', path: `/api/v1/collections/${collectionId}/access/user/${direct.sub}`, claims: admin });
+  assert.equal(revoke.statusCode, 200);
+  assert.equal(revoke.data.keysRemoved, 1);
+
+  const leave = await callRouter({ method: 'DELETE', path: `/api/v1/groups/${groupId}/members/${viaGroup.sub}`, claims: admin });
+  assert.equal(leave.statusCode, 200);
+
+  const db = (await import('../src/db/adapter.js')).getDatabase();
+  const keys = await db.query('SELECT user_id FROM collection_keys WHERE collection_id = $1', [collectionId]);
+  assert.deepEqual(keys.rows.map((r) => r.user_id), [admin.sub]);
+});
