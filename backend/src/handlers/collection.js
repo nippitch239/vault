@@ -800,12 +800,21 @@ export async function addCollectionItemHandler(event) {
     });
   }
 
-  const item = await db.query('SELECT item_id FROM vault_items WHERE item_id = $1', [itemId]);
+  const item = await db.query('SELECT item_id, user_id FROM vault_items WHERE item_id = $1', [itemId]);
   if (!item.rows || item.rows.length === 0) {
     return jsonResponse(404, {
       status: 'fail',
       error: 'NOT_FOUND',
       message: 'Vault item not found',
+    });
+  }
+  // Only the owner may put an item into a collection; otherwise any collection writer
+  // could pull someone else's item in and read it through GET /collections/:id/items.
+  if (item.rows[0].user_id !== user.user_id) {
+    return jsonResponse(403, {
+      status: 'fail',
+      error: 'ITEM_NOT_OWNED',
+      message: 'Only the owner of a vault item can add it to a collection',
     });
   }
 
