@@ -222,3 +222,43 @@ test('C5: mixed-case targetType is normalised (no CHECK-constraint 500)', async 
   const revoke = await callRouter({ method: 'DELETE', path: `/api/v1/collections/${collectionId}/access/USER/${friend.sub}`, claims: admin });
   assert.equal(revoke.statusCode, 200);
 });
+
+test('C8: listing collections uses a constant number of queries and the supremum permission', async () => {
+  await resetDatabase();
+  const owner = await registerProfile('c8owner');
+  const member = await registerProfile('c8member');
+  const sysadmin = await registerProfile('c8sysadmin', { admin: true });
+
+  const group = await callRouter({ method: 'POST', path: '/api/v1/groups', claims: owner, body: { name: 'C8' } });
+  const groupId = group.data.group.group_id || group.data.group.id;
+  await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: owner, body: { userId: member.sub } });
+
+  const ids = [];
+  for (let i = 0; i < 12; i++) ids.push(await createCollection(owner, `C8-${i}`));
+  await grant(owner, ids[0], member.sub, 'read');
+  await grant(owner, ids[0], groupId, 'write', 'group'); // direct read + group write -> write
+  await grant(owner, ids[1], groupId, 'read', 'group');
+
+  const db = (await import('../src/db/adapter.js')).getDatabase();
+  const original = db.query.bind(db);
+  let queries = 0;
+  db.query = (...args) => {
+    queries += 1;
+    return original(...args);
+  };
+  try {
+    const res = await callRouter({ method: 'GET', path: '/api/v1/collections', claims: member });
+    assert.equal(res.statusCode, 200);
+    const perms = Object.fromEntries(res.data.collections.map((c) => [c.id, c.effectivePermission]));
+    assert.deepEqual(perms, { [ids[0]]: 'write', [ids[1]]: 'read' });
+    assert.ok(queries <= 2, `expected a constant number of queries, got ${queries}`);
+  } finally {
+    db.query = original;
+  }
+
+  const ownerList = await callRouter({ method: 'GET', path: '/api/v1/collections', claims: owner });
+  assert.equal(ownerList.data.collections.length, 12);
+  assert.ok(ownerList.data.collections.every((c) => c.effectivePermission === 'admin'));
+  const adminList = await callRouter({ method: 'GET', path: '/api/v1/collections', claims: sysadmin });
+  assert.equal(adminList.data.collections.length, 12);
+});

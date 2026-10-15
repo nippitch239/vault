@@ -19,6 +19,39 @@ export async function listAllCollections(db) {
   return res.rows;
 }
 
+const RANK_TO_PERMISSION = { 1: 'read', 2: 'write', 3: 'admin' };
+
+/**
+ * Collections the user can access with their effective permission, in one query:
+ * creator (admin) + direct grants + grants of every group the user belongs to, taking
+ * the highest permission (same rules as getEffectiveCollectionPermission).
+ * @returns {Promise<Array<{ row: object, permission: 'read'|'write'|'admin' }>>}
+ */
+export async function listAccessibleCollections(db, userId) {
+  const res = await db.query(
+    `WITH user_groups AS (
+       SELECT group_id FROM group_members WHERE user_id = $1
+     ),
+     grants AS (
+       SELECT ca.collection_id,
+              CASE LOWER(ca.permission) WHEN 'admin' THEN 3 WHEN 'write' THEN 2 WHEN 'read' THEN 1 ELSE 0 END AS perm_rank
+       FROM collection_access ca
+       WHERE (ca.target_type = 'user' AND ca.target_id = $1)
+          OR (ca.target_type = 'group' AND ca.target_id IN (SELECT group_id FROM user_groups))
+       UNION ALL
+       SELECT collection_id, 3 AS perm_rank FROM collections WHERE created_by = $1
+     )
+     SELECT c.*, MAX(g.perm_rank) AS max_rank
+     FROM collections c
+     JOIN grants g ON g.collection_id = c.collection_id
+     GROUP BY c.collection_id
+     HAVING MAX(g.perm_rank) > 0
+     ORDER BY c.created_at DESC`,
+    [userId]
+  );
+  return res.rows.map(({ max_rank: rank, ...row }) => ({ row, permission: RANK_TO_PERMISSION[Number(rank)] }));
+}
+
 export async function insertCollection(db, { name, description, createdBy }) {
   const row = {
     collection_id: crypto.randomUUID(),

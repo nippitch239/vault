@@ -48,12 +48,11 @@ export async function createCollection(db, user, { name, description, wrappedKey
 }
 
 export async function listCollections(db, user) {
-  const accessible = [];
-  for (const collection of await repo.listAllCollections(db)) {
-    const permission = await getEffectiveCollectionPermission(db, collection.collection_id, user);
-    if (permission) accessible.push({ collection, permission });
+  if (user.role === 'admin') {
+    // System administrators see every collection with admin rights.
+    return (await repo.listAllCollections(db)).map((collection) => ({ collection, permission: 'admin' }));
   }
-  return accessible;
+  return (await repo.listAccessibleCollections(db, user.user_id)).map(({ row, permission }) => ({ collection: row, permission }));
 }
 
 export async function getCollection(db, user, collectionId) {
