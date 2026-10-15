@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import QRCode from 'qrcode';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { ShieldIcon, CloseIcon, CheckIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
@@ -8,6 +9,7 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', onSuccess }) {
   const { addToast } = useToast();
 
   const [setupData, setSetupData] = useState(null);
+  const [qrDataUrl, setQrDataUrl] = useState(null);
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -35,6 +37,23 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', onSuccess }) {
     // setupTotp is intentionally not a dependency: only re-run when the modal opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, mode]);
+
+  // Render the otpauth:// URI locally: it contains the TOTP secret and must never be sent
+  // to a third-party QR service.
+  useEffect(() => {
+    let cancelled = false;
+    setQrDataUrl(null);
+    if (setupData?.otpauth_url) {
+      QRCode.toDataURL(setupData.otpauth_url, { width: 160, margin: 1 })
+        .then((url) => {
+          if (!cancelled) setQrDataUrl(url);
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [setupData]);
 
   if (!isOpen) return null;
 
@@ -125,16 +144,12 @@ export function MfaModal({ isOpen, onClose, mode = 'setup', onSuccess }) {
                     สแกน QR Code หรือเพิ่มรหัส Secret ใน Authenticator App:
                   </div>
 
-                  {/* QR Code placeholder or SVG rendering */}
                   <div className="w-40 h-40 mx-auto my-2 bg-white rounded-xl p-2 flex items-center justify-center shadow-md">
-                    {/* Native QR code generator or text encoding */}
-                    <img
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(
-                        setupData.otpauth_url || ''
-                      )}`}
-                      alt="TOTP QR Code"
-                      className="w-full h-full object-contain"
-                    />
+                    {qrDataUrl ? (
+                      <img src={qrDataUrl} alt="QR Code สำหรับตั้งค่าแอป Authenticator" className="w-full h-full object-contain" />
+                    ) : (
+                      <span className="text-xs text-slate-500">กำลังสร้าง QR Code...</span>
+                    )}
                   </div>
 
                   <div className="mt-3">
