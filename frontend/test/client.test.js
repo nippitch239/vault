@@ -99,7 +99,7 @@ describe('Milestone 3 — React Client Cryptography & Services Verification', ()
 
     // Alice wraps itemKey with Bob's public key
     const wrappedKeyPayload = await ClientCrypto.wrapItemKey(itemKey, bobKeyPair.publicKey);
-    assert.ok(wrappedKeyPayload.wrappedKey || wrappedKeyPayload.wrapped_key);
+    assert.equal(typeof wrappedKeyPayload.ciphertext, 'string'); // shape the share API validates
 
     // Bob unwraps itemKey with Bob's private key
     const unwrappedItemKey = await ClientCrypto.unwrapItemKey(wrappedKeyPayload, bobKeyPair.privateKey);

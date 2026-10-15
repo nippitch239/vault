@@ -3,16 +3,20 @@
  *
  * Implements:
  * 1. Granular Password Sharing (READ / MODIFY) via asymmetric key wrapping.
- * 2. Recipient lookup to obtain public key for client-side key wrapping.
+ * 2. Recipient lookup (by username, limited to people in the caller's groups) to obtain the
+ *    public key for client-side key wrapping.
  * 3. List items shared with current user.
  * 4. Revoke share permission.
  *
  * Zero-Knowledge Guarantee: The server never unwraps item keys or decrypts shared items.
- * Sharing uses RSA-OAEP / asymmetric key wrapping performed on the client.
+ * Every item has its own random Item Key; sharing hands the recipient that Item Key wrapped
+ * with their RSA-OAEP public key (done on the client).
  */
 
 import { getDatabase } from '../db/adapter.js';
 import { authenticate } from '../middleware/auth-guard.js';
+import { isUuid, isWrappedKey } from '../http/validate.js';
+import { findVisibleUserById, findVisibleUserByUsername, normalizeUsername } from '../services/user-directory.js';
 
 function jsonResponse(statusCode, data) {
   return {
@@ -35,55 +39,52 @@ function parseBody(event) {
   }
 }
 
+function clientIp(event) {
+  return event.requestContext?.identity?.sourceIp || event.requestContext?.http?.sourceIp || '0.0.0.0';
+}
+
 /**
- * GET /api/v1/users/lookup?email=...
- * Look up recipient by email to fetch their public key for client-side encryption
+ * GET /api/v1/users/lookup?username=...
+ * Finds a user (and their public key) by username. Only users who share a group with the
+ * caller are visible; everyone else gets the same 404 so accounts cannot be enumerated.
  */
 export async function lookupUserHandler(event) {
-  const { errorResponse } = authenticate(event, 'user');
+  const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
 
-  const db = getDatabase();
-  const email = (event.queryStringParameters?.email || '').trim().toLowerCase();
-
-  if (!email) {
+  const username = normalizeUsername(event.queryStringParameters?.username);
+  if (!username) {
     return jsonResponse(400, {
       status: 'fail',
       error: 'MISSING_PARAM',
-      message: 'Query parameter email is required',
+      message: 'Query parameter username is required',
     });
   }
 
-  const result = await db.query(
-    'SELECT user_id, email, username, full_name, public_key FROM users WHERE LOWER(email) = $1',
-    [email]
-  );
-
-  if (result.rows.length === 0) {
+  const found = await findVisibleUserByUsername(getDatabase(), user.user_id, username);
+  if (!found) {
     return jsonResponse(404, {
       status: 'fail',
       error: 'RECIPIENT_USER_NOT_FOUND',
-      message: 'No registered user found with this email address',
+      message: 'No user with this username in your groups',
     });
   }
-
-  const recipient = result.rows[0];
 
   return jsonResponse(200, {
     status: 'success',
     data: {
-      user_id: recipient.user_id,
-      email: recipient.email,
-      username: recipient.username,
-      full_name: recipient.full_name,
-      public_key: recipient.public_key,
+      user_id: found.user_id,
+      username: found.username,
+      full_name: found.full_name,
+      public_key: found.public_key,
     },
   });
 }
 
 /**
  * POST /api/v1/vaults/{vaultId}/items/{itemId}/share (or /api/v1/items/{itemId}/share)
- * Share item with recipient user
+ * Shares an item: the owner sends the item's Item Key wrapped with the recipient's public key.
+ * Recipients must share a group with the owner (same rule as lookup).
  */
 export async function shareItemHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
@@ -93,17 +94,17 @@ export async function shareItemHandler(event) {
   const body = parseBody(event);
   const itemId = event.pathParameters?.itemId || body.item_id || body.itemId;
 
-  if (!itemId) {
+  if (!isUuid(itemId)) {
     return jsonResponse(400, {
       status: 'fail',
       error: 'MISSING_PARAM',
-      message: 'itemId parameter is required',
+      message: 'itemId must be a valid UUID',
     });
   }
 
   // Verify item exists and caller is the owner
   const itemResult = await db.query(
-    'SELECT item_id, user_id, metadata FROM vault_items WHERE item_id = $1',
+    'SELECT item_id, user_id, encrypted_item_key FROM vault_items WHERE item_id = $1',
     [itemId]
   );
 
@@ -124,28 +125,31 @@ export async function shareItemHandler(event) {
     });
   }
 
-  // Recipient resolution
-  const recipientEmail = (body.recipient_email || body.recipientEmail || '').trim().toLowerCase();
-  const recipientUserId = body.recipient_user_id || body.recipientUserId;
+  // Items saved before per-item keys are encrypted with the owner's Vault Key, which must
+  // never be shared. The client re-saves such an item with an Item Key first.
+  if (!item.encrypted_item_key) {
+    return jsonResponse(409, {
+      status: 'fail',
+      error: 'ITEM_KEY_REQUIRED',
+      message: 'Save the item again so it gets its own item key before sharing it',
+    });
+  }
 
-  let recipientUser;
-  if (recipientUserId) {
-    const res = await db.query('SELECT user_id, email, public_key FROM users WHERE user_id = $1', [
-      recipientUserId,
-    ]);
-    recipientUser = res.rows[0];
-  } else if (recipientEmail) {
-    const res = await db.query('SELECT user_id, email, public_key FROM users WHERE LOWER(email) = $1', [
-      recipientEmail,
-    ]);
-    recipientUser = res.rows[0];
+  // Recipient resolution (must share a group with the owner)
+  const recipientUserId = body.recipient_user_id || body.recipientUserId;
+  const recipientUsername = body.recipient_username || body.recipientUsername;
+  let recipientUser = null;
+  if (isUuid(recipientUserId)) {
+    recipientUser = await findVisibleUserById(db, user.user_id, recipientUserId);
+  } else if (recipientUsername) {
+    recipientUser = await findVisibleUserByUsername(db, user.user_id, recipientUsername);
   }
 
   if (!recipientUser) {
     return jsonResponse(404, {
       status: 'fail',
       error: 'RECIPIENT_USER_NOT_FOUND',
-      message: 'Recipient user not found',
+      message: 'Recipient not found in your groups',
     });
   }
 
@@ -159,7 +163,7 @@ export async function shareItemHandler(event) {
   }
 
   // Validate permission level ('read' or 'modify')
-  const permissionLevel = (body.permission_level || body.permission || 'read').toLowerCase();
+  const permissionLevel = String(body.permission_level || body.permission || 'read').toLowerCase();
   if (permissionLevel !== 'read' && permissionLevel !== 'modify') {
     return jsonResponse(400, {
       status: 'fail',
@@ -168,56 +172,57 @@ export async function shareItemHandler(event) {
     });
   }
 
-  // Validate recipient-wrapped key payload
+  // Validate recipient-wrapped Item Key
   const encryptedKey = body.encrypted_key_for_recipient || body.encryptedKeyForRecipient;
-  if (!encryptedKey || typeof encryptedKey !== 'object') {
+  if (!isWrappedKey(encryptedKey)) {
     return jsonResponse(400, {
       status: 'fail',
       error: 'MISSING_WRAPPED_KEY',
-      message: 'encrypted_key_for_recipient payload is required for Zero-Knowledge sharing',
+      message: 'encrypted_key_for_recipient must be the Item Key wrapped with the recipient public key ({ ciphertext })',
     });
   }
 
-  // Check if already shared: update if exists, insert if new
-  const existingShare = await db.query(
-    'SELECT share_id FROM share_permissions WHERE item_id = $1 AND shared_with_user_id = $2',
-    [itemId, recipientUser.user_id]
-  );
-
-  let shareId;
-  if (existingShare.rows.length > 0) {
-    shareId = existingShare.rows[0].share_id;
-    await db.query(
-      `UPDATE share_permissions
-       SET permission_level = $1, encrypted_key_for_recipient = $2, updated_at = CURRENT_TIMESTAMP
-       WHERE share_id = $3`,
-      [permissionLevel, encryptedKey, shareId]
+  const shareId = await db.transaction(async (tx) => {
+    const existingShare = await tx.query(
+      'SELECT share_id FROM share_permissions WHERE item_id = $1 AND shared_with_user_id = $2',
+      [itemId, recipientUser.user_id]
     );
-  } else {
-    const insertResult = await db.query(
-      `INSERT INTO share_permissions (
-        item_id, shared_by_user_id, shared_with_user_id, permission_level, encrypted_key_for_recipient
-      ) VALUES ($1, $2, $3, $4, $5)
-      RETURNING share_id`,
-      [itemId, user.user_id, recipientUser.user_id, permissionLevel, encryptedKey]
-    );
-    shareId = insertResult.rows[0].share_id;
-  }
+    let id;
+    if (existingShare.rows.length > 0) {
+      id = existingShare.rows[0].share_id;
+      await tx.query(
+        `UPDATE share_permissions
+         SET permission_level = $1, encrypted_key_for_recipient = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE share_id = $3`,
+        [permissionLevel, encryptedKey, id]
+      );
+    } else {
+      const insertResult = await tx.query(
+        `INSERT INTO share_permissions (
+          item_id, shared_by_user_id, shared_with_user_id, permission_level, encrypted_key_for_recipient
+        ) VALUES ($1, $2, $3, $4, $5)
+        RETURNING share_id`,
+        [itemId, user.user_id, recipientUser.user_id, permissionLevel, encryptedKey]
+      );
+      id = insertResult.rows[0].share_id;
+    }
 
-  // Log activity
-  await db.query(
-    `INSERT INTO activity_logs (user_id, action_type, target_item_id, ip_address, details)
-     VALUES ($1, 'PASSWORD_SHARE', $2, '127.0.0.1', $3)`,
-    [user.user_id, itemId, { recipient_email: recipientUser.email, permission_level: permissionLevel }]
-  );
+    await tx.query(
+      `INSERT INTO activity_logs (user_id, action_type, target_item_id, ip_address, details)
+       VALUES ($1, 'PASSWORD_SHARE', $2, $3, $4)`,
+      [user.user_id, itemId, clientIp(event), { recipient_username: recipientUser.username, permission_level: permissionLevel }]
+    );
+    return id;
+  });
 
   return jsonResponse(201, {
     status: 'success',
-    message: `Item shared successfully with ${recipientUser.email}`,
+    message: `Item shared successfully with ${recipientUser.username}`,
     data: {
       share_id: shareId,
       permission_level: permissionLevel,
-      recipient_email: recipientUser.email,
+      recipient_user_id: recipientUser.user_id,
+      recipient_username: recipientUser.username,
     },
   });
 }
@@ -240,6 +245,7 @@ export async function listSharedItemsHandler(event) {
       sp.created_at as shared_at,
       vi.item_id,
       vi.vault_id,
+      vi.user_id,
       vi.item_type,
       vi.encrypted_data,
       vi.metadata,
@@ -314,8 +320,8 @@ export async function revokeShareHandler(event) {
 
   await db.query(
     `INSERT INTO activity_logs (user_id, action_type, ip_address, details)
-     VALUES ($1, 'PASSWORD_SHARE_REVOKED', '127.0.0.1', $2)`,
-    [user.user_id, { share_id: deleteResult.rows[0].share_id, item_id: deleteResult.rows[0].item_id }]
+     VALUES ($1, 'PASSWORD_SHARE_REVOKED', $2, $3)`,
+    [user.user_id, clientIp(event), { share_id: deleteResult.rows[0].share_id, item_id: deleteResult.rows[0].item_id }]
   );
 
   return jsonResponse(200, {

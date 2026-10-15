@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
-import ClientCrypto from '../../services/crypto.js';
+import { decryptWithAny, fetchCollectionKey, openItemKey } from '../../lib/item-crypto.js';
 import { HistoryIcon, CloseIcon, RefreshIcon, EyeIcon, EyeOffIcon, CopyIcon, CheckIcon, LockIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 import {
@@ -47,30 +47,15 @@ export function HistoryDrawer({ isOpen, item, onClose, onRestoreSuccess }) {
       .then(async (res) => {
         const rawHistory = res.history || [];
 
-        // Decrypt snapshots locally. Items in a collection are encrypted with the collection
-        // key, older personal versions with the Vault Key — try both.
-        let collectionKey = null;
-        const collectionId = item._collectionId || item.metadata?.collection_id;
-        if (collectionId && privateKey) {
-          try {
-            const keyRes = await api.collections.getKeys(collectionId);
-            collectionKey = await ClientCrypto.unwrapCollectionKey(keyRes?.key?.encryptedKeyForRecipient, privateKey);
-          } catch {
-            collectionKey = null;
-          }
-        }
+        // Decrypt snapshots locally: versions saved with the item's own key, and older
+        // (legacy) versions under the collection key or the Vault Key.
+        const collectionKey = await fetchCollectionKey(item._collectionId || item.metadata?.collection_id, privateKey);
+        const itemKey = await openItemKey(item, { mek, collectionKey, privateKey });
         const decryptedHistory = await Promise.all(
-          rawHistory.map(async (h) => {
-            let decryptedPayload = null;
-            for (const key of [collectionKey, mek].filter(Boolean)) {
-              if (decryptedPayload || !h.encrypted_data) break;
-              decryptedPayload = await ClientCrypto.decryptItem(h.encrypted_data, key).catch(() => null);
-            }
-            return {
-              ...h,
-              _decrypted: decryptedPayload,
-            };
-          })
+          rawHistory.map(async (h) => ({
+            ...h,
+            _decrypted: await decryptWithAny(h.encrypted_data, [itemKey, collectionKey, mek]),
+          }))
         );
 
         setHistoryList(decryptedHistory);

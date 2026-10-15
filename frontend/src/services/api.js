@@ -139,7 +139,8 @@ export const api = {
 
   // Sharing (UC-10)
   sharing: {
-    lookupUser: (email) => request(`/users/lookup?email=${encodeURIComponent(email)}`),
+    // Only users who share a group with the caller are found (404 otherwise).
+    lookupUser: (username) => request(`/users/lookup?username=${encodeURIComponent(username)}`),
 
     shareItem: (itemId, shareData, vaultId) =>
       vaultId

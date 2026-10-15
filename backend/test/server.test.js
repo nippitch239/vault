@@ -7,7 +7,11 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getDatabase, resetDatabase } from '../src/db/adapter.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { getDatabase, resetDatabase, SqliteDatabase, pgToSqliteSchema, readSchema } from '../src/db/adapter.js';
 import { TEST_ENCRYPTED_PAYLOAD, TEST_SALT, claimsFor, callRouter, registerProfile, insertUser } from './helpers.js';
 import { handler } from '../src/lambda.js';
 import { startLocalServer } from '../local/local-runner.js';
@@ -51,6 +55,28 @@ test('Database Adapter: Initialization, Constraints and JSONB query translation'
     [adapterUserId]
   );
   assert.equal(extractQuery.rows[0].title, 'Database Adapter Key');
+});
+
+test('Database Adapter: an existing SQLite file gains the encrypted_item_key column', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-upgrade-'));
+  const file = path.join(dir, 'old.sqlite');
+  // Schema as it was before per-item keys.
+  const oldDdl = pgToSqliteSchema(readSchema()).replace('encrypted_item_key JSONB DEFAULT NULL,', '');
+  const old = new DatabaseSync(file);
+  old.function('gen_random_uuid', () => crypto.randomUUID());
+  old.exec(oldDdl);
+  assert.ok(!old.prepare('PRAGMA table_info(vault_items)').all().some((c) => c.name === 'encrypted_item_key'));
+  old.close();
+
+  const upgraded = new SqliteDatabase(file);
+  await upgraded.ready;
+  const columns = upgraded.db.prepare('PRAGMA table_info(vault_items)').all().map((c) => c.name);
+  assert.ok(columns.includes('encrypted_item_key'));
+  await upgraded.close();
+  const reopened = new SqliteDatabase(file); // second open must not try to add it again
+  await reopened.ready;
+  await reopened.close();
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('Milestone 1 — Data Model & Schema Layer: 6 New Tables, Queryability & Defaults', async () => {
@@ -678,106 +704,125 @@ test('UC-4, UC-5, UC-6: Vault CRUD with Zero-Knowledge Encryption Enforcement', 
   assert.equal(afterDelete.statusCode, 404);
 });
 
-test('UC-10: Granular Password Sharing & Asymmetric Key Wrapping', async () => {
+test('UC-10: lookup by username is limited to people in the same group', async () => {
   await resetDatabase();
   const bobClaims = await registerProfile('bob');
   const charlieClaims = await registerProfile('charlie');
+  await registerProfile('stranger');
+  const lookup = (claims, query) =>
+    callRouter({ method: 'GET', path: '/api/v1/users/lookup', claims, queryStringParameters: query });
 
-  // 1. Bob creates an item to share
-  const bobItem = await callRouter({
+  // No shared group yet: Charlie is invisible to Bob, exactly like a missing account.
+  assert.equal((await lookup(bobClaims, { username: 'charlie' })).statusCode, 404);
+  assert.equal((await lookup(bobClaims, { username: 'nobody' })).statusCode, 404);
+  assert.equal((await lookup(bobClaims, { email: 'charlie@securevault.io' })).statusCode, 400);
+  assert.equal((await lookup(bobClaims, { username: 'bob' })).statusCode, 200, 'self is always visible');
+
+  // Group admins add members by username.
+  const group = await callRouter({ method: 'POST', path: '/api/v1/groups', claims: bobClaims, body: { name: 'Team' } });
+  const groupId = group.data.group.group_id || group.data.group.id;
+  const missing = await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: bobClaims, body: { username: 'nobody' } });
+  assert.equal(missing.statusCode, 404);
+  const added = await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: bobClaims, body: { username: ' Charlie ' } });
+  assert.equal(added.statusCode, 201);
+  assert.equal(added.data.member.user_id, charlieClaims.sub);
+
+  const found = await lookup(bobClaims, { username: 'CHARLIE' });
+  assert.equal(found.statusCode, 200);
+  assert.equal(found.data.data.user_id, charlieClaims.sub);
+  assert.ok(found.data.data.public_key);
+  assert.equal(found.data.data.email, undefined, 'lookup does not reveal e-mail addresses');
+  assert.equal((await lookup(charlieClaims, { username: 'bob' })).statusCode, 200);
+  assert.equal((await lookup(bobClaims, { username: 'stranger' })).statusCode, 404);
+
+  // Group member listing carries public keys, so collection keys can be wrapped without lookup.
+  const members = await callRouter({ method: 'GET', path: `/api/v1/groups/${groupId}/members`, claims: bobClaims });
+  assert.ok(members.data.members.every((m) => m.public_key));
+});
+
+test('UC-10: sharing hands over the per-item key, only within shared groups', async () => {
+  await resetDatabase();
+  const bobClaims = await registerProfile('bob');
+  const charlieClaims = await registerProfile('charlie');
+  const strangerClaims = await registerProfile('stranger');
+  const group = await callRouter({ method: 'POST', path: '/api/v1/groups', claims: bobClaims, body: { name: 'Team' } });
+  const groupId = group.data.group.group_id || group.data.group.id;
+  await callRouter({ method: 'POST', path: `/api/v1/groups/${groupId}/members`, claims: bobClaims, body: { username: 'charlie' } });
+
+  const wrappedForRecipient = { algorithm: 'RSA-OAEP', hash: 'SHA-256', ciphertext: 'd3JhcHBlZF9pdGVtX2tleQ==' };
+  const share = (claims, itemId, body) =>
+    callRouter({ method: 'POST', path: `/api/v1/items/${itemId}/share`, claims, body: { permission_level: 'read', encrypted_key_for_recipient: wrappedForRecipient, ...body } });
+
+  // A legacy item (no Item Key) cannot be shared: its data is under Bob's Vault Key.
+  const legacy = await callRouter({ method: 'POST', path: '/api/v1/items', claims: bobClaims, body: { encrypted_data: TEST_ENCRYPTED_PAYLOAD } });
+  const legacyId = legacy.data.data.item_id;
+  const legacyShare = await share(bobClaims, legacyId, { recipient_user_id: charlieClaims.sub });
+  assert.equal(legacyShare.statusCode, 409);
+  assert.equal(legacyShare.data.error, 'ITEM_KEY_REQUIRED');
+
+  // Re-saving with an Item Key upgrades it; the key is stored and listed.
+  const bad = await callRouter({ method: 'PUT', path: `/api/v1/items/${legacyId}`, claims: bobClaims, body: { encrypted_item_key: { ciphertext: 'x' } } });
+  assert.equal(bad.statusCode, 400);
+  const upgraded = await callRouter({ method: 'PUT', path: `/api/v1/items/${legacyId}`, claims: bobClaims, body: { encrypted_data: TEST_ENCRYPTED_PAYLOAD, encrypted_item_key: TEST_ENCRYPTED_PAYLOAD } });
+  assert.equal(upgraded.statusCode, 200);
+  const listed = await callRouter({ method: 'GET', path: '/api/v1/items', claims: bobClaims });
+  assert.equal(listed.data.data[0].encrypted_item_key.ciphertext, TEST_ENCRYPTED_PAYLOAD.ciphertext);
+
+  // New items carry their Item Key from the start.
+  const created = await callRouter({
     method: 'POST',
     path: '/api/v1/items',
     claims: bobClaims,
-    body: {
-      encrypted_data: TEST_ENCRYPTED_PAYLOAD,
-      metadata: { favorite: false },
-    },
+    body: { encrypted_data: TEST_ENCRYPTED_PAYLOAD, encrypted_item_key: TEST_ENCRYPTED_PAYLOAD, metadata: { favorite: false } },
   });
-  const itemId = bobItem.data.data.item_id;
+  const itemId = created.data.data.item_id;
 
-  // 2. Bob looks up Charlie public key
-  const lookupRes = await callRouter({
-    method: 'GET',
-    path: '/api/v1/users/lookup',
-    claims: bobClaims,
-    queryStringParameters: { email: 'charlie@securevault.io' },
-  });
-  assert.equal(lookupRes.statusCode, 200);
-  assert.ok(lookupRes.data.data.public_key);
+  assert.equal((await share(bobClaims, itemId, { recipient_user_id: bobClaims.sub })).statusCode, 400, 'self');
+  assert.equal((await share(bobClaims, itemId, { recipient_user_id: strangerClaims.sub })).statusCode, 404, 'not in a shared group');
+  assert.equal((await share(bobClaims, itemId, { recipient_username: 'stranger' })).statusCode, 404);
+  assert.equal((await share(bobClaims, itemId, { recipient_username: 'charlie', encrypted_key_for_recipient: { wrapped_key: 'abc' } })).statusCode, 400, 'wrapped key shape');
+  assert.equal((await share(charlieClaims, itemId, { recipient_username: 'bob' })).statusCode, 403, 'only the owner shares');
 
-  // 3. Bob attempts to share with self (Must be rejected)
-  const selfShare = await callRouter({
-    method: 'POST',
-    path: `/api/v1/items/${itemId}/share`,
-    claims: bobClaims,
-    body: {
-      recipient_email: 'bob@securevault.io',
-      permission_level: 'read',
-      encrypted_key_for_recipient: { wrapped_key: 'abc', algorithm: 'RSA-OAEP-SHA256' },
-    },
-  });
-  assert.equal(selfShare.statusCode, 400);
-
-  // 4. Bob shares item with Charlie with READ permission
-  const shareRes = await callRouter({
-    method: 'POST',
-    path: `/api/v1/items/${itemId}/share`,
-    claims: bobClaims,
-    body: {
-      recipient_email: 'charlie@securevault.io',
-      permission_level: 'read',
-      encrypted_key_for_recipient: {
-        wrapped_key: 'bXlfc2hhcmVkX2l0ZW1fa2V5X3dyYXBwZWRfYnlfY2hhcmxpZV9wdWJsaWNfa2V5',
-        algorithm: 'RSA-OAEP-SHA256',
-      },
-    },
-  });
+  const shareRes = await share(bobClaims, itemId, { recipient_username: 'charlie' });
   assert.equal(shareRes.statusCode, 201);
   assert.ok(shareRes.data.data.share_id);
+  assert.equal(shareRes.data.data.recipient_user_id, charlieClaims.sub);
 
-  // 5. Charlie lists shared items
-  const sharedList = await callRouter({
-    method: 'GET',
-    path: '/api/v1/shared-items',
-    claims: charlieClaims,
-  });
+  // Charlie lists the share with the wrapped Item Key and the owner id.
+  const sharedList = await callRouter({ method: 'GET', path: '/api/v1/shared-items', claims: charlieClaims });
   assert.equal(sharedList.statusCode, 200);
   assert.equal(sharedList.data.data.length, 1);
   assert.equal(sharedList.data.data[0].item_id, itemId);
+  assert.equal(sharedList.data.data[0].user_id, bobClaims.sub);
   assert.equal(sharedList.data.data[0].permission_level, 'read');
+  assert.deepEqual(sharedList.data.data[0].encrypted_key_for_recipient, wrappedForRecipient);
 
-  // 6. Charlie gets item directly
-  const charlieGet = await callRouter({
-    method: 'GET',
-    path: `/api/v1/items/${itemId}`,
-    claims: charlieClaims,
-  });
+  const charlieGet = await callRouter({ method: 'GET', path: `/api/v1/items/${itemId}`, claims: charlieClaims });
   assert.equal(charlieGet.statusCode, 200);
   assert.ok(charlieGet.data.data.share_info);
 
-  // 7. Charlie cannot update (has only READ permission)
-  const charlieUpdate = await callRouter({
+  // READ cannot update.
+  const charlieUpdate = await callRouter({ method: 'PUT', path: `/api/v1/items/${itemId}`, claims: charlieClaims, body: { metadata: { favorite: true } } });
+  assert.equal(charlieUpdate.statusCode, 403);
+
+  // MODIFY can update the data but never replace the Item Key.
+  assert.equal((await share(bobClaims, itemId, { recipient_username: 'charlie', permission_level: 'modify' })).statusCode, 201);
+  const otherKey = { ...TEST_ENCRYPTED_PAYLOAD, ciphertext: 'Y2hhcmxpZV9rZXk=' };
+  const charlieEdit = await callRouter({
     method: 'PUT',
     path: `/api/v1/items/${itemId}`,
     claims: charlieClaims,
-    body: { metadata: { favorite: true } },
+    body: { encrypted_data: { ...TEST_ENCRYPTED_PAYLOAD, ciphertext: 'ZWRpdGVk' }, encrypted_item_key: otherKey },
   });
-  assert.equal(charlieUpdate.statusCode, 403);
+  assert.equal(charlieEdit.statusCode, 200);
+  const afterEdit = await callRouter({ method: 'GET', path: `/api/v1/items/${itemId}`, claims: bobClaims });
+  assert.equal(afterEdit.data.data.encrypted_data.ciphertext, 'ZWRpdGVk');
+  assert.equal(afterEdit.data.data.encrypted_item_key.ciphertext, TEST_ENCRYPTED_PAYLOAD.ciphertext);
 
-  // 8. Bob revokes share
-  const revokeRes = await callRouter({
-    method: 'DELETE',
-    path: `/api/v1/vaults/any/items/${itemId}/share/${charlieClaims.sub}`,
-    claims: bobClaims,
-  });
+  // Revoke.
+  const revokeRes = await callRouter({ method: 'DELETE', path: `/api/v1/vaults/any/items/${itemId}/share/${charlieClaims.sub}`, claims: bobClaims });
   assert.equal(revokeRes.statusCode, 200);
-
-  // 9. After revocation, Charlie cannot access
-  const charlieDenied = await callRouter({
-    method: 'GET',
-    path: `/api/v1/items/${itemId}`,
-    claims: charlieClaims,
-  });
+  const charlieDenied = await callRouter({ method: 'GET', path: `/api/v1/items/${itemId}`, claims: charlieClaims });
   assert.equal(charlieDenied.statusCode, 403);
 });
 

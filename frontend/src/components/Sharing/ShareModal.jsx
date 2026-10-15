@@ -17,6 +17,7 @@ import {
   DialogFooter,
 } from '../ui/index.js';
 import { itemFields } from '../../lib/item-fields.js';
+import { encryptForSave, fetchCollectionKey, openItemKey } from '../../lib/item-crypto.js';
 
 const PERMISSION_OPTIONS = [
   { value: 'read', label: 'อ่านอย่างเดียว', hint: 'ดูและคัดลอกรหัสผ่านได้ แก้ไขไม่ได้' },
@@ -24,21 +25,21 @@ const PERMISSION_OPTIONS = [
 ];
 
 export function ShareModal({ isOpen, item, onClose, onSuccess }) {
-  const { mek } = useAuth();
+  const { mek, privateKey } = useAuth();
   const { addToast } = useToast();
 
-  const [recipientEmail, setRecipientEmail] = useState('');
+  const [recipientUsername, setRecipientUsername] = useState('');
   const [permissionLevel, setPermissionLevel] = useState('read'); // 'read' or 'modify'
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [emailError, setEmailError] = useState(null);
+  const [usernameError, setUsernameError] = useState(null);
 
   useEffect(() => {
     if (isOpen && item) {
-      setRecipientEmail('');
+      setRecipientUsername('');
       setPermissionLevel('read');
       setError(null);
-      setEmailError(null);
+      setUsernameError(null);
     }
   }, [isOpen, item]);
 
@@ -46,18 +47,40 @@ export function ShareModal({ isOpen, item, onClose, onSuccess }) {
 
   const { title, locked } = itemFields(item);
 
+  /**
+   * The item's Item Key. An item saved before per-item keys has none (its data is under the
+   * Vault Key, which must never be shared), so it is re-saved with a fresh Item Key first.
+   */
+  const ensureItemKey = async () => {
+    const collectionId = item._collectionId || item.metadata?.collection_id || '';
+    const collectionKey = await fetchCollectionKey(collectionId, privateKey);
+    if (item.encrypted_item_key) {
+      const itemKey = await openItemKey(item, { mek, collectionKey, privateKey });
+      if (!itemKey) throw new Error('เปิดคีย์ของรายการนี้ไม่ได้ ลองโหลดหน้าใหม่แล้วแชร์อีกครั้ง');
+      return itemKey;
+    }
+    if (!item._decrypted) throw new Error('ยังถอดรหัสรายการนี้ไม่ได้ จึงแชร์ไม่ได้');
+    if (collectionId && !collectionKey) {
+      throw new Error('คุณยังไม่มีคีย์ของคอลเลกชันที่รายการนี้อยู่ จึงแชร์ไม่ได้');
+    }
+    const itemKey = ClientCrypto.generateItemKey();
+    const encrypted = await encryptForSave(item._decrypted, { isOwner: true, itemKey, mek, targetCollectionKey: collectionKey });
+    await api.vault.updateItem(
+      item.item_id || item.id,
+      { item_type: item.item_type || 'login', ...encrypted, metadata: item.metadata || {}, version: item.version },
+      item.vault_id
+    );
+    return itemKey;
+  };
+
   const handleShare = async (e) => {
     e.preventDefault();
-    const email = recipientEmail.trim();
-    if (!email) {
-      setEmailError('กรุณากรอกอีเมลของผู้รับ');
+    const username = recipientUsername.trim().toLowerCase();
+    if (!username) {
+      setUsernameError('กรุณากรอกชื่อผู้ใช้ของผู้รับ');
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+$/.test(email)) {
-      setEmailError('รูปแบบอีเมลไม่ถูกต้อง เช่น name@example.com');
-      return;
-    }
-    if (!mek) {
+    if (!mek || !privateKey) {
       setError('คลังรหัสผ่านถูกล็อก กรุณาปลดล็อกก่อนแชร์');
       return;
     }
@@ -66,25 +89,29 @@ export function ShareModal({ isOpen, item, onClose, onSuccess }) {
     setError(null);
 
     try {
-      // 1. Look up recipient to obtain their public key
-      const lookupRes = await api.sharing.lookupUser(recipientEmail.trim().toLowerCase());
-      const recipient = lookupRes?.data;
-      if (!recipient || !recipient.public_key) {
-        throw new Error('ไม่พบผู้รับ หรือผู้รับยังตั้งค่าบัญชีไม่เสร็จ จึงยังรับการแชร์ไม่ได้');
+      // 1. Look up the recipient (only people in your groups) to get their public key
+      let recipient;
+      try {
+        recipient = (await api.sharing.lookupUser(username))?.data;
+      } catch (err) {
+        if (err?.status === 404) {
+          setUsernameError('ไม่พบชื่อผู้ใช้นี้ในกลุ่มของคุณ แชร์ได้เฉพาะคนที่อยู่กลุ่มเดียวกัน');
+          return;
+        }
+        throw err;
+      }
+      if (!recipient?.public_key) {
+        throw new Error('ผู้รับยังตั้งค่าบัญชีไม่เสร็จ จึงยังรับการแชร์ไม่ได้');
       }
 
-      // 2. Generate a fresh 32-byte symmetric Item Key
-      const itemKey = ClientCrypto.generateItemKey();
-
-      // 3. Wrap (encrypt) the Item Key using recipient's RSA-OAEP public key
+      // 2. Wrap this item's own key (never the Vault Key) with the recipient's public key
+      const itemKey = await ensureItemKey();
       const wrappedKeyPayload = await ClientCrypto.wrapItemKey(itemKey, recipient.public_key);
 
-      // 4. Send share request to server
-      const itemId = item.item_id || item.id;
+      // 3. Send share request to server
       await api.sharing.shareItem(
-        itemId,
+        item.item_id || item.id,
         {
-          recipient_email: recipient.email,
           recipient_user_id: recipient.user_id,
           permission_level: permissionLevel,
           encrypted_key_for_recipient: wrappedKeyPayload,
@@ -92,12 +119,16 @@ export function ShareModal({ isOpen, item, onClose, onSuccess }) {
         item.vault_id
       );
 
-      addToast(`แชร์ให้ ${recipient.email} แล้ว`, 'success');
-      setRecipientEmail('');
+      addToast(`แชร์ให้ ${recipient.full_name || recipient.username} แล้ว`, 'success');
+      setRecipientUsername('');
       if (onSuccess) onSuccess();
       onClose();
     } catch (err) {
-      setError(err.message || 'แชร์ไม่สำเร็จ ลองอีกครั้ง');
+      setError(
+        err?.status === 409
+          ? 'รายการนี้ถูกแก้ไขจากที่อื่นระหว่างแชร์ โหลดรายการใหม่แล้วลองอีกครั้ง'
+          : err.message || 'แชร์ไม่สำเร็จ ลองอีกครั้ง'
+      );
     } finally {
       setLoading(false);
     }
@@ -117,18 +148,24 @@ export function ShareModal({ isOpen, item, onClose, onSuccess }) {
 
           {error && <Alert variant="error">{error}</Alert>}
 
-          <Field label="อีเมลของผู้รับ" required error={emailError}>
+          <Field
+            label="ชื่อผู้ใช้ของผู้รับ"
+            required
+            error={usernameError}
+            hint="แชร์ได้เฉพาะคนที่อยู่กลุ่มเดียวกับคุณ"
+          >
             {(props) => (
               <Input
                 {...props}
                 data-autofocus
-                type="email"
                 autoComplete="off"
-                value={recipientEmail}
-                placeholder="name@example.com"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={recipientUsername}
+                placeholder="เช่น somchai"
                 onChange={(e) => {
-                  setRecipientEmail(e.target.value);
-                  setEmailError(null);
+                  setRecipientUsername(e.target.value);
+                  setUsernameError(null);
                   setError(null);
                 }}
               />
@@ -167,7 +204,7 @@ export function ShareModal({ isOpen, item, onClose, onSuccess }) {
 
           <p className="flex items-start gap-2 text-caption text-muted-foreground">
             <LockIcon className="mt-0.5 size-4 shrink-0" />
-            คีย์ของรายการจะถูกเข้ารหัสให้เฉพาะผู้รับก่อนส่ง เซิร์ฟเวอร์จึงอ่านรหัสผ่านไม่ได้
+            ผู้รับได้เฉพาะคีย์ของรายการนี้ ซึ่งเข้ารหัสให้ผู้รับก่อนส่ง เซิร์ฟเวอร์จึงอ่านรหัสผ่านไม่ได้
           </p>
 
           <DialogFooter>

@@ -45,8 +45,10 @@ Errors produced before the Lambda runs come from API Gateway with body `{"messag
 
 ## Auth & profile (UC-1, UC-2, UC-3, UC-7)
 
-Sign-up, e-mail confirmation, sign-in, TOTP MFA and forgotten password are **Amazon Cognito**
-calls made by the browser (`aws-amplify/auth`), not API routes. The Cognito password is
+Sign-up, e-mail confirmation, sign-in and TOTP MFA are **Amazon Cognito** calls made by the
+browser (`aws-amplify/auth`), not API routes. There is no self-service "forgot password" for now
+(the user pool uses `admin_only` account recovery): a forgotten master password cannot unlock
+the vault anyway (zero knowledge). The Cognito password is
 `toCognitoPassword(authHash)` derived from the master password (`shared/crypto.js`).
 
 ### `GET /auth/salt?identifier={username|email}` — public
@@ -76,7 +78,7 @@ First sign-in: stores key material and creates the default "Personal Vault". `em
 Body `{ full_name?: string(1–128), mfa_enabled?: boolean }` → `200 { data: Profile }` · `400 VALIDATION_FAILED` · `404 PROFILE_NOT_FOUND`
 
 ### `PUT /users/me/keys`
-Replace key material after a master password change (`reason: "change"`, Vault Key re-wrapped) or a forgotten-password reset (`reason: "reset"`, new Vault Key — old ciphertext becomes unreadable).
+Replace key material after a master password change (`reason: "change"`, Vault Key re-wrapped). `reason: "reset"` (new Vault Key — old ciphertext becomes unreadable) is accepted but no longer used by the app.
 Body: `kdf_salt`, `encrypted_vault_key`, `encrypted_private_key` (required), `public_key` (optional), `reason`.
 `200 { data: Profile }` · `400 VALIDATION_FAILED` · `404 PROFILE_NOT_FOUND`
 
@@ -126,7 +128,8 @@ Called right after a successful Cognito sign-in; writes `LOGIN_SUCCESS` to the a
 | `encrypted_data.auth_tag` / `authTag` | string | yes | non-empty after trim; stored as `auth_tag` |
 | `encrypted_data.algorithm` | string | no | default `AES-256-GCM` |
 | `encrypted_data.key_version` / `keyVersion` | number | no | default `1` |
-| `metadata` | object | no | default `{}`; `metadata.title` used in activity log |
+| `encrypted_item_key` / `encryptedItemKey` | object | no (app always sends it) | the item's own Item Key, AES-256-GCM-wrapped with the Vault Key, or with the Collection Key when `metadata.collection_id` is set; same shape as `encrypted_data`. Items without it are legacy (payload under the Vault Key / Collection Key directly) and cannot be shared |
+| `metadata` | object | no | default `{}`; only `favorite` (boolean) and `collection_id` (UUID) allowed |
 | `item_type` / `itemType` | string | no | default `login`; DB CHECK: `login`, `secure_note`, `credit_card`, `server`, `identity` (not validated in handler) |
 
 - 201: `{ status: 'success', message, data: { item_id, vault_id, version: 1, created_at } }`
@@ -146,6 +149,7 @@ Called right after a successful Cognito sign-in; writes `LOGIN_SUCCESS` to the a
 |---|---|---|---|
 | `version` / `currentVersion` | integer | no | optimistic lock; if sent, must strictly equal (`!==`) current version |
 | `encrypted_data` / `encryptedData` | object | no | validated as in create when present; otherwise unchanged |
+| `encrypted_item_key` / `encryptedItemKey` | object | no | **owner only** (re-wrap when moving into/out of a collection, or first Item Key for a legacy item); ignored for editors so shares stay valid |
 | `metadata` | object | no | replaces metadata when truthy; otherwise unchanged |
 
 - Behaviour: current version archived into `password_history`, version incremented.
@@ -173,13 +177,18 @@ Called right after a successful Cognito sign-in; writes `LOGIN_SUCCESS` to the a
 
 ## Sharing (UC-10)
 
+Every item has its own random **Item Key**. Sharing gives the recipient that Item Key wrapped
+with their RSA-OAEP public key — never the owner's Vault Key. Recipients must share at least one
+group with the owner.
+
 ### `GET /api/v1/users/lookup`
 - Auth: Cognito ID token
-- Query: `email` (required; trimmed, lower-cased, exact match)
-- 200: `{ status: 'success', data: { user_id, email, username, full_name, public_key } }`
+- Query: `username` (required; trimmed, case-insensitive exact match)
+- Visibility: only the caller and users who share a group with the caller.
+- 200: `{ status: 'success', data: { user_id, username, full_name, public_key } }` (no e-mail)
 - Errors:
-  - `400 MISSING_PARAM` — `email` missing/empty
-  - `404 RECIPIENT_USER_NOT_FOUND`
+  - `400 MISSING_PARAM` — `username` missing/empty
+  - `404 RECIPIENT_USER_NOT_FOUND` — no such user **or** not in a shared group (indistinguishable)
 
 ### `POST /api/v1/vaults/{vaultId}/items/{itemId}/share` · `POST /api/v1/items/{itemId}/share`
 - Auth: Cognito ID token
@@ -190,26 +199,27 @@ Called right after a successful Cognito sign-in; writes `LOGIN_SUCCESS` to the a
 | Field | Type | Req | Notes |
 |---|---|---|---|
 | `item_id` / `itemId` | string | no | fallback if no path itemId (unreachable via current routes) |
-| `recipient_user_id` / `recipientUserId` | string | one of | takes precedence over email |
-| `recipient_email` / `recipientEmail` | string | one of | trimmed, lower-cased |
+| `recipient_user_id` / `recipientUserId` | string (UUID) | one of | takes precedence over username |
+| `recipient_username` / `recipientUsername` | string | one of | case-insensitive |
 | `permission_level` / `permission` | string | no | `read` (default) or `modify`, case-insensitive |
-| `encrypted_key_for_recipient` / `encryptedKeyForRecipient` | object | yes | client-wrapped item key; only `typeof === 'object'` checked |
+| `encrypted_key_for_recipient` / `encryptedKeyForRecipient` | object | yes | the item's Item Key wrapped with the recipient's public key: `{ algorithm: 'RSA-OAEP', hash: 'SHA-256', ciphertext }` |
 
-- Behaviour: upsert — an existing share for (item, recipient) is updated.
-- 201 (also on update): `{ status: 'success', message, data: { share_id, permission_level, recipient_email } }`
+- Behaviour: upsert — an existing share for (item, recipient) is updated (in one transaction with the activity log).
+- 201 (also on update): `{ status: 'success', message, data: { share_id, permission_level, recipient_user_id, recipient_username } }`
 - Errors:
-  - `400 MISSING_PARAM` — no itemId
+  - `400 MISSING_PARAM` — itemId missing / not a UUID
   - `404 ITEM_NOT_FOUND`
   - `403 FORBIDDEN` — caller not owner
-  - `404 RECIPIENT_USER_NOT_FOUND` — recipient not found, or neither id nor email supplied
+  - `409 ITEM_KEY_REQUIRED` — legacy item without `encrypted_item_key`; re-save it with an Item Key first (the app does this automatically)
+  - `404 RECIPIENT_USER_NOT_FOUND` — recipient not found, not in a shared group, or neither id nor username supplied
   - `400 CANNOT_SHARE_WITH_SELF`
   - `400 INVALID_PERMISSION_LEVEL` — not `read`/`modify`
-  - `400 MISSING_WRAPPED_KEY` — wrapped key missing or not an object
+  - `400 MISSING_WRAPPED_KEY` — wrapped key missing or without a `ciphertext` string
 - Logs `PASSWORD_SHARE` activity.
 
 ### `GET /api/v1/shared-items`
 - Auth: Cognito ID token
-- 200: `{ status: 'success', data: [ { share_id, permission_level, encrypted_key_for_recipient, shared_at, item_id, vault_id, item_type, encrypted_data, metadata, version, shared_by_email, shared_by_username, shared_by_name } ] }` (by share `created_at` DESC)
+- 200: `{ status: 'success', data: [ { share_id, permission_level, encrypted_key_for_recipient, shared_at, item_id, vault_id, user_id (owner), item_type, encrypted_data, metadata, version, shared_by_email, shared_by_username, shared_by_name } ] }` (by share `created_at` DESC)
 - Errors: common only.
 
 ### `DELETE /api/v1/vaults/{vaultId}/items/{itemId}/share/{userId}` · `DELETE /api/v1/shares/{shareId}`
@@ -363,18 +373,18 @@ Member objects: `{ id, group_member_id, groupId, group_id, userId, user_id, role
 ### `POST /api/v1/groups/{groupId}/members`
 - Auth: Cognito ID token
 - Access: system admin, creator, or group `admin`/`manager`.
-- Body: `userId` / `user_id` (required), `role` (optional, default `member`; `member`/`manager`/`admin`, case-insensitive)
-- 201: `{ status: 'success', success: true, member: <member> }`
+- Body: `username` **or** `userId` / `user_id` (one required; the app sends `username`), `role` (optional, default `member`; `member`/`manager`/`admin`, case-insensitive). This is the only place a user can be found without already sharing a group, and only group admins/managers reach it.
+- 201: `{ status: 'success', success: true, member: <member + username, full_name> }`
 - Errors:
-  - `404 NOT_FOUND` — group not found / target user not found
+  - `404 NOT_FOUND` — group not found / target user (id or username) not found
   - `403 FORBIDDEN` — insufficient group role
-  - `400 BAD_REQUEST` — `userId` missing, or invalid role
+  - `400 BAD_REQUEST` — neither `username` nor `userId`, or invalid role
   - `409 CONFLICT` — already a member
 
 ### `GET /api/v1/groups/{groupId}/members`
 - Auth: Cognito ID token
 - Access: system admin, creator, or any member.
-- 200: `{ status: 'success', success: true, members: [<member + username, email, full_name>] }` (by join date ASC)
+- 200: `{ status: 'success', success: true, members: [<member + username, email, full_name, public_key>] }` (by join date ASC; public keys let a collection admin wrap the collection key for a whole group)
 - Errors: `404 NOT_FOUND`; `403 FORBIDDEN`
 
 ### `DELETE /api/v1/groups/{groupId}/members/{userId}`

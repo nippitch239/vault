@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
-import ClientCrypto from '../../services/crypto.js';
 import { ShareIcon, EyeIcon, EyeOffIcon, CopyIcon, CheckIcon, RefreshIcon, EditIcon, LockIcon, ExternalLinkIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 import { itemFields } from '../../lib/item-fields.js';
+import { decryptVaultItem } from '../../lib/item-crypto.js';
+import { ItemModal } from '../Vault/ItemModal.jsx';
 import { Button, Badge, Card, Alert, Skeleton, EmptyState } from '../ui/index.js';
 
 const SHARE_PERMISSION = {
@@ -14,7 +15,7 @@ const SHARE_PERMISSION = {
 
 const isSafeUrl = (url) => /^https?:\/\//i.test(String(url || ''));
 
-export function SharedItemsView({ onEditItem }) {
+export function SharedItemsView() {
   const { mek, privateKey } = useAuth();
   const { addToast } = useToast();
 
@@ -23,6 +24,7 @@ export function SharedItemsView({ onEditItem }) {
   const [error, setError] = useState(null);
   const [revealedIds, setRevealedIds] = useState(new Set());
   const [copied, setCopied] = useState(null); // `${id}:${field}`
+  const [editingItem, setEditingItem] = useState(null); // shares with 'modify'
   const copiedTimer = useRef(null);
 
   const loadSharedItems = useCallback(async () => {
@@ -32,37 +34,11 @@ export function SharedItemsView({ onEditItem }) {
       const res = await api.sharing.listSharedItems();
       const rawItems = res?.data || [];
 
-      // Decrypt items locally
+      // Decrypt locally: the share carries the item's own key wrapped with our public key.
       const decryptedList = await Promise.all(
         rawItems.map(async (item) => {
-          try {
-            // If item has encrypted_data and MEK or unwrapped key
-            let decryptedData = null;
-            if (item.encrypted_data && mek) {
-              try {
-                decryptedData = await ClientCrypto.decryptItem(item.encrypted_data, mek);
-              } catch {
-                // If encrypted with itemKey instead of MEK, unwrap key first
-                if (item.encrypted_key_for_recipient && privateKey) {
-                  try {
-                    const unwrappedKey = await ClientCrypto.unwrapItemKey(
-                      item.encrypted_key_for_recipient,
-                      privateKey
-                    );
-                    decryptedData = await ClientCrypto.decryptItem(item.encrypted_data, unwrappedKey);
-                  } catch (err) {
-                    console.warn('Could not unwrap item key:', err);
-                  }
-                }
-              }
-            }
-            return {
-              ...item,
-              _decrypted: decryptedData,
-            };
-          } catch {
-            return item;
-          }
+          const { payload } = await decryptVaultItem(item, { privateKey });
+          return { ...item, _decrypted: payload };
         })
       );
 
@@ -72,7 +48,7 @@ export function SharedItemsView({ onEditItem }) {
     } finally {
       setLoading(false);
     }
-  }, [mek, privateKey]);
+  }, [privateKey]);
 
   useEffect(() => {
     loadSharedItems();
@@ -99,6 +75,11 @@ export function SharedItemsView({ onEditItem }) {
   };
 
   const lockedCount = sharedItems.filter((item) => !item._decrypted).length;
+
+  // Editing re-encrypts with the item's own key, so the owner and other recipients still read it.
+  if (editingItem) {
+    return <ItemModal isOpen={true} item={editingItem} onClose={() => setEditingItem(null)} onSuccess={loadSharedItems} />;
+  }
 
   return (
     <div className="space-y-6">
@@ -273,9 +254,9 @@ export function SharedItemsView({ onEditItem }) {
                         </dl>
                       )}
 
-                      {canModify && onEditItem && !locked && (
+                      {canModify && !locked && (
                         <div className="mt-4 flex justify-end border-t border-border pt-4">
-                          <Button variant="secondary" size="sm" onClick={() => onEditItem(item)}>
+                          <Button variant="secondary" size="sm" onClick={() => setEditingItem(item)}>
                             <EditIcon />
                             แก้ไข
                           </Button>

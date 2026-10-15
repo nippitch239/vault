@@ -15,13 +15,13 @@ import {
   encryptData,
   decryptData,
   generateAsymmetricKeyPair,
-  wrapKey,
-  unwrapKey,
   encryptPrivateKey,
   decryptPrivateKey,
   toBase64,
   fromBase64,
-  generateRandomBytes,
+  generateItemKey,
+  wrapItemKey,
+  unwrapItemKey,
   generateVaultKey,
   wrapVaultKey,
   unwrapVaultKey,
@@ -43,7 +43,6 @@ import {
   validateLogin,
   validateVaultItem,
   validateShareRequest,
-  validatePasswordReset,
   getErrorMessage,
 } from '@vault/shared/validator.js';
 
@@ -86,18 +85,16 @@ export const ClientCrypto = {
     return await decryptData(encryptedData, mek);
   },
 
-  // Key Wrapping for Sharing
-  wrapItemKey: async (itemKey, recipientPublicKey) => {
-    return await wrapKey(itemKey, recipientPublicKey);
-  },
+  // Item Keys: one random key per item; the payload is encrypted with it (encryptItem).
+  generateItemKey: () => generateItemKey(),
 
-  unwrapItemKey: async (wrappedKey, recipientPrivateKey) => {
-    return await unwrapKey(wrappedKey, recipientPrivateKey);
-  },
+  // Item Key wrapped with the Vault Key or a Collection Key (vault_items.encrypted_item_key)
+  protectItemKey: (itemKey, wrappingKey) => wrapItemKey(itemKey, wrappingKey),
+  unprotectItemKey: (encryptedItemKey, wrappingKey) => unwrapItemKey(encryptedItemKey, wrappingKey),
 
-  generateItemKey: () => {
-    return generateRandomBytes(32);
-  },
+  // Item Key wrapped with a share recipient's RSA-OAEP public key (UC-10)
+  wrapItemKey: (itemKey, recipientPublicKey) => wrapCollectionKey(itemKey, recipientPublicKey),
+  unwrapItemKey: (wrappedKey, recipientPrivateKey) => unwrapCollectionKey(wrappedKey, recipientPrivateKey),
 
   // Collections Cryptography (M2/M3: R2)
   generateCollectionKey: () => {
@@ -135,7 +132,6 @@ export const ClientCrypto = {
     validateLogin,
     validateVaultItem,
     validateShareRequest,
-    validatePasswordReset,
     getErrorMessage,
   },
 

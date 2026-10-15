@@ -79,7 +79,7 @@ export function CollectionsView({ onOpenCollection }) {
   const [loadingAccess, setLoadingAccess] = useState(false);
   const [accessError, setAccessError] = useState(null);
   const [targetType, setTargetType] = useState('user');
-  const [recipientEmail, setRecipientEmail] = useState('');
+  const [recipientUsername, setRecipientUsername] = useState('');
   const [foundRecipient, setFoundRecipient] = useState(null);
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupError, setLookupError] = useState(null);
@@ -156,8 +156,8 @@ export function CollectionsView({ onOpenCollection }) {
 
   const getUserPublicKey = async () => {
     if (user?.public_key) return user.public_key;
-    if (!user?.email) return null;
-    const lookup = await api.sharing.lookupUser(user.email).catch(() => null);
+    if (!user?.username) return null;
+    const lookup = await api.sharing.lookupUser(user.username).catch(() => null);
     return lookup?.data?.public_key || null;
   };
 
@@ -220,7 +220,7 @@ export function CollectionsView({ onOpenCollection }) {
   const openAccess = async (collection) => {
     setAccessCollection(collection);
     setTargetType('user');
-    setRecipientEmail('');
+    setRecipientUsername('');
     setFoundRecipient(null);
     setLookupError(null);
     setSelectedPermission('read');
@@ -239,21 +239,25 @@ export function CollectionsView({ onOpenCollection }) {
 
   const handleLookupRecipient = async (e) => {
     e.preventDefault();
-    const email = recipientEmail.trim().toLowerCase();
-    if (!email) {
-      setLookupError('กรุณากรอกอีเมลของผู้รับ');
+    const username = recipientUsername.trim().toLowerCase();
+    if (!username) {
+      setLookupError('กรุณากรอกชื่อผู้ใช้ของผู้รับ');
       return;
     }
     setLookupLoading(true);
     setLookupError(null);
     setFoundRecipient(null);
     try {
-      const res = await api.sharing.lookupUser(email);
+      const res = await api.sharing.lookupUser(username);
       if (res?.data?.user_id === user?.user_id) setLookupError('นี่คือบัญชีของคุณเอง');
       else if (res?.data?.public_key) setFoundRecipient(res.data);
       else setLookupError('ผู้ใช้นี้ยังไม่ได้ตั้งค่าบัญชีให้เสร็จ จึงยังรับคีย์ไม่ได้');
     } catch (err) {
-      setLookupError(err?.status === 404 ? 'ไม่พบบัญชีผู้ใช้นี้ในระบบ' : err.message || 'ค้นหาไม่สำเร็จ');
+      setLookupError(
+        err?.status === 404
+          ? 'ไม่พบชื่อผู้ใช้นี้ในกลุ่มของคุณ ค้นหาได้เฉพาะคนที่อยู่กลุ่มเดียวกัน'
+          : err.message || 'ค้นหาไม่สำเร็จ'
+      );
     } finally {
       setLookupLoading(false);
     }
@@ -289,15 +293,14 @@ export function CollectionsView({ onOpenCollection }) {
         await api.collections.storeKey(colId, { userId: foundRecipient.user_id, encryptedKeyForRecipient: wrapped });
         addToast(`ให้สิทธิ์ ${foundRecipient.full_name || foundRecipient.username} แล้ว`, 'success');
         setFoundRecipient(null);
-        setRecipientEmail('');
+        setRecipientUsername('');
       } else {
         await api.collections.grantAccess(colId, { targetType: 'group', targetId: selectedGroupId, permission: selectedPermission });
         const members = (await api.groups.listMembers(selectedGroupId))?.members || [];
         const results = await Promise.allSettled(
           members.map(async (mbr) => {
             const memberUserId = mbr.user_id || mbr.userId;
-            let pubKey = mbr.public_key || mbr.publicKey;
-            if (!pubKey && mbr.email) pubKey = (await api.sharing.lookupUser(mbr.email))?.data?.public_key;
+            const pubKey = mbr.public_key || mbr.publicKey;
             if (!pubKey) throw new Error(`no public key for ${memberUserId}`);
             const wrapped = await ClientCrypto.wrapCollectionKey(collectionKey, pubKey);
             await api.collections.storeKey(colId, { userId: memberUserId, encryptedKeyForRecipient: wrapped });
@@ -649,22 +652,23 @@ export function CollectionsView({ onOpenCollection }) {
 
             {targetType === 'user' ? (
               <form onSubmit={handleLookupRecipient} noValidate className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-                <Field label="อีเมลของผู้รับ" error={lookupError}>
+                <Field label="ชื่อผู้ใช้ของผู้รับ" error={lookupError} hint="ค้นหาได้เฉพาะคนที่อยู่กลุ่มเดียวกับคุณ">
                   {(props) => (
                     <Input
                       {...props}
-                      type="email"
                       autoComplete="off"
-                      value={recipientEmail}
-                      placeholder="name@example.com"
+                      autoCapitalize="none"
+                      spellCheck={false}
+                      value={recipientUsername}
+                      placeholder="เช่น somchai"
                       onChange={(e) => {
-                        setRecipientEmail(e.target.value);
+                        setRecipientUsername(e.target.value);
                         setLookupError(null);
                       }}
                     />
                   )}
                 </Field>
-                <Button type="submit" variant="outline" loading={lookupLoading} className={lookupError ? 'sm:mb-6' : ''}>
+                <Button type="submit" variant="outline" loading={lookupLoading} className="sm:mb-6">
                   ค้นหา
                 </Button>
               </form>
@@ -691,7 +695,7 @@ export function CollectionsView({ onOpenCollection }) {
                 </div>
                 <div className="min-w-0">
                   <p className="truncate text-sm font-ui">{foundRecipient.full_name || foundRecipient.username}</p>
-                  <p className="truncate text-caption text-muted-foreground">{foundRecipient.email}</p>
+                  <p className="truncate text-caption text-muted-foreground">@{foundRecipient.username}</p>
                 </div>
               </div>
             )}

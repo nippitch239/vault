@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
-import ClientCrypto from '../../services/crypto.js';
 import { ItemModal } from './ItemModal.jsx';
 import { DeleteConfirmModal } from './DeleteConfirmModal.jsx';
 import { ShareModal } from '../Sharing/ShareModal.jsx';
@@ -21,6 +20,7 @@ import { VaultGridView } from './VaultGridView.jsx';
 import { VaultTableView } from './VaultTableView.jsx';
 import { CATEGORY_OPTIONS } from './CategoryBadge.jsx';
 import { itemFields, buildMetadata } from '../../lib/item-fields.js';
+import { decryptVaultItem, fetchCollectionKey } from '../../lib/item-crypto.js';
 
 function LayoutGridIcon({ className = 'size-4' }) {
   return (
@@ -159,33 +159,15 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
         loadedCollections.map(async (col) => {
           const cid = col.collection_id || col.id;
           try {
-            let colKey = null;
-            if (privateKey) {
-              try {
-                const keyRes = await api.collections.getKeys(cid);
-                colKey = await ClientCrypto.unwrapCollectionKey(keyRes?.key?.encryptedKeyForRecipient, privateKey);
-                collectionKeyCache.set(cid, colKey);
-              } catch {
-                // No key for this collection yet: its items are listed but stay locked.
-              }
-            }
+            // No key for this collection yet: its items are listed but stay locked.
+            const colKey = await fetchCollectionKey(cid, privateKey);
+            if (colKey) collectionKeyCache.set(cid, colKey);
 
             const itemsRes = await api.collections.listItems(cid);
             for (const it of itemsRes?.items || []) {
               const iid = it.item_id || it.id;
-              let decryptedPayload = null;
-              if (it.encrypted_data && colKey) {
-                try {
-                  decryptedPayload = await ClientCrypto.decryptCollectionItem(it.encrypted_data, colKey);
-                } catch {
-                  decryptedPayload = null;
-                }
-              }
-              if (!decryptedPayload && it.encrypted_data) {
-                // The owner's own item may still be encrypted with their Vault Key.
-                decryptedPayload = await ClientCrypto.decryptItem(it.encrypted_data, mek).catch(() => null);
-              }
-              collectionItemsMap.set(iid, { ...it, _decrypted: decryptedPayload, _collection: col, _collectionId: cid });
+              const { payload } = await decryptVaultItem(it, { mek, collectionKey: colKey });
+              collectionItemsMap.set(iid, { ...it, _decrypted: payload, _collection: col, _collectionId: cid });
             }
           } catch (colErr) {
             failedCollections.push(col.name || cid);
@@ -197,7 +179,7 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
         addToast(`โหลดรายการจากคอลเลกชันไม่สำเร็จ: ${failedCollections.join(', ')} ลองโหลดใหม่อีกครั้ง`, 'error', 6000);
       }
 
-      // 4. Decrypt personal items with MEK or collection key
+      // 4. Decrypt personal items (Item Key, or legacy Vault Key / collection key)
       const decryptedPersonal = await Promise.all(
         rawPersonal.map(async (it) => {
           const iid = it.item_id || it.id;
@@ -205,30 +187,12 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
             return collectionItemsMap.get(iid);
           }
 
-          let decryptedPayload = null;
-          if (it.encrypted_data) {
-            const metaColId = it.metadata?.collection_id;
-            if (metaColId && collectionKeyCache.has(metaColId)) {
-              try {
-                decryptedPayload = await ClientCrypto.decryptCollectionItem(
-                  it.encrypted_data,
-                  collectionKeyCache.get(metaColId)
-                );
-              } catch {
-                // fallback
-              }
-            }
-
-            if (!decryptedPayload) {
-              try {
-                decryptedPayload = await ClientCrypto.decryptItem(it.encrypted_data, mek);
-              } catch (e) {
-                console.warn(`Failed to decrypt item ${it.item_id}:`, e);
-              }
-            }
-          }
-
           const metaColId = it.metadata?.collection_id;
+          const { payload: decryptedPayload } = await decryptVaultItem(it, {
+            mek,
+            collectionKey: metaColId ? collectionKeyCache.get(metaColId) : null,
+          });
+
           const associatedCol = metaColId
             ? loadedCollections.find((c) => (c.collection_id || c.id) === metaColId)
             : null;

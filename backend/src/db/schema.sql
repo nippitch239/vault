@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS vaults (
 );
 
 -- 3. VAULT ITEMS TABLE
+-- Each item has its own random Item Key (client-side):
+--   encrypted_data      payload encrypted (AES-256-GCM) with the Item Key
+--   encrypted_item_key  Item Key wrapped (AES-256-GCM) with the owner's Vault Key, or with the
+--                       Collection Key when metadata.collection_id is set
+-- Items saved before item keys existed have encrypted_item_key = NULL: their payload is
+-- encrypted directly with the Vault Key / Collection Key (legacy, still readable).
 CREATE TABLE IF NOT EXISTS vault_items (
     item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     vault_id UUID NOT NULL,
@@ -51,6 +57,7 @@ CREATE TABLE IF NOT EXISTS vault_items (
     item_type VARCHAR(64) NOT NULL DEFAULT 'login' 
         CHECK (item_type IN ('login', 'secure_note', 'credit_card', 'server', 'identity')),
     encrypted_data JSONB NOT NULL,
+    encrypted_item_key JSONB DEFAULT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     version INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -77,7 +84,12 @@ CREATE TABLE IF NOT EXISTS password_history (
     CONSTRAINT uq_item_version UNIQUE (item_id, version)
 );
 
+-- Upgrade for databases created before per-item keys (no-op on a fresh database).
+ALTER TABLE vault_items ADD COLUMN IF NOT EXISTS encrypted_item_key JSONB DEFAULT NULL;
+
 -- 5. SHARE PERMISSIONS TABLE
+-- encrypted_key_for_recipient: the item's Item Key wrapped with the recipient's RSA-OAEP
+-- public key, so the recipient can decrypt encrypted_data without the owner's Vault Key.
 CREATE TABLE IF NOT EXISTS share_permissions (
     share_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     item_id UUID NOT NULL,

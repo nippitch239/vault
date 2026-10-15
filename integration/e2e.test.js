@@ -6,7 +6,8 @@
  *
  *   sign-up -> confirm -> sign-in (Authentication Key as Cognito password)
  *   -> first sign-in creates the profile: random Vault Key wrapped by the KEK
- *   -> items encrypted with the Vault Key, TOTP, sharing, history, reset, logs, monitoring
+ *   -> items encrypted with their own Item Key (wrapped by the Vault Key), TOTP,
+ *      sharing within a group (Item Key wrapped for the recipient), history, logs, monitoring
  */
 
 import { test, describe, before, after } from 'node:test';
@@ -26,10 +27,12 @@ describe('Frontend services against the local API Gateway + Cognito simulator (U
   let setAuthToken;
   let ClientCrypto;
   let auth;
+  let itemCrypto;
 
   const sessions = {};
   let vaultId;
   let itemId;
+  let itemKey;
   let totpSecret;
 
   async function signUpAndOpenVault(user) {
@@ -72,6 +75,7 @@ describe('Frontend services against the local API Gateway + Cognito simulator (U
     ({ api, setAuthToken } = await import('../frontend/src/services/api.js'));
     ClientCrypto = (await import('../frontend/src/services/crypto.js')).default;
     auth = await (await import('../frontend/src/services/auth/index.js')).getAuth();
+    itemCrypto = await import('../frontend/src/lib/item-crypto.js');
   });
 
   after(async () => {
@@ -128,47 +132,71 @@ describe('Frontend services against the local API Gateway + Cognito simulator (U
     setAuthToken(sessions.alice.token);
   });
 
-  test('UC-4: add an item encrypted with the Vault Key', async () => {
+  test('UC-4: add an item encrypted with its own Item Key (wrapped by the Vault Key)', async () => {
     vaultId = (await api.vault.listVaults()).data[0].vault_id;
     const secret = { title: 'Database Cluster Admin', username: 'alice_admin@corp.internal', password: 'ProdSuperPassword_8899!', url: 'https://vault.corp.internal', notes: 'Root DB' };
-    const created = await api.vault.createItem(
-      { item_type: 'login', encrypted_data: await ClientCrypto.encryptItem(secret, sessions.alice.vaultKey), metadata: { favorite: true } },
-      vaultId
-    );
+    const encrypted = await itemCrypto.encryptForSave(secret, { isOwner: true, mek: sessions.alice.vaultKey });
+    const created = await api.vault.createItem({ item_type: 'login', ...encrypted, metadata: { favorite: true } }, vaultId);
     assert.equal(created.data.version, 1);
     itemId = created.data.item_id;
 
     const fetched = await api.vault.getItem(itemId, vaultId);
-    assert.deepEqual(await ClientCrypto.decryptItem(fetched.data.encrypted_data, sessions.alice.vaultKey), secret);
+    const opened = await itemCrypto.decryptVaultItem(fetched.data, { mek: sessions.alice.vaultKey });
+    assert.deepEqual(opened.payload, secret);
+    itemKey = opened.itemKey;
+    assert.deepEqual(await ClientCrypto.unprotectItemKey(fetched.data.encrypted_item_key, sessions.alice.vaultKey), itemKey);
+    // The Vault Key itself does not decrypt the payload: only the Item Key does.
+    await assert.rejects(() => ClientCrypto.decryptItem(fetched.data.encrypted_data, sessions.alice.vaultKey));
   });
 
   test('UC-5 & UC-11: update with optimistic version, history and rollback', async () => {
     const updated = { title: 'Database Cluster Admin', username: 'alice_admin@corp.internal', password: 'Rotated_2026!', url: 'https://vault.corp.internal/v2', notes: 'rotated' };
-    const res = await api.vault.updateItem(
-      itemId,
-      { encrypted_data: await ClientCrypto.encryptItem(updated, sessions.alice.vaultKey), metadata: { favorite: true }, version: 1 },
-      vaultId
-    );
+    const encrypted = await itemCrypto.encryptForSave(updated, { isOwner: true, itemKey, mek: sessions.alice.vaultKey });
+    const res = await api.vault.updateItem(itemId, { ...encrypted, metadata: { favorite: true }, version: 1 }, vaultId);
     assert.equal(res.data.version, 2);
 
     const history = await api.history.getHistory(itemId, vaultId);
-    assert.equal((await ClientCrypto.decryptItem(history.history[0].encrypted_data, sessions.alice.vaultKey)).password, 'ProdSuperPassword_8899!');
+    assert.equal((await ClientCrypto.decryptItem(history.history[0].encrypted_data, itemKey)).password, 'ProdSuperPassword_8899!');
     assert.equal((await api.history.rollback(itemId, 1, vaultId)).data.version, 3);
   });
 
-  test('UC-10: share with RSA-OAEP key wrapping, recipient listing and revoke', async () => {
-    const lookup = await api.sharing.lookupUser(bob.email);
-    assert.equal(lookup.data.public_key, sessions.bob.keyPair.publicKey);
+  test('UC-10: share within a group by username; the recipient decrypts and edits with the Item Key only', async () => {
+    setAuthToken(sessions.alice.token);
+    // Not in a shared group yet: Bob cannot be found.
+    await assert.rejects(() => api.sharing.lookupUser(bob.username), (err) => err.status === 404);
 
-    const wrapped = await ClientCrypto.wrapItemKey(ClientCrypto.generateItemKey(), lookup.data.public_key);
-    const share = await api.sharing.shareItem(itemId, { recipient_email: bob.email, permission_level: 'modify', encrypted_key_for_recipient: wrapped }, vaultId);
+    const team = await api.groups.create({ name: 'Team' });
+    await api.groups.addMember(team.group.group_id || team.group.id, { username: bob.username, role: 'member' });
+    const lookup = await api.sharing.lookupUser(bob.username);
+    assert.equal(lookup.data.public_key, sessions.bob.keyPair.publicKey);
+    assert.equal(lookup.data.email, undefined);
+
+    // Legacy item (payload under the Vault Key) cannot be shared until it gets an Item Key.
+    const legacy = await api.vault.createItem({ encrypted_data: await ClientCrypto.encryptItem({ title: 'old' }, sessions.alice.vaultKey) }, vaultId);
+    const wrapped = await ClientCrypto.wrapItemKey(itemKey, lookup.data.public_key);
+    await assert.rejects(
+      () => api.sharing.shareItem(legacy.data.item_id, { recipient_user_id: lookup.data.user_id, encrypted_key_for_recipient: wrapped }, vaultId),
+      (err) => err.status === 409
+    );
+
+    const share = await api.sharing.shareItem(itemId, { recipient_user_id: lookup.data.user_id, permission_level: 'modify', encrypted_key_for_recipient: wrapped }, vaultId);
     assert.equal(share.status, 'success');
 
+    // Bob decrypts with his private key alone (he never has Alice's Vault Key) ...
     setAuthToken(sessions.bob.token);
-    const shared = await api.sharing.listSharedItems();
-    assert.ok(shared.data.some((s) => s.item_id === itemId));
+    const sharedItem = (await api.sharing.listSharedItems()).data.find((s) => s.item_id === itemId);
+    const { payload, itemKey: bobItemKey } = await itemCrypto.decryptVaultItem(sharedItem, { privateKey: sessions.bob.keyPair.privateKey });
+    assert.equal(payload.password, 'ProdSuperPassword_8899!');
 
+    // ... and edits it; trying to swap in another Item Key is ignored by the server.
+    const edit = await itemCrypto.encryptForSave({ ...payload, password: 'EditedByBob_1!' }, { isOwner: false, itemKey: bobItemKey });
+    await api.vault.updateItem(itemId, { ...edit, encrypted_item_key: await ClientCrypto.protectItemKey(bobItemKey, sessions.bob.vaultKey), version: sharedItem.version }, sharedItem.vault_id);
+
+    // Alice still reads it with her own copy of the key.
     setAuthToken(sessions.alice.token);
+    const after = await itemCrypto.decryptVaultItem((await api.vault.getItem(itemId, vaultId)).data, { mek: sessions.alice.vaultKey });
+    assert.equal(after.payload.password, 'EditedByBob_1!');
+
     assert.equal((await api.sharing.revokeShare(itemId, lookup.data.user_id, vaultId)).status, 'success');
   });
 
@@ -202,37 +230,31 @@ describe('Frontend services against the local API Gateway + Cognito simulator (U
     const bobKey = await api.collections.getKeys(collectionId);
     const bobCollectionKey = await ClientCrypto.unwrapCollectionKey(bobKey.key.encryptedKeyForRecipient, sessions.bob.keyPair.privateKey);
     assert.deepEqual(bobCollectionKey, collectionKey);
+
+    // An item in the collection: its Item Key is wrapped with the collection key, so every
+    // member with the collection key opens it; moving it out only re-wraps the Item Key.
     setAuthToken(sessions.alice.token);
+    const secret = { title: 'Ops root', password: 'OpsRoot_2026!' };
+    const enc = await itemCrypto.encryptForSave(secret, { isOwner: true, mek: sessions.alice.vaultKey, targetCollectionKey: collectionKey });
+    const created2 = await api.vault.createItem({ ...enc, metadata: { collection_id: collectionId } }, vaultId);
+    await api.collections.addItem(collectionId, { itemId: created2.data.item_id });
+
+    setAuthToken(sessions.bob.token);
+    const listed = (await api.collections.listItems(collectionId)).items.find((i) => i.item_id === created2.data.item_id);
+    const bobView = await itemCrypto.decryptVaultItem(listed, { collectionKey: bobCollectionKey });
+    assert.deepEqual(bobView.payload, secret);
+
+    setAuthToken(sessions.alice.token);
+    const moved = await itemCrypto.encryptForSave(secret, { isOwner: true, itemKey: bobView.itemKey, mek: sessions.alice.vaultKey });
+    await api.vault.updateItem(created2.data.item_id, { ...moved, metadata: {}, version: 1 }, vaultId);
+    const personal = await itemCrypto.decryptVaultItem((await api.vault.getItem(created2.data.item_id, vaultId)).data, { mek: sessions.alice.vaultKey });
+    assert.deepEqual(personal.payload, secret);
+    assert.deepEqual(personal.itemKey, bobView.itemKey);
   });
 
   test('UC-6: delete item', async () => {
     assert.equal((await api.vault.deleteItem(itemId, vaultId)).status, 'success');
     await assert.rejects(() => api.vault.getItem(itemId, vaultId), (err) => err.status === 404);
-  });
-
-  test('UC-7: forgotten master password -> Cognito code -> new key material', async () => {
-    const reset = await auth.forgotPassword({ username: bob.email });
-    assert.ok(reset.devCode);
-
-    const newMaster = 'BrandNewMasterPassword_2026!';
-    const { kek, authHash } = await ClientCrypto.deriveKeys(newMaster, sessions.bob.salt);
-    const newPassword = ClientCrypto.toCognitoPassword(authHash);
-    await auth.confirmForgotPassword({ username: bob.email, code: reset.devCode, newPassword });
-
-    await assert.rejects(() => auth.signIn({ username: bob.username, password: sessions.bob.password }));
-    assert.equal((await auth.signIn({ username: bob.username, password: newPassword })).status, 'DONE');
-    setAuthToken(await auth.getIdToken());
-
-    const vaultKey = ClientCrypto.createVaultKey();
-    const keyPair = await ClientCrypto.createKeyPair();
-    const updated = await api.users.updateKeys({
-      reason: 'reset',
-      kdf_salt: sessions.bob.salt,
-      public_key: keyPair.publicKey,
-      encrypted_private_key: await ClientCrypto.protectPrivateKey(keyPair.privateKey, vaultKey),
-      encrypted_vault_key: await ClientCrypto.wrapVaultKey(vaultKey, kek),
-    });
-    assert.deepEqual(await ClientCrypto.unwrapVaultKey(updated.data.encrypted_vault_key, kek), vaultKey);
   });
 
   test('UC-8, UC-9, UC-12, UC-13: security alerts, audit log, activity log, monitoring', async () => {

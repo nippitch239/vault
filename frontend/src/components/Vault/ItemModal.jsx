@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
-import ClientCrypto from '../../services/crypto.js';
 import { PasswordGenerator } from '../Common/PasswordGenerator.jsx';
 import { KeyIcon, EyeIcon, EyeOffIcon, LockIcon, CloseIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 import { Button, Input, Textarea, Select, Field, Alert, ConfirmDialog } from '../ui/index.js';
 import { CATEGORY_OPTIONS } from './CategoryBadge.jsx';
 import { buildMetadata } from '../../lib/item-fields.js';
+import { encryptForSave, fetchCollectionKey, openItemKey } from '../../lib/item-crypto.js';
 
 const PERMISSION_LABELS = { admin: 'ผู้ดูแล', write: 'แก้ไขได้', read: 'อ่านอย่างเดียว' };
 
@@ -211,26 +211,36 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         updatedAt: new Date().toISOString(),
       };
 
-      // 2. Encrypt using collection key if collection selected, otherwise fallback to MEK
-      let encryptedData;
-      if (selectedCollectionId) {
-        if (!privateKey) {
-          throw new Error('คลังรหัสผ่านถูกล็อก กรุณาปลดล็อกก่อนบันทึกรายการในคอลเลกชัน');
-        }
-        const keyRes = await api.collections.getKeys(selectedCollectionId);
-        const wrappedPayload =
-          keyRes?.key?.encrypted_key_for_recipient ||
-          keyRes?.key?.encryptedKeyForRecipient ||
-          keyRes?.encrypted_key_for_recipient ||
-          keyRes?.encryptedKeyForRecipient ||
-          keyRes?.key ||
-          keyRes;
-
-        const colKey = await ClientCrypto.unwrapCollectionKey(wrappedPayload, privateKey);
-        encryptedData = await ClientCrypto.encryptCollectionItem(sensitivePayload, colKey);
-      } else {
-        encryptedData = await ClientCrypto.encryptItem(sensitivePayload, mek);
+      // 2. Encrypt with the item's own Item Key. Its existing key is kept so people the item
+      //    is shared with can still read it; the key is wrapped with the collection key when
+      //    the item is in a collection, otherwise with the Vault Key.
+      const previousCollectionId = isEditing
+        ? item._collectionId || item.collection_id || item.metadata?.collection_id || ''
+        : '';
+      if ((selectedCollectionId || previousCollectionId) && !privateKey) {
+        throw new Error('คลังรหัสผ่านถูกล็อก กรุณาปลดล็อกก่อนบันทึกรายการในคอลเลกชัน');
       }
+      const currentCollectionKey = await fetchCollectionKey(previousCollectionId, privateKey);
+      const targetCollectionKey =
+        selectedCollectionId === previousCollectionId
+          ? currentCollectionKey
+          : await fetchCollectionKey(selectedCollectionId, privateKey);
+      if (isOwner && selectedCollectionId && !targetCollectionKey) {
+        throw new Error('คุณยังไม่มีคีย์ของคอลเลกชันนี้ กรุณาให้ผู้ดูแลคอลเลกชันส่งคีย์ให้ก่อน');
+      }
+      const itemKey = isEditing
+        ? await openItemKey(item, { mek, collectionKey: currentCollectionKey, privateKey })
+        : null;
+      if (isEditing && (item.encrypted_item_key || item.encrypted_key_for_recipient) && !itemKey) {
+        throw new Error('เปิดคีย์ของรายการนี้ไม่ได้ จึงบันทึกการแก้ไขไม่ได้ ลองโหลดหน้าใหม่');
+      }
+      const encrypted = await encryptForSave(sensitivePayload, {
+        isOwner,
+        itemKey,
+        mek,
+        targetCollectionKey: selectedCollectionId ? targetCollectionKey : null,
+        legacyKey: currentCollectionKey,
+      });
 
       // 3. Plaintext metadata: non-sensitive flags only (title/url/username/tags are encrypted)
       const metadata = buildMetadata({ favorite: formData.favorite, collectionId: selectedCollectionId });
@@ -245,7 +255,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
           savedItemId,
           {
             item_type: itemType,
-            encrypted_data: encryptedData,
+            ...encrypted,
             metadata,
             version: item.version,
           },
@@ -256,7 +266,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         // UC-4: Add Vault Item
         const createRes = await api.vault.createItem({
           item_type: itemType,
-          encrypted_data: encryptedData,
+          ...encrypted,
           metadata,
         });
         savedItemId =
@@ -267,10 +277,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         addToast('เพิ่มรายการแล้ว', 'success');
       }
 
-      // 4. Keep the collection link in sync with the key the item is now encrypted with.
-      const previousCollectionId = isEditing
-        ? item._collectionId || item.collection_id || item.metadata?.collection_id || ''
-        : '';
+      // 4. Keep the collection link in sync with the key the Item Key is now wrapped with.
       let linkError = null;
       if (savedItemId && previousCollectionId && previousCollectionId !== selectedCollectionId) {
         try {

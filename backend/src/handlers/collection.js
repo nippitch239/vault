@@ -177,6 +177,10 @@ export function formatVaultItem(row) {
     version: row.version || 1,
     encryptedPayload: encryptedData,
     encrypted_data: encryptedData,
+    // Item Key wrapped with the collection key (null for legacy items)
+    encrypted_item_key: row.encrypted_item_key ?? null,
+    user_id: row.user_id,
+    vault_id: row.vault_id,
     createdAt: row.created_at,
     created_at: row.created_at,
     updatedAt: row.updated_at,

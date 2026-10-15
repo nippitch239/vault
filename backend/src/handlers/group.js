@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import { getDatabase } from '../db/adapter.js';
 import { authenticate } from '../middleware/auth-guard.js';
 import { pruneKeysForGroup } from '../services/collection-service.js';
+import { findUserByUsername } from '../services/user-directory.js';
 
 const GROUP_ROLE_RANK = { member: 1, manager: 2, admin: 3 };
 
@@ -86,6 +87,10 @@ export function formatMember(row) {
   };
   if (row.username !== undefined) obj.username = row.username;
   if (row.email !== undefined) obj.email = row.email;
+  if (row.public_key !== undefined) {
+    obj.publicKey = row.public_key;
+    obj.public_key = row.public_key;
+  }
   if (row.full_name !== undefined) {
     obj.fullName = row.full_name;
     obj.full_name = row.full_name;
@@ -379,14 +384,28 @@ export async function addGroupMemberHandler(event) {
   }
 
   const body = parseBody(event);
-  const targetUserId = body.userId || body.user_id;
   const role = typeof body.role === 'string' ? body.role.toLowerCase() : 'member';
+
+  // Members are added by username (or user id). Only group admins/managers get here, and this
+  // is the one place a user can be found without already sharing a group with them.
+  let targetUserId = body.userId || body.user_id;
+  if (!targetUserId && body.username) {
+    const targetProfile = await findUserByUsername(db, body.username);
+    if (!targetProfile) {
+      return jsonResponse(404, {
+        status: 'fail',
+        error: 'NOT_FOUND',
+        message: 'No user with this username',
+      });
+    }
+    targetUserId = targetProfile.user_id;
+  }
 
   if (!targetUserId) {
     return jsonResponse(400, {
       status: 'fail',
       error: 'BAD_REQUEST',
-      message: 'userId is required',
+      message: 'username or userId is required',
     });
   }
 
@@ -406,7 +425,7 @@ export async function addGroupMemberHandler(event) {
     });
   }
 
-  const targetUser = await db.query('SELECT user_id FROM users WHERE user_id = $1', [targetUserId]);
+  const targetUser = await db.query('SELECT user_id, username, full_name FROM users WHERE user_id = $1', [targetUserId]);
   if (!targetUser.rows || targetUser.rows.length === 0) {
     return jsonResponse(404, {
       status: 'fail',
@@ -443,6 +462,8 @@ export async function addGroupMemberHandler(event) {
       user_id: targetUserId,
       role,
       created_at: now,
+      username: targetUser.rows[0].username,
+      full_name: targetUser.rows[0].full_name,
     }),
   });
 }
@@ -481,7 +502,7 @@ export async function listGroupMembersHandler(event) {
   }
 
   const membersRes = await db.query(
-    `SELECT gm.*, u.username, u.email, u.full_name
+    `SELECT gm.*, u.username, u.email, u.full_name, u.public_key
      FROM group_members gm
      JOIN users u ON gm.user_id = u.user_id
      WHERE gm.group_id = $1

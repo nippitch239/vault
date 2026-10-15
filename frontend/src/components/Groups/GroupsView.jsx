@@ -105,10 +105,8 @@ export function GroupsView() {
   const [members, setMembers] = useState([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [membersError, setMembersError] = useState(null);
-  const [memberLookupEmail, setMemberLookupEmail] = useState('');
-  const [foundUser, setFoundUser] = useState(null);
-  const [lookupLoading, setLookupLoading] = useState(false);
-  const [lookupError, setLookupError] = useState(null);
+  const [memberUsername, setMemberUsername] = useState('');
+  const [memberUsernameError, setMemberUsernameError] = useState(null);
   const [selectedRole, setSelectedRole] = useState('member');
   const [addingMember, setAddingMember] = useState(false);
   const [removeTarget, setRemoveTarget] = useState(null);
@@ -219,54 +217,33 @@ export function GroupsView() {
   const openMembers = (grp) => {
     setMembersGroup(grp);
     setMembers([]);
-    setMemberLookupEmail('');
-    setFoundUser(null);
-    setLookupError(null);
+    setMemberUsername('');
+    setMemberUsernameError(null);
     setSelectedRole('member');
     loadMembers(groupIdOf(grp));
   };
 
-  const handleLookupUser = async (e) => {
+  // Members are added by username; the server resolves it (only group admins/managers can).
+  const handleAddMember = async (e) => {
     e.preventDefault();
-    const email = memberLookupEmail.trim().toLowerCase();
-    if (!email) {
-      setLookupError('กรุณากรอกอีเมลของผู้ใช้');
+    if (!membersGroup) return;
+    const username = memberUsername.trim().toLowerCase();
+    if (!username) {
+      setMemberUsernameError('กรุณากรอกชื่อผู้ใช้');
       return;
     }
-
-    setLookupLoading(true);
-    setLookupError(null);
-    setFoundUser(null);
-
-    try {
-      const res = await api.sharing.lookupUser(email);
-      if (res?.data) {
-        setFoundUser(res.data);
-      } else {
-        setLookupError('ไม่พบบัญชีผู้ใช้ที่ใช้อีเมลนี้');
-      }
-    } catch (err) {
-      setLookupError(err?.status === 404 ? 'ไม่พบบัญชีผู้ใช้ที่ใช้อีเมลนี้' : err.message || 'ค้นหาไม่สำเร็จ ลองอีกครั้ง');
-    } finally {
-      setLookupLoading(false);
-    }
-  };
-
-  const handleAddMember = async () => {
-    if (!membersGroup || !foundUser) return;
     setAddingMember(true);
     try {
       const groupId = groupIdOf(membersGroup);
-      await api.groups.addMember(groupId, {
-        userId: foundUser.user_id,
-        role: effectiveRole,
-      });
-      addToast(`เพิ่ม ${foundUser.full_name || foundUser.username || foundUser.email} เข้ากลุ่มแล้ว`, 'success');
-      setFoundUser(null);
-      setMemberLookupEmail('');
+      const res = await api.groups.addMember(groupId, { username, role: effectiveRole });
+      const added = res?.member || {};
+      addToast(`เพิ่ม ${added.full_name || added.username || username} เข้ากลุ่มแล้ว`, 'success');
+      setMemberUsername('');
       loadMembers(groupId);
     } catch (err) {
-      addToast(apiMessage(err, 'เพิ่มสมาชิกไม่สำเร็จ ลองอีกครั้ง'), 'error');
+      if (err?.status === 404) setMemberUsernameError('ไม่พบบัญชีที่ใช้ชื่อผู้ใช้นี้');
+      else if (err?.status === 409) setMemberUsernameError('ผู้ใช้นี้อยู่ในกลุ่มแล้ว');
+      else addToast(apiMessage(err, 'เพิ่มสมาชิกไม่สำเร็จ ลองอีกครั้ง'), 'error');
     } finally {
       setAddingMember(false);
     }
@@ -529,7 +506,7 @@ export function GroupsView() {
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>สมาชิก · {membersGroup?.name}</DialogTitle>
-            <DialogDescription>เพิ่มสมาชิกด้วยอีเมล แล้วเลือกบทบาทในกลุ่ม</DialogDescription>
+            <DialogDescription>เพิ่มสมาชิกด้วยชื่อผู้ใช้ แล้วเลือกบทบาทในกลุ่ม</DialogDescription>
           </DialogHeader>
 
           <section aria-labelledby="add-member-heading" className="grid gap-4 rounded-lg border border-border bg-card p-4">
@@ -537,57 +514,39 @@ export function GroupsView() {
               เพิ่มสมาชิก
             </h3>
 
-            <form onSubmit={handleLookupUser} noValidate className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-              <Field label="อีเมลของผู้ใช้" error={lookupError}>
+            <form onSubmit={handleAddMember} noValidate className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-start">
+              <Field label="ชื่อผู้ใช้" error={memberUsernameError} className="sm:col-span-2">
                 {(props) => (
                   <Input
                     {...props}
-                    type="email"
                     autoComplete="off"
-                    value={memberLookupEmail}
-                    placeholder="name@example.com"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    value={memberUsername}
+                    placeholder="เช่น somchai"
                     onChange={(e) => {
-                      setMemberLookupEmail(e.target.value);
-                      setLookupError(null);
+                      setMemberUsername(e.target.value);
+                      setMemberUsernameError(null);
                     }}
                   />
                 )}
               </Field>
-              <Button type="submit" variant="outline" loading={lookupLoading} className={lookupError ? 'sm:mb-6' : ''}>
-                ค้นหา
+              <Field label="บทบาทในกลุ่ม" hint={GROUP_ROLE_HINTS[effectiveRole]}>
+                {(props) => (
+                  <Select {...props} value={effectiveRole} onChange={(e) => setSelectedRole(e.target.value)}>
+                    {roleOptions.map((r) => (
+                      <option key={r} value={r}>
+                        {GROUP_ROLE_LABELS[r]}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </Field>
+              <Button type="submit" loading={addingMember} className="sm:mt-7">
+                <PlusIcon />
+                เพิ่มเข้ากลุ่ม
               </Button>
             </form>
-
-            {foundUser && (
-              <>
-                <div className="flex items-center gap-3 rounded-md border border-border bg-secondary px-3 py-2">
-                  <div className="flex size-8 items-center justify-center rounded-full bg-accent text-sm font-ui" aria-hidden="true">
-                    {(foundUser.full_name || foundUser.username || '?').charAt(0).toUpperCase()}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-ui">{foundUser.full_name || foundUser.username}</p>
-                    <p className="truncate text-caption text-muted-foreground">{foundUser.email}</p>
-                  </div>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-                  <Field label="บทบาทในกลุ่ม" hint={GROUP_ROLE_HINTS[effectiveRole]}>
-                    {(props) => (
-                      <Select {...props} value={effectiveRole} onChange={(e) => setSelectedRole(e.target.value)}>
-                        {roleOptions.map((r) => (
-                          <option key={r} value={r}>
-                            {GROUP_ROLE_LABELS[r]}
-                          </option>
-                        ))}
-                      </Select>
-                    )}
-                  </Field>
-                  <Button onClick={handleAddMember} loading={addingMember} className="sm:mb-6">
-                    <PlusIcon />
-                    เพิ่มเข้ากลุ่ม
-                  </Button>
-                </div>
-              </>
-            )}
           </section>
 
           <section aria-labelledby="members-heading" className="grid gap-2" aria-live="polite">
@@ -613,7 +572,7 @@ export function GroupsView() {
               </Alert>
             ) : members.length === 0 ? (
               <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-                ยังไม่มีสมาชิกในกลุ่มนี้ ค้นหาด้วยอีเมลด้านบนเพื่อเพิ่มคนแรก
+                ยังไม่มีสมาชิกในกลุ่มนี้ กรอกชื่อผู้ใช้ด้านบนเพื่อเพิ่มคนแรก
               </p>
             ) : (
               <ul className="max-h-72 divide-y divide-border overflow-y-auto rounded-lg border border-border">

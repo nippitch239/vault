@@ -517,12 +517,43 @@ export function toCognitoPassword(authHash) {
   return `Sv1!${authHash}`;
 }
 
+// ============================================================================
+// Item Keys (one random key per vault item)
+// ============================================================================
+//
+//   Item Key --AES-256-GCM--> item payload (encrypted_data)
+//   Vault Key or Collection Key --AES-256-GCM--> Item Key (vault_items.encrypted_item_key)
+//   recipient RSA public key --RSA-OAEP--> Item Key (share_permissions.encrypted_key_for_recipient)
+//
+// Sharing an item hands out only its Item Key, never the owner's Vault Key.
+
+const ITEM_KEY_AAD = 'securevault-item-key-v1';
+
 /**
  * Generates a fresh random 256-bit symmetric Item Key for vault items
  * @returns {Uint8Array}
  */
 export function generateItemKey() {
   return generateRandomBytes(32);
+}
+
+/**
+ * Wraps an Item Key with a 32-byte symmetric key (the Vault Key or a Collection Key).
+ * @param {Uint8Array} itemKey
+ * @param {Uint8Array|CryptoKey} wrappingKey
+ */
+export async function wrapItemKey(itemKey, wrappingKey) {
+  const keyBytes = toKeyBytes(itemKey, 'Item Key');
+  return encryptData(toBase64(keyBytes), wrappingKey, { additionalData: ITEM_KEY_AAD });
+}
+
+/**
+ * Unwraps an Item Key wrapped by wrapItemKey(). Fails (DECRYPT_FAILED) with the wrong key.
+ * @returns {Promise<Uint8Array>}
+ */
+export async function unwrapItemKey(encryptedItemKey, wrappingKey) {
+  const b64 = await decryptData(encryptedItemKey, wrappingKey, { rawString: true, additionalData: ITEM_KEY_AAD });
+  return toKeyBytes(b64, 'Item Key');
 }
 
 // ============================================================================

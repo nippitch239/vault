@@ -22,6 +22,10 @@ import {
   wrapVaultKey,
   unwrapVaultKey,
   toCognitoPassword,
+  wrapItemKey,
+  unwrapItemKey,
+  wrapCollectionKey,
+  unwrapCollectionKey,
 } from '../crypto.js';
 
 test('Encoding Utilities: Base64 and Hex roundtrips', () => {
@@ -300,4 +304,29 @@ test('Vault Key: random key wrapped by the KEK, wrong master password cannot unw
   assert.match(cognitoPassword, /[A-Z]/);
   assert.match(cognitoPassword, /[^A-Za-z0-9]/);
   assert.throws(() => toCognitoPassword('not-hex'));
+});
+
+test('Item Key: wrapped by the Vault Key for the owner and by RSA-OAEP for a share recipient', async () => {
+  const vaultKey = generateVaultKey();
+  const otherVaultKey = generateVaultKey();
+  const itemKey = generateItemKey();
+  const payload = { title: 'GitHub', password: 'hunter2' };
+
+  const encrypted = await encryptData(payload, itemKey);
+  const wrapped = await wrapItemKey(itemKey, vaultKey);
+  assert.deepEqual(await unwrapItemKey(wrapped, vaultKey), itemKey);
+  await assert.rejects(() => unwrapItemKey(wrapped, otherVaultKey), CryptoError);
+
+  // A Vault Key payload is not accepted as an Item Key (different AAD).
+  const vaultWrapped = await wrapVaultKey(itemKey, vaultKey);
+  await assert.rejects(() => unwrapItemKey(vaultWrapped, vaultKey), CryptoError);
+
+  // The recipient decrypts with only the Item Key, never seeing the owner's Vault Key.
+  const recipient = await generateAsymmetricKeyPair();
+  const forRecipient = await wrapCollectionKey(itemKey, recipient.publicKey);
+  const recipientItemKey = await unwrapCollectionKey(forRecipient, recipient.privateKey);
+  assert.deepEqual(await decryptData(encrypted, recipientItemKey), payload);
+  await assert.rejects(() => decryptData(encrypted, vaultKey), CryptoError);
+
+  await assert.rejects(() => wrapItemKey(new Uint8Array(16), vaultKey), CryptoError);
 });

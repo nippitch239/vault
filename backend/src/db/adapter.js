@@ -27,6 +27,7 @@ const JSON_COLUMNS = new Set([
   'encrypted_key_for_recipient',
   'encryptedKeyForRecipient',
   'encrypted_vault_key',
+  'encrypted_item_key',
   'details',
 ]);
 
@@ -47,7 +48,23 @@ export function pgToSqliteSchema(pgDdl) {
     // Remove PostgreSQL cast notations like ::jsonb
     .replace(/::jsonb/gi, '')
     // Translate GIN index definitions to standard SQLite indexes
-    .replace(/USING\s+GIN\s*\(([^)]+)\)/gi, '($1)');
+    .replace(/USING\s+GIN\s*\(([^)]+)\)/gi, '($1)')
+    // SQLite has no ADD COLUMN IF NOT EXISTS; those upgrades run via sqliteColumnUpgrades()
+    .replace(ADD_COLUMN_RE, '');
+}
+
+const ADD_COLUMN_RE = /ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+([^;]+);/gi;
+
+/**
+ * Column upgrades from schema.sql as SQLite statements (without IF NOT EXISTS).
+ * @param {string} pgDdl
+ * @returns {{ table: string, column: string, sql: string }[]}
+ */
+export function sqliteColumnUpgrades(pgDdl) {
+  return [...pgDdl.matchAll(ADD_COLUMN_RE)].map(([, table, definition]) => {
+    const def = definition.replace(/::jsonb/gi, '').trim();
+    return { table, column: def.split(/\s+/)[0], sql: `ALTER TABLE ${table} ADD COLUMN ${def}` };
+  });
 }
 
 /**
@@ -137,7 +154,12 @@ export class SqliteDatabase {
     this.db = new DatabaseSync(this.location);
     this.db.function('gen_random_uuid', () => crypto.randomUUID());
     this.db.exec('PRAGMA foreign_keys = ON;');
-    this.db.exec(pgToSqliteSchema(readSchema()));
+    const ddl = readSchema();
+    this.db.exec(pgToSqliteSchema(ddl));
+    for (const { table, column, sql } of sqliteColumnUpgrades(ddl)) {
+      const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
+      if (!columns.some((c) => c.name === column)) this.db.exec(sql);
+    }
   }
 
   async query(sql, params = []) {

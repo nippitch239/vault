@@ -3,6 +3,8 @@
  *
  * Implements:
  * 1. UC-4: Add Vault Item (AES-256-GCM encrypted payload, JSONB storage, ZK validation).
+ *    Each item has its own Item Key; encrypted_item_key holds it wrapped with the Vault Key
+ *    (or the Collection Key). Legacy items without it are encrypted with the Vault Key directly.
  * 2. UC-5: Update Vault Item (Snapshot archive to password_history, version increment, concurrency check).
  * 3. UC-6: Delete Vault Item (Cascading share and history cleanup, audit logging).
  * 4. Vault Listing and Item Retrieval with encrypted payload intact.
@@ -108,6 +110,18 @@ export function normalizeEncryptedData(encryptedData) {
   };
 }
 
+/**
+ * Optional Item Key wrapped with the Vault Key / Collection Key (same AES-GCM payload shape).
+ * @returns {{ value?: object|null, error?: string }} value undefined = not sent
+ */
+function readEncryptedItemKey(body) {
+  const raw = body.encrypted_item_key ?? body.encryptedItemKey;
+  if (raw === undefined) return {};
+  const check = validateEncryptedPayload(raw);
+  if (!check.valid) return { error: `encrypted_item_key: ${check.error}` };
+  return { value: normalizeEncryptedData(raw) };
+}
+
 // ============================================================================
 // Vault Listing & Management
 // ============================================================================
@@ -168,7 +182,7 @@ export async function listVaultItemsHandler(event) {
     }
 
     querySql = `
-      SELECT item_id, vault_id, user_id, item_type, encrypted_data, metadata, version, created_at, updated_at
+      SELECT item_id, vault_id, user_id, item_type, encrypted_data, encrypted_item_key, metadata, version, created_at, updated_at
       FROM vault_items
       WHERE vault_id = $1
       ORDER BY updated_at DESC
@@ -177,7 +191,7 @@ export async function listVaultItemsHandler(event) {
   } else {
     // Return all items belonging to user across all vaults
     querySql = `
-      SELECT item_id, vault_id, user_id, item_type, encrypted_data, metadata, version, created_at, updated_at
+      SELECT item_id, vault_id, user_id, item_type, encrypted_data, encrypted_item_key, metadata, version, created_at, updated_at
       FROM vault_items
       WHERE user_id = $1
       ORDER BY updated_at DESC
@@ -306,6 +320,10 @@ export async function createVaultItemHandler(event) {
   }
 
   const normalizedEncrypted = normalizeEncryptedData(encryptedData);
+  const itemKey = readEncryptedItemKey(body);
+  if (itemKey.error) {
+    return jsonResponse(400, { status: 'fail', error: 'INVALID_ENCRYPTED_PAYLOAD', message: itemKey.error });
+  }
   const metadataCheck = sanitizeMetadata(body.metadata);
   if (metadataCheck.error) return jsonResponse(400, { status: 'fail', ...metadataCheck.error });
   const metadata = metadataCheck.value;
@@ -314,10 +332,10 @@ export async function createVaultItemHandler(event) {
   // Insert vault item
   const insertResult = await db.query(
     `INSERT INTO vault_items (
-      vault_id, user_id, item_type, encrypted_data, metadata, version
-    ) VALUES ($1, $2, $3, $4, $5, 1)
+      vault_id, user_id, item_type, encrypted_data, encrypted_item_key, metadata, version
+    ) VALUES ($1, $2, $3, $4, $5, $6, 1)
     RETURNING item_id, vault_id, item_type, version, created_at, updated_at`,
-    [vaultId, user.user_id, itemType, normalizedEncrypted, metadata]
+    [vaultId, user.user_id, itemType, normalizedEncrypted, itemKey.value ?? null, metadata]
   );
 
   const newItem = insertResult.rows[0];
@@ -426,6 +444,17 @@ export async function updateVaultItemHandler(event) {
   const newEncryptedData = encryptedData
     ? normalizeEncryptedData(encryptedData)
     : existingItem.encrypted_data;
+
+  // Only the owner re-wraps the Item Key (e.g. moving the item into or out of a collection).
+  // Editors keep using the existing Item Key so every share stays readable.
+  let newItemKey = existingItem.encrypted_item_key ?? null;
+  if (isOwner) {
+    const itemKey = readEncryptedItemKey(body);
+    if (itemKey.error) {
+      return jsonResponse(400, { status: 'fail', error: 'INVALID_ENCRYPTED_PAYLOAD', message: itemKey.error });
+    }
+    if (itemKey.value) newItemKey = itemKey.value;
+  }
   let newMetadata = existingItem.metadata;
   if (body.metadata !== undefined) {
     const metadataCheck = sanitizeMetadata(body.metadata);
@@ -458,10 +487,10 @@ export async function updateVaultItemHandler(event) {
   // 2. Update vault_items record
   const updateResult = await db.query(
     `UPDATE vault_items
-     SET encrypted_data = $1, metadata = $2, version = $3, updated_at = CURRENT_TIMESTAMP
-     WHERE item_id = $4
+     SET encrypted_data = $1, encrypted_item_key = $2, metadata = $3, version = $4, updated_at = CURRENT_TIMESTAMP
+     WHERE item_id = $5
      RETURNING item_id, vault_id, version, updated_at`,
-    [newEncryptedData, newMetadata, newVersion, itemId]
+    [newEncryptedData, newItemKey, newMetadata, newVersion, itemId]
   );
 
   const updatedItem = updateResult.rows[0];
