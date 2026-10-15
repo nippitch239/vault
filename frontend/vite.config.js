@@ -16,8 +16,8 @@ export default defineConfig({
     port: 5173,
     // Local development: the backend simulator (API Gateway + Cognito emulation) on :3000.
     proxy: {
-      '/api': { target: 'http://localhost:3000', changeOrigin: true },
-      '/local-auth': { target: 'http://localhost:3000', changeOrigin: true },
+      '/api': { target: process.env.API_PROXY_TARGET || 'http://localhost:3000', changeOrigin: true },
+      '/local-auth': { target: process.env.API_PROXY_TARGET || 'http://localhost:3000', changeOrigin: true },
     },
   },
   build: {
