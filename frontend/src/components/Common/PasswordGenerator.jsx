@@ -1,14 +1,75 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useId, useRef } from 'react';
 import ClientCrypto from '../../services/crypto.js';
-import { CopyIcon, CheckIcon, RefreshIcon, KeyIcon } from './Icons.jsx';
+import { CopyIcon, CheckIcon, RefreshIcon } from './Icons.jsx';
 import { useToast } from './Toast.jsx';
 import { Button } from '../ui/Button.jsx';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../ui/Card.jsx';
-import { Badge } from '../ui/Badge.jsx';
+import { Card, CardContent } from '../ui/Card.jsx';
 import { Slider } from '../ui/Slider.jsx';
+import { Select, Label } from '../ui/Form.jsx';
 
-export function PasswordGenerator({ onSelect, isEmbedded = false }) {
+function cn(...inputs) {
+  return inputs.flat().filter(Boolean).join(' ');
+}
+
+// Strength score (0–4) → token colours. Bars use the saturated "-foreground" tone so they
+// stay visible on both themes; the text label always accompanies the colour.
+const STRENGTH_BAR = ['bg-error-foreground', 'bg-error-foreground', 'bg-warning-foreground', 'bg-info-foreground', 'bg-success-foreground'];
+const STRENGTH_TEXT = ['text-error-foreground', 'text-error-foreground', 'text-warning-foreground', 'text-info-foreground', 'text-success-foreground'];
+
+const SEPARATORS = [
+  ['-', 'ขีดกลาง ( - )'],
+  ['_', 'ขีดล่าง ( _ )'],
+  ['.', 'จุด ( . )'],
+  [' ', 'เว้นวรรค'],
+];
+
+const checkboxClass =
+  'size-4 shrink-0 cursor-pointer rounded border-input accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background';
+
+function CheckboxOption({ checked, onChange, children, className }) {
+  return (
+    <label className={cn('flex min-h-8 cursor-pointer items-center gap-2 text-sm text-foreground', className)}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className={checkboxClass} />
+      <span>{children}</span>
+    </label>
+  );
+}
+
+function StrengthMeter({ strength, compact }) {
+  if (!strength) return null;
+  const score = Math.max(0, Math.min(4, Number(strength.score) || 0));
+  const label = strength.label?.th || strength.label?.en || '';
+  return (
+    <div className={cn('flex items-center gap-3', compact ? '' : 'rounded-lg border border-border bg-card px-3 py-2.5')}>
+      <div
+        className={cn('flex flex-1 gap-1 overflow-hidden', compact ? 'h-1' : 'h-1.5')}
+        role="meter"
+        aria-label="ความแข็งแรงของรหัสผ่าน"
+        aria-valuemin={0}
+        aria-valuemax={4}
+        aria-valuenow={score}
+        aria-valuetext={label}
+      >
+        {[1, 2, 3, 4].map((step) => (
+          <div
+            key={step}
+            className={cn('h-full flex-1 rounded-full transition-colors duration-fast', score >= step ? STRENGTH_BAR[score] : 'bg-muted')}
+          />
+        ))}
+      </div>
+      <p className="shrink-0 text-caption text-muted-foreground" aria-live="polite">
+        ความแข็งแรง: <span className={cn('font-ui', STRENGTH_TEXT[score])}>{label}</span>
+        {!compact && strength.entropyBits != null && (
+          <span className="hidden sm:inline"> · ประมาณ {Number(strength.entropyBits).toLocaleString('th-TH')} บิต</span>
+        )}
+      </p>
+    </div>
+  );
+}
+
+export function PasswordGenerator({ onSelect, isEmbedded = false, compact = false }) {
   const { addToast } = useToast();
+  const idBase = useId();
   const [mode, setMode] = useState('password'); // 'password' or 'passphrase'
 
   // Password options
@@ -29,6 +90,7 @@ export function PasswordGenerator({ onSelect, isEmbedded = false }) {
   const [result, setResult] = useState('');
   const [strength, setStrength] = useState(null);
   const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef(null);
 
   const generate = useCallback(() => {
     let generated;
@@ -59,12 +121,15 @@ export function PasswordGenerator({ onSelect, isEmbedded = false }) {
     generate();
   }, [generate]);
 
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
+
   const handleCopy = () => {
     if (!result) return;
     navigator.clipboard.writeText(result);
     setCopied(true);
-    addToast('คัดลอกรหัสผ่านแล้ว! (Copied to clipboard)', 'success');
-    setTimeout(() => setCopied(false), 2000);
+    addToast('คัดลอกรหัสผ่านแล้ว', 'success');
+    clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 2000);
   };
 
   const handleUsePassword = () => {
@@ -73,280 +138,218 @@ export function PasswordGenerator({ onSelect, isEmbedded = false }) {
     }
   };
 
-  // Strength score badge variant
-  const getBadgeVariant = (score) => {
-    if (score <= 1) return 'destructive';
-    if (score === 2) return 'warning';
-    if (score === 3) return 'info';
-    return 'success';
-  };
+  const lengthId = `${idBase}-length`;
+  const wordsId = `${idBase}-words`;
+  const isPassphrase = mode === 'passphrase';
 
-  const getScoreColor = (score) => {
-    if (score <= 1) return 'bg-destructive';
-    if (score === 2) return 'bg-warning';
-    if (score === 3) return 'bg-info';
-    return 'bg-success';
-  };
+  // ------------------------------------------------------------------ shared pieces
 
-  const content = (
-    <div className="space-y-4">
-      {/* Header & Mode Selector */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-border">
-        {!isEmbedded ? (
-          <div className="flex items-center space-x-3">
-            <div className="size-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
-              <KeyIcon className="size-5" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-foreground">
-                {mode === 'password' ? 'สุ่มรหัสผ่านปลอดภัย' : 'สุ่มรหัสผ่านวลี (Diceware Passphrase)'}
-              </h2>
-              <p className="text-xs text-muted-foreground">
-                สร้างรหัสผ่านที่มีเอนโทรปีสูงโดยใช้ CSPRNG ไม่มีการส่งข้อมูลผ่านเครือข่าย
-              </p>
-            </div>
-          </div>
+  const resultBox = (
+    <div className="flex items-center gap-1 rounded-md border border-input bg-muted/40 py-1 pl-3 pr-1">
+      <p
+        className={cn(
+          'min-w-0 flex-1 select-all break-all font-mono text-foreground',
+          compact ? 'py-1 text-sm' : 'py-2 text-base'
+        )}
+      >
+        {result || '…'}
+      </p>
+      <Button type="button" variant="ghost" size="icon-sm" onClick={generate} aria-label="สุ่มรหัสผ่านใหม่">
+        <RefreshIcon />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        onClick={handleCopy}
+        disabled={!result}
+        aria-label={copied ? 'คัดลอกแล้ว' : 'คัดลอกรหัสผ่าน'}
+        className={copied ? 'text-success-foreground' : ''}
+      >
+        {copied ? <CheckIcon /> : <CopyIcon />}
+      </Button>
+      <span className="sr-only" aria-live="polite">
+        {copied ? 'คัดลอกรหัสผ่านแล้ว' : ''}
+      </span>
+    </div>
+  );
+
+  const lengthControl = (
+    <div className="grid gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor={lengthId} className={compact ? 'text-caption' : ''}>
+          ความยาว
+        </Label>
+        <span className="font-mono text-sm tabular-nums text-secondary-foreground" aria-hidden="true">
+          {length} ตัวอักษร
+        </span>
+      </div>
+      <Slider
+        id={lengthId}
+        min={8}
+        max={64}
+        step={1}
+        value={length}
+        aria-valuetext={`${length} ตัวอักษร`}
+        onChange={(e) => setLength(Number(e.target.value))}
+      />
+    </div>
+  );
+
+  const wordsControl = (
+    <div className="grid gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor={wordsId} className={compact ? 'text-caption' : ''}>
+          จำนวนคำ
+        </Label>
+        <span className="font-mono text-sm tabular-nums text-secondary-foreground" aria-hidden="true">
+          {words} คำ
+        </span>
+      </div>
+      <Slider
+        id={wordsId}
+        min={3}
+        max={10}
+        step={1}
+        value={words}
+        aria-valuetext={`${words} คำ`}
+        onChange={(e) => setWords(Number(e.target.value))}
+      />
+    </div>
+  );
+
+  // ------------------------------------------------------------------ compact (embedded in item form)
+
+  if (compact) {
+    return (
+      <div className="grid w-full gap-3">
+        {resultBox}
+        <StrengthMeter strength={strength} compact />
+
+        {isPassphrase ? (
+          wordsControl
         ) : (
-          <div className="flex items-center space-x-2">
-            <KeyIcon className="size-4 text-primary" />
-            <span className="text-xs font-semibold text-foreground">
-              {mode === 'password' ? 'สุ่มรหัสผ่าน (Password)' : 'สุ่มรหัสผ่านวลี (Passphrase)'}
-            </span>
-          </div>
+          <>
+            {lengthControl}
+            <fieldset>
+              <legend className="sr-only">ชนิดตัวอักษรที่ใช้</legend>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                <CheckboxOption checked={uppercase} onChange={setUppercase}>A-Z</CheckboxOption>
+                <CheckboxOption checked={lowercase} onChange={setLowercase}>a-z</CheckboxOption>
+                <CheckboxOption checked={numbers} onChange={setNumbers}>0-9</CheckboxOption>
+                <CheckboxOption checked={symbols} onChange={setSymbols}>สัญลักษณ์</CheckboxOption>
+              </div>
+            </fieldset>
+          </>
         )}
 
-        {/* Mode Toggle Buttons */}
-        <div className="inline-flex items-center rounded-lg border border-border bg-muted p-0.5 text-xs">
-          <button
-            type="button"
-            onClick={() => setMode('password')}
-            className={`px-3 py-1.5 rounded-md font-medium transition-all ${
-              mode === 'password'
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Random Password
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('passphrase')}
-            className={`px-3 py-1.5 rounded-md font-medium transition-all ${
-              mode === 'passphrase'
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Diceware Passphrase
-          </button>
-        </div>
-      </div>
-
-      {/* Generated Display Box */}
-      <div className="relative">
-        <div className="w-full bg-muted/50 border border-input rounded-xl p-3 sm:p-4 pr-24 font-mono text-sm sm:text-base break-all text-primary font-medium tracking-wide select-all shadow-inner">
-          {result || '...'}
-        </div>
-        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center space-x-1">
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
           <Button
             type="button"
-            variant="ghost"
-            size="icon"
-            onClick={generate}
-            title="สุ่มใหม่ (Regenerate)"
-            className="size-8 text-muted-foreground hover:text-foreground"
+            variant="link"
+            size="sm"
+            className="h-8 justify-start px-0"
+            onClick={() => setMode(isPassphrase ? 'password' : 'passphrase')}
           >
-            <RefreshIcon className="size-4" />
+            {isPassphrase ? 'ใช้รหัสผ่านแบบสุ่มตัวอักษรแทน' : 'ใช้วลีรหัสผ่านแทน'}
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={handleCopy}
-            title="คัดลอก (Copy)"
-            className="size-8 text-muted-foreground hover:text-foreground"
-          >
-            {copied ? <CheckIcon className="size-4 text-success" /> : <CopyIcon className="size-4" />}
-          </Button>
+          {onSelect && (
+            <Button type="button" size="sm" onClick={handleUsePassword} disabled={!result} className="w-full sm:w-auto">
+              <CheckIcon />
+              ใช้รหัสผ่านนี้
+            </Button>
+          )}
         </div>
       </div>
+    );
+  }
 
-      {/* Entropy / Strength Display */}
-      {strength && (
-        <div className="p-3 bg-muted/30 rounded-xl border border-border space-y-2">
-          <div className="flex items-center justify-between text-xs">
-            <div className="flex items-center space-x-2">
-              <span className="text-muted-foreground">ความแข็งแรง:</span>
-              <Badge variant={getBadgeVariant(strength.score)} round={true}>
-                {strength.label.en} ({strength.label.th})
-              </Badge>
+  // ------------------------------------------------------------------ full layout
+
+  const content = (
+    <div className="grid gap-5">
+      <div role="radiogroup" aria-label="รูปแบบ" className="inline-flex w-full rounded-md border border-border p-0.5 sm:w-auto sm:justify-self-start">
+        {[
+          ['password', 'รหัสผ่านแบบสุ่ม'],
+          ['passphrase', 'วลีรหัสผ่าน'],
+        ].map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="radio"
+            aria-checked={mode === value}
+            onClick={() => setMode(value)}
+            className={cn(
+              'min-h-8 flex-1 rounded px-3 py-1 text-sm font-ui transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-none',
+              mode === value ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid gap-2">
+        {resultBox}
+        <StrengthMeter strength={strength} />
+      </div>
+
+      {isPassphrase ? (
+        <div className="grid gap-4">
+          {wordsControl}
+          <div className="grid gap-4 sm:grid-cols-2 sm:items-end">
+            <div className="grid gap-1.5">
+              <Label htmlFor={`${idBase}-separator`}>ตัวคั่นระหว่างคำ</Label>
+              <Select id={`${idBase}-separator`} value={separator} onChange={(e) => setSeparator(e.target.value)}>
+                {SEPARATORS.map(([value, label]) => (
+                  <option key={label} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
             </div>
-            <span className="font-mono text-muted-foreground text-[11px]">
-              {strength.entropyBits} bits entropy | Pool: {strength.poolSize}
-            </span>
-          </div>
-          <div className="w-full bg-secondary rounded-full h-1.5 overflow-hidden flex">
-            {[1, 2, 3, 4].map((step) => (
-              <div
-                key={step}
-                className={`h-full flex-1 border-r border-background last:border-none transition-all duration-300 ${
-                  strength.score >= step ? getScoreColor(strength.score) : 'bg-transparent'
-                }`}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Mode Controls */}
-      {mode === 'password' ? (
-        <div className="space-y-4 text-sm">
-          {/* Password Length Slider */}
-          <div className="space-y-1.5">
-            <div className="flex justify-between items-center text-xs">
-              <label htmlFor="length-slider" className="font-medium text-foreground">
-                ความยาวรหัสผ่าน (Password Length):
-              </label>
-              <Badge variant="outline" className="font-mono">
-                {length} ตัวอักษร (chars)
-              </Badge>
-            </div>
-            <Slider
-              id="length-slider"
-              min={8}
-              max={64}
-              step={1}
-              value={length}
-              onChange={(e) => setLength(Number(e.target.value))}
-            />
-          </div>
-
-          {/* Character Options */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
-            <label className="flex items-center space-x-2.5 text-xs text-foreground bg-muted/40 p-2.5 rounded-lg border border-border cursor-pointer hover:bg-muted/70 transition-colors">
-              <input
-                type="checkbox"
-                checked={uppercase}
-                onChange={(e) => setUppercase(e.target.checked)}
-                className="size-4 rounded border-input text-primary focus:ring-ring"
-              />
-              <span>ตัวพิมพ์ใหญ่ (A-Z)</span>
-            </label>
-
-            <label className="flex items-center space-x-2.5 text-xs text-foreground bg-muted/40 p-2.5 rounded-lg border border-border cursor-pointer hover:bg-muted/70 transition-colors">
-              <input
-                type="checkbox"
-                checked={lowercase}
-                onChange={(e) => setLowercase(e.target.checked)}
-                className="size-4 rounded border-input text-primary focus:ring-ring"
-              />
-              <span>ตัวพิมพ์เล็ก (a-z)</span>
-            </label>
-
-            <label className="flex items-center space-x-2.5 text-xs text-foreground bg-muted/40 p-2.5 rounded-lg border border-border cursor-pointer hover:bg-muted/70 transition-colors">
-              <input
-                type="checkbox"
-                checked={numbers}
-                onChange={(e) => setNumbers(e.target.checked)}
-                className="size-4 rounded border-input text-primary focus:ring-ring"
-              />
-              <span>ตัวเลข (0-9)</span>
-            </label>
-
-            <label className="flex items-center space-x-2.5 text-xs text-foreground bg-muted/40 p-2.5 rounded-lg border border-border cursor-pointer hover:bg-muted/70 transition-colors">
-              <input
-                type="checkbox"
-                checked={symbols}
-                onChange={(e) => setSymbols(e.target.checked)}
-                className="size-4 rounded border-input text-primary focus:ring-ring"
-              />
-              <span>สัญลักษณ์พิเศษ (!@#$%...)</span>
-            </label>
-
-            <label className="flex items-center space-x-2.5 text-xs text-foreground bg-muted/40 p-2.5 rounded-lg border border-border cursor-pointer hover:bg-muted/70 transition-colors col-span-1 sm:col-span-2">
-              <input
-                type="checkbox"
-                checked={excludeAmbiguous}
-                onChange={(e) => setExcludeAmbiguous(e.target.checked)}
-                className="size-4 rounded border-input text-primary focus:ring-ring"
-              />
-              <span>ตัดตัวอักษรที่สับสนง่าย (Exclude ambiguous: l, 1, I, O, 0, B, 8)</span>
-            </label>
+            <fieldset className="grid gap-1">
+              <legend className="sr-only">ตัวเลือกวลีรหัสผ่าน</legend>
+              <CheckboxOption checked={capitalize} onChange={setCapitalize}>
+                ขึ้นต้นแต่ละคำด้วยตัวพิมพ์ใหญ่
+              </CheckboxOption>
+              <CheckboxOption checked={includeNumber} onChange={setIncludeNumber}>
+                ต่อท้ายด้วยตัวเลขสุ่ม (0–99)
+              </CheckboxOption>
+            </fieldset>
           </div>
         </div>
       ) : (
-        <div className="space-y-4 text-sm">
-          {/* Diceware Words Count Slider */}
-          <div className="space-y-1.5">
-            <div className="flex justify-between items-center text-xs">
-              <label htmlFor="words-slider" className="font-medium text-foreground">
-                จำนวนคำ (Word count):
-              </label>
-              <Badge variant="outline" className="font-mono">
-                {words} คำ (~{words * 10} bits)
-              </Badge>
+        <div className="grid gap-4">
+          {lengthControl}
+          <fieldset className="grid gap-2">
+            <legend className="mb-1 text-sm font-ui text-foreground">ชนิดตัวอักษร</legend>
+            <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+              <CheckboxOption checked={uppercase} onChange={setUppercase}>
+                ตัวพิมพ์ใหญ่ (A-Z)
+              </CheckboxOption>
+              <CheckboxOption checked={lowercase} onChange={setLowercase}>
+                ตัวพิมพ์เล็ก (a-z)
+              </CheckboxOption>
+              <CheckboxOption checked={numbers} onChange={setNumbers}>
+                ตัวเลข (0-9)
+              </CheckboxOption>
+              <CheckboxOption checked={symbols} onChange={setSymbols}>
+                สัญลักษณ์ (!@#$%…)
+              </CheckboxOption>
+              <CheckboxOption checked={excludeAmbiguous} onChange={setExcludeAmbiguous} className="sm:col-span-2">
+                ไม่ใช้ตัวอักษรที่สับสนง่าย (l, 1, I, O, 0, B, 8)
+              </CheckboxOption>
             </div>
-            <Slider
-              id="words-slider"
-              min={3}
-              max={10}
-              step={1}
-              value={words}
-              onChange={(e) => setWords(Number(e.target.value))}
-            />
-          </div>
-
-          {/* Diceware Options */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
-            <div className="bg-muted/40 p-2.5 rounded-lg border border-border flex items-center justify-between text-xs">
-              <span className="text-foreground">ตัวคั่น (Separator):</span>
-              <select
-                value={separator}
-                onChange={(e) => setSeparator(e.target.value)}
-                className="bg-background border border-input rounded-md px-2 py-1 text-foreground text-xs focus:ring-2 focus:ring-ring outline-none"
-              >
-                <option value="-">Hyphen (-)</option>
-                <option value="_">Underscore (_)</option>
-                <option value=".">Period (.)</option>
-                <option value=" ">Space ( )</option>
-              </select>
-            </div>
-
-            <label className="flex items-center space-x-2.5 text-xs text-foreground bg-muted/40 p-2.5 rounded-lg border border-border cursor-pointer hover:bg-muted/70 transition-colors">
-              <input
-                type="checkbox"
-                checked={capitalize}
-                onChange={(e) => setCapitalize(e.target.checked)}
-                className="size-4 rounded border-input text-primary focus:ring-ring"
-              />
-              <span>ขึ้นต้นด้วยตัวใหญ่ (Title Case)</span>
-            </label>
-
-            <label className="flex items-center space-x-2.5 text-xs text-foreground bg-muted/40 p-2.5 rounded-lg border border-border cursor-pointer hover:bg-muted/70 transition-colors col-span-1 sm:col-span-2">
-              <input
-                type="checkbox"
-                checked={includeNumber}
-                onChange={(e) => setIncludeNumber(e.target.checked)}
-                className="size-4 rounded border-input text-primary focus:ring-ring"
-              />
-              <span>ต่อท้ายด้วยตัวเลขสุ่ม (Append random number 0-99)</span>
-            </label>
-          </div>
+          </fieldset>
         </div>
       )}
 
-      {/* Embedded Selection Button */}
       {isEmbedded && onSelect && (
-        <div className="pt-3 border-t border-border flex justify-end">
-          <Button
-            type="button"
-            variant="default"
-            size="sm"
-            onClick={handleUsePassword}
-            className="flex items-center space-x-1.5"
-          >
-            <CheckIcon className="size-4" />
-            <span>ใช้รหัสผ่านนี้ (Use This Password)</span>
+        <div className="flex justify-end border-t border-border pt-4">
+          <Button type="button" size="sm" onClick={handleUsePassword} disabled={!result} className="w-full sm:w-auto">
+            <CheckIcon />
+            ใช้รหัสผ่านนี้
           </Button>
         </div>
       )}
@@ -358,15 +361,17 @@ export function PasswordGenerator({ onSelect, isEmbedded = false }) {
   }
 
   return (
-    <Card className="w-full max-w-2xl mx-auto shadow-xl">
-      <CardHeader>
-        <CardTitle>ตัวสร้างรหัสผ่าน (Password Generator)</CardTitle>
-        <CardDescription>
-          สร้างรหัสผ่านที่ปลอดภัยด้วยขั้นตอนวิธีสุ่มระดับวิทยาการรหัสลับ (Zero Modulo Bias CSPRNG)
-        </CardDescription>
-      </CardHeader>
-      <CardContent>{content}</CardContent>
-    </Card>
+    <div className="space-y-6">
+      <header>
+        <h1 className="text-2xl tracking-tight">สร้างรหัสผ่าน</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          รหัสผ่านถูกสุ่มบนเครื่องของคุณเท่านั้น ไม่มีการส่งออกไปทางเครือข่าย
+        </p>
+      </header>
+      <Card className="w-full">
+        <CardContent className="p-5 sm:p-6">{content}</CardContent>
+      </Card>
+    </div>
   );
 }
 
