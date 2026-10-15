@@ -99,11 +99,29 @@ export const DropdownMenuContent = React.forwardRef(
         }
       };
 
+      // Menu keyboard pattern: arrows/Home/End move between items, Esc closes and returns
+      // focus to the trigger, Tab closes.
+      const items = () => [...(menuRef.current?.querySelectorAll('[role="menuitem"]:not([aria-disabled="true"])') || [])];
       const handleKeyDown = (e) => {
         if (e.key === 'Escape') {
           setOpen(false);
+          triggerRef.current?.focus();
+          return;
         }
+        if (e.key === 'Tab') {
+          setOpen(false);
+          return;
+        }
+        const list = items();
+        if (!list.length || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+        e.preventDefault();
+        const idx = list.indexOf(document.activeElement);
+        const next =
+          e.key === 'Home' ? 0 : e.key === 'End' ? list.length - 1 : e.key === 'ArrowDown' ? (idx + 1) % list.length : (idx - 1 + list.length) % list.length;
+        list[next].focus();
       };
+      // Move focus to the first item when the menu opens.
+      requestAnimationFrame(() => items()[0]?.focus());
 
       document.addEventListener('mousedown', handleClickOutside);
       document.addEventListener('keydown', handleKeyDown);
@@ -132,7 +150,7 @@ export const DropdownMenuContent = React.forwardRef(
         role="menu"
         style={{ marginTop: `${sideOffset}px` }}
         className={cn(
-          'absolute z-50 min-w-[12rem] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg animate-content-show focus:outline-none',
+          'absolute z-50 min-w-[12rem] overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-dialog animate-content-show focus:outline-none',
           alignClasses[align] || alignClasses.end,
           className
         )}
@@ -161,10 +179,17 @@ export const DropdownMenuItem = React.forwardRef(
       <div
         ref={ref}
         role="menuitem"
+        tabIndex={-1}
         aria-disabled={disabled}
         onClick={handleClick}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleClick(e);
+          }
+        }}
         className={cn(
-          'relative flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground',
+          'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none transition-colors duration-fast hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring',
           disabled && 'pointer-events-none opacity-50 cursor-not-allowed',
           destructive &&
             'text-destructive hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive',
@@ -182,7 +207,7 @@ DropdownMenuItem.displayName = 'DropdownMenuItem';
 export const DropdownMenuLabel = ({ className, inset = false, ...props }) => (
   <div
     className={cn(
-      'px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground',
+      'px-2 py-1.5 text-xs font-ui text-muted-foreground',
       inset && 'pl-8',
       className
     )}

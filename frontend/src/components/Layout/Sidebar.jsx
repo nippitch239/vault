@@ -246,7 +246,7 @@ export function Sidebar({
 
       {/* Mobile: navigation drawer */}
       <Sheet open={mobileOpen} onOpenChange={onMobileOpenChange}>
-        <SheetContent
+        <SheetContent manageFocus={false}
           ref={drawerRef}
           side="left"
           hideCloseButton

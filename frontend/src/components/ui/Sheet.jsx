@@ -74,7 +74,7 @@ export const SheetOverlay = React.forwardRef(({ className, onClick, ...props }, 
         }
       }}
       className={cn(
-        'fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm transition-opacity duration-300 animate-content-show',
+        'fixed inset-0 z-[60] bg-overlay/70 backdrop-blur-[2px] transition-opacity duration-base animate-content-show',
         className
       )}
       {...props}
@@ -84,22 +84,49 @@ export const SheetOverlay = React.forwardRef(({ className, onClick, ...props }, 
 SheetOverlay.displayName = 'SheetOverlay';
 
 export const SheetContent = React.forwardRef(
-  ({ side = 'right', className, children, hideCloseButton = false, ...props }, ref) => {
+  ({ side = 'right', className, children, hideCloseButton = false, closeLabel = 'ปิด', manageFocus = true, ...props }, ref) => {
     const { open, setOpen } = useSheet();
     const contentRef = useRef(null);
+    const setOpenRef = useRef(setOpen);
+    setOpenRef.current = setOpen;
 
+    // Runs only on open/close (see Dialog.jsx): Esc closes the topmost modal; unless the
+    // caller manages focus itself (manageFocus=false), focus moves in, Tab is trapped and
+    // focus returns to the opener on close.
     useEffect(() => {
-      if (!open) return;
+      if (!open) return undefined;
+      const node = contentRef.current;
+      const previouslyFocused = document.activeElement;
+      const FOCUSABLE = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+      if (manageFocus) (node?.querySelector('[data-autofocus]') || node?.querySelector(FOCUSABLE) || node)?.focus();
 
       const handleKeyDown = (e) => {
+        const modals = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+        if (modals[modals.length - 1] !== node) return;
         if (e.key === 'Escape') {
-          setOpen(false);
+          setOpenRef.current(false);
+          return;
+        }
+        if (!manageFocus || e.key !== 'Tab' || !node) return;
+        const items = [...node.querySelectorAll(FOCUSABLE)].filter((el) => el.offsetParent !== null);
+        if (!items.length) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
         }
       };
-
       document.addEventListener('keydown', handleKeyDown);
-      return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [open, setOpen]);
+      return () => {
+        document.removeEventListener('keydown', handleKeyDown);
+        if (manageFocus && previouslyFocused?.focus) previouslyFocused.focus();
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open]);
 
     if (!open) return null;
 
@@ -121,8 +148,9 @@ export const SheetContent = React.forwardRef(
           }}
           role="dialog"
           aria-modal="true"
+          tabIndex={-1}
           className={cn(
-            'fixed z-[60] flex flex-col gap-4 bg-background p-6 shadow-2xl max-h-screen overflow-y-auto duration-300',
+            'fixed z-[60] flex flex-col gap-4 bg-popover text-popover-foreground p-5 sm:p-6 shadow-dialog max-h-screen overflow-y-auto focus:outline-none',
             sideClasses[side] || sideClasses.right,
             className
           )}
@@ -133,8 +161,8 @@ export const SheetContent = React.forwardRef(
             <button
               type="button"
               onClick={() => setOpen(false)}
-              className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              className="absolute right-3 top-3 inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors duration-fast hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={closeLabel}
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -160,7 +188,7 @@ SheetContent.displayName = 'SheetContent';
 
 export const SheetHeader = ({ className, ...props }) => (
   <div
-    className={cn('flex flex-col space-y-2 text-center sm:text-left shrink-0', className)}
+    className={cn('flex flex-col gap-1.5 pr-8 text-left shrink-0', className)}
     {...props}
   />
 );
@@ -180,7 +208,7 @@ SheetFooter.displayName = 'SheetFooter';
 export const SheetTitle = React.forwardRef(({ className, as: Component = 'h2', ...props }, ref) => (
   <Component
     ref={ref}
-    className={cn('text-lg font-semibold text-foreground', className)}
+    className={cn('text-lg font-strong text-foreground', className)}
     {...props}
   />
 ));
