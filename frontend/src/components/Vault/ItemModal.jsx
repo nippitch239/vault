@@ -1,15 +1,49 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
 import ClientCrypto from '../../services/crypto.js';
 import { PasswordGenerator } from '../Common/PasswordGenerator.jsx';
-import { CloseIcon, KeyIcon, EyeIcon, EyeOffIcon, CheckIcon, StarIcon } from '../Common/Icons.jsx';
+import { KeyIcon, EyeIcon, EyeOffIcon, LockIcon, CloseIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
-import { Button } from '../ui/Button.jsx';
-import { Input } from '../ui/Input.jsx';
-import { Badge } from '../ui/Badge.jsx';
+import { Button, Input, Textarea, Select, Field, Alert, ConfirmDialog } from '../ui/index.js';
+import { CATEGORY_OPTIONS } from './CategoryBadge.jsx';
 import { buildMetadata } from '../../lib/item-fields.js';
 
+const PERMISSION_LABELS = { admin: 'ผู้ดูแล', write: 'แก้ไขได้', read: 'อ่านอย่างเดียว' };
+
+const EMPTY_FORM = {
+  title: '',
+  category: 'LOGIN',
+  url: '',
+  username: '',
+  password: '',
+  notes: '',
+  tags: '',
+  favorite: false,
+};
+
+function ArrowLeftIcon({ className = 'size-4' }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+    </svg>
+  );
+}
+
+function ChevronIcon({ className = 'size-4' }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+    </svg>
+  );
+}
+
+const snapshotOf = (form, collectionId) => JSON.stringify({ ...form, collectionId });
+
+/**
+ * Add / edit item. Despite the historical name this renders as a full page inside the
+ * vault area (the dashboard shows it in place of the list); props are unchanged.
+ */
 export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
   const { mek, privateKey, user } = useAuth();
   const { addToast } = useToast();
@@ -21,21 +55,20 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
   const [collections, setCollections] = useState([]);
   const [selectedCollectionId, setSelectedCollectionId] = useState('');
 
-  const [formData, setFormData] = useState({
-    title: '',
-    category: 'LOGIN',
-    url: '',
-    username: '',
-    password: '',
-    notes: '',
-    tags: '',
-    favorite: false,
-  });
+  const [formData, setFormData] = useState(EMPTY_FORM);
 
   const [showPassword, setShowPassword] = useState(false);
   const [showGenerator, setShowGenerator] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [showMore, setShowMore] = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+
+  const initialSnapshotRef = useRef(snapshotOf(EMPTY_FORM, ''));
+  const headingRef = useRef(null);
+  const titleInputRef = useRef(null);
+  const passwordInputRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,7 +97,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
           '';
         setSelectedCollectionId(colId);
 
-        setFormData({
+        const next = {
           title: decrypted.title || '',
           category: item.item_type ? item.item_type.toUpperCase() : (item.category || 'LOGIN'),
           url: decrypted.url || '',
@@ -73,28 +106,57 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
           notes: decrypted.notes || '',
           tags: Array.isArray(decrypted.tags) ? decrypted.tags.join(', ') : '',
           favorite: Boolean(meta.favorite),
-        });
+        };
+        setFormData(next);
+        initialSnapshotRef.current = snapshotOf(next, colId);
+        setShowMore(true);
       } else {
         // Adding new item
         setSelectedCollectionId('');
-        setFormData({
-          title: '',
-          category: 'LOGIN',
-          url: '',
-          username: '',
-          password: '',
-          notes: '',
-          tags: '',
-          favorite: false,
-        });
+        setFormData(EMPTY_FORM);
+        initialSnapshotRef.current = snapshotOf(EMPTY_FORM, '');
+        setShowMore(false);
       }
       setShowGenerator(false);
+      setShowPassword(false);
       setError(null);
+      setFieldErrors({});
     }
     return () => {
       cancelled = true;
     };
   }, [isOpen, item]);
+
+  const isDirty = snapshotOf(formData, selectedCollectionId) !== initialSnapshotRef.current;
+
+  const requestClose = () => {
+    if (loading) return;
+    if (isDirty) setConfirmLeave(true);
+    else onClose();
+  };
+
+  // Move focus to the page heading when the form opens (it replaces the list).
+  useEffect(() => {
+    if (isOpen) headingRef.current?.focus();
+  }, [isOpen]);
+
+  // Esc closes the generator first, then leaves the page (ignored while a dialog is open).
+  const requestCloseRef = useRef(requestClose);
+  requestCloseRef.current = requestClose;
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if (showGenerator) {
+        setShowGenerator(false);
+        return;
+      }
+      requestCloseRef.current();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, showGenerator]);
 
   if (!isOpen) return null;
 
@@ -105,26 +167,29 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
       [name]: type === 'checkbox' ? checked : value,
     }));
     setError(null);
+    if (fieldErrors[name]) setFieldErrors((prev) => ({ ...prev, [name]: undefined }));
   };
 
   const handlePasswordSelected = (genPassword) => {
     setFormData((prev) => ({ ...prev, password: genPassword }));
+    setFieldErrors((prev) => ({ ...prev, password: undefined }));
     setShowGenerator(false);
-    addToast('นำรหัสผ่านที่สุ่มได้มาใส่ในฟอร์มแล้ว (Generated password applied)', 'info');
+    addToast('ใส่รหัสผ่านที่สร้างแล้ว', 'success');
+    passwordInputRef.current?.focus();
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.title.trim()) {
-      setError('กรุณาระบุชื่อรายการ (Title is required)');
-      return;
-    }
-    if (!formData.password) {
-      setError('กรุณาระบุรหัสผ่าน (Password is required)');
+    const errors = {};
+    if (!formData.title.trim()) errors.title = 'กรุณาระบุชื่อรายการ';
+    if (!formData.password) errors.password = 'กรุณาระบุรหัสผ่าน หรือกด “สร้างรหัสผ่าน”';
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      (errors.title ? titleInputRef : passwordInputRef).current?.focus();
       return;
     }
     if (!mek) {
-      setError('คลังรหัสผ่านถูกล็อกอยู่ ไม่สามารถเข้ารหัสได้ กรุณาปลดล็อกคลังรหัสผ่าน');
+      setError('คลังรหัสผ่านถูกล็อก จึงเข้ารหัสไม่ได้ กรุณาปลดล็อกคลังก่อนบันทึก');
       return;
     }
 
@@ -150,7 +215,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
       let encryptedData;
       if (selectedCollectionId) {
         if (!privateKey) {
-          throw new Error('คีย์ส่วนตัวถูกล็อกอยู่ กรุณาปลดล็อกคลังรหัสผ่านก่อนบันทึกรายการในคอลเลกชัน');
+          throw new Error('คลังรหัสผ่านถูกล็อก กรุณาปลดล็อกก่อนบันทึกรายการในคอลเลกชัน');
         }
         const keyRes = await api.collections.getKeys(selectedCollectionId);
         const wrappedPayload =
@@ -186,7 +251,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
           },
           item.vault_id
         );
-        addToast('แก้ไขข้อมูลรหัสผ่านสำเร็จ (Updated successfully)', 'success');
+        addToast('บันทึกการแก้ไขแล้ว', 'success');
       } else {
         // UC-4: Add Vault Item
         const createRes = await api.vault.createItem({
@@ -199,7 +264,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
           createRes?.data?.id ||
           createRes?.item?.item_id ||
           createRes?.item_id;
-        addToast('เพิ่มรายการรหัสผ่านใหม่สำเร็จ (Added successfully)', 'success');
+        addToast('เพิ่มรายการแล้ว', 'success');
       }
 
       // 4. Keep the collection link in sync with the key the item is now encrypted with.
@@ -222,281 +287,287 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         }
       }
       if (linkError) {
-        addToast(`บันทึกรายการแล้ว แต่ปรับคอลเลกชันไม่สำเร็จ: ${linkError.message}`, 'error', 8000);
+        addToast(`บันทึกรายการแล้ว แต่ย้ายคอลเลกชันไม่สำเร็จ: ${linkError.message}`, 'error', 8000);
       }
 
       if (onSuccess) onSuccess();
       onClose();
     } catch (err) {
-      setError(err.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล');
+      setError(err.message || 'บันทึกรายการไม่สำเร็จ ลองอีกครั้ง');
     } finally {
       setLoading(false);
     }
   };
 
+  const pageTitle = isEditing ? 'แก้ไขรายการ' : 'เพิ่มรายการ';
+  const currentCollectionMissing =
+    selectedCollectionId && !collections.some((c) => (c.collection_id || c.id) === selectedCollectionId);
+  const moreSummary = [
+    CATEGORY_OPTIONS.find((o) => o.value === formData.category)?.label,
+    selectedCollectionId ? 'อยู่ในคอลเลกชัน' : 'คลังส่วนตัว',
+    formData.favorite ? 'รายการโปรด' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const actions = (
+    <>
+      <Button variant="outline" onClick={requestClose} disabled={loading} className="flex-1 sm:flex-none">
+        ยกเลิก
+      </Button>
+      <Button type="submit" form="item-form" loading={loading} className="flex-1 sm:flex-none">
+        บันทึก
+      </Button>
+    </>
+  );
+
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6 bg-background/80 backdrop-blur-sm animate-content-show"
-    >
-      <div className="relative w-full max-w-lg md:max-w-xl max-h-[85vh] flex flex-col bg-card text-card-foreground border border-border rounded-xl shadow-2xl overflow-hidden">
-        {/* Fixed Header */}
-        <div className="flex-shrink-0 px-6 py-4 border-b border-border flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="size-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
-              <KeyIcon className="size-5" />
-            </div>
-            <div>
-              <h3 className="text-base sm:text-lg font-bold text-foreground">
-                {isEditing ? `แก้ไขรหัสผ่าน (v${item.version || 1})` : 'เพิ่มรหัสผ่านใหม่ (Add Password)'}
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                เข้ารหัสแบบ AES-256-GCM อัตโนมัติ (Zero-Knowledge)
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring text-muted-foreground hover:text-foreground p-1"
-            aria-label="Close"
-          >
-            <CloseIcon className="size-5" />
-          </button>
+    <div className="mx-auto w-full max-w-2xl">
+      <Button variant="ghost" size="sm" onClick={requestClose} disabled={loading} aria-label="กลับไปที่รายการ" className="-ml-3 text-muted-foreground">
+        <ArrowLeftIcon />
+        กลับไปที่รายการ
+      </Button>
+
+      <header className="mt-2 flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0">
+          <h1 ref={headingRef} tabIndex={-1} className="text-2xl tracking-tight focus:outline-none">
+            {pageTitle}
+          </h1>
+          <p className="mt-1 flex items-center gap-1.5 text-caption text-muted-foreground">
+            <LockIcon className="size-3.5 shrink-0" />
+            ข้อมูลถูกเข้ารหัสบนเครื่องคุณก่อนบันทึก
+          </p>
         </div>
+        <div className="hidden gap-2 sm:flex">{actions}</div>
+      </header>
 
-        {/* Scrollable Body */}
-        <form id="item-modal-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-6 py-4 space-y-4 max-h-[calc(85vh-130px)]">
-          {error && (
-            <div className="p-3 bg-destructive/15 border border-destructive/30 rounded-lg text-destructive text-xs font-medium">
-              {error}
-            </div>
-          )}
+      <form id="item-form" onSubmit={handleSubmit} noValidate className="grid gap-8 py-6" aria-busy={loading}>
+        {error && <Alert variant="error">{error}</Alert>}
 
-          {/* Title & Favorite */}
-          <div className="flex items-center space-x-3">
-            <div className="flex-1 space-y-1">
-              <label htmlFor="item-title" className="block text-xs font-semibold text-foreground uppercase tracking-wider">
-                ชื่อรายการ (Title) *
-              </label>
+        {/* Main details */}
+        <section aria-labelledby="item-main-heading" className="grid gap-4">
+          <h2 id="item-main-heading" className="text-base">
+            ข้อมูลหลัก
+          </h2>
+
+          <Field label="ชื่อรายการ" required error={fieldErrors.title}>
+            {(props) => (
               <Input
-                id="item-title"
-                type="text"
+                {...props}
+                ref={titleInputRef}
                 name="title"
+                autoComplete="off"
                 value={formData.title}
                 onChange={handleChange}
-                placeholder="เช่น GitHub, Google Workspace, AWS Console"
-                required
+                placeholder="เช่น GitHub, Gmail ที่ทำงาน"
               />
-            </div>
-            <div className="pt-5">
-              <Button
-                type="button"
-                variant={formData.favorite ? 'secondary' : 'outline'}
-                size="icon"
-                onClick={() => setFormData((p) => ({ ...p, favorite: !p.favorite }))}
-                className={`size-10 rounded-md transition-colors ${
-                  formData.favorite
-                    ? 'border-warning/50 text-warning bg-warning/10 hover:bg-warning/20'
-                    : 'text-muted-foreground'
-                }`}
-                title="รายการโปรด (Favorite)"
-              >
-                <StarIcon className="size-5" filled={formData.favorite} />
-              </Button>
-            </div>
-          </div>
+            )}
+          </Field>
 
-          {/* Category & Collection */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label htmlFor="item-category" className="block text-xs font-semibold text-foreground uppercase tracking-wider">
-                หมวดหมู่ (Category)
-              </label>
-              <select
-                id="item-category"
-                name="category"
-                value={formData.category}
-                onChange={handleChange}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring text-foreground"
-              >
-                <option value="LOGIN">บัญชีผู้ใช้ / เว็บไซต์ (Login)</option>
-                <option value="SECURE_NOTE">บันทึกลับ (Secure Note)</option>
-                <option value="CARD">บัตรเครดิต / การเงิน (Card)</option>
-                <option value="SERVER">เซิร์ฟเวอร์ / SSH / Database (Server)</option>
-                <option value="IDENTITY">ข้อมูลระบุตัวตน (Identity)</option>
-              </select>
-            </div>
-
-            <div className="space-y-1">
-              <label htmlFor="item-collection" className="block text-xs font-semibold text-foreground uppercase tracking-wider">
-                คอลเลกชัน (Collection)
-              </label>
-              <select
-                id="item-collection"
-                value={selectedCollectionId}
-                onChange={(e) => setSelectedCollectionId(e.target.value)}
-                disabled={!isOwner}
-                title={isOwner ? undefined : 'เฉพาะเจ้าของรายการเท่านั้นที่ย้ายคอลเลกชันได้'}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring text-foreground"
-              >
-                <option value="">คลังส่วนตัว (Personal Vault)</option>
-                {collections.map((c) => {
-                  const cid = c.collection_id || c.id;
-                  const perm = c.effective_permission || c.effectivePermission || 'member';
-                  return (
-                    <option key={cid} value={cid}>
-                      📁 {c.name} ({perm})
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
-          </div>
-
-          {/* Username & URL */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label htmlFor="item-username" className="block text-xs font-semibold text-foreground uppercase tracking-wider">
-                ชื่อผู้ใช้ / อีเมล (Username)
-              </label>
+          <Field label="ชื่อผู้ใช้หรืออีเมล">
+            {(props) => (
               <Input
-                id="item-username"
-                type="text"
+                {...props}
                 name="username"
+                autoComplete="off"
                 value={formData.username}
                 onChange={handleChange}
-                placeholder="user@example.com"
+                placeholder="name@example.com"
               />
-            </div>
-            <div className="space-y-1">
-              <label htmlFor="item-url" className="block text-xs font-semibold text-foreground uppercase tracking-wider">
-                ที่อยู่เว็บไซต์ (Website URL)
-              </label>
-              <Input
-                id="item-url"
-                type="text"
-                name="url"
-                value={formData.url}
-                onChange={handleChange}
-                placeholder="https://example.com"
-              />
-            </div>
-          </div>
+            )}
+          </Field>
 
-          {/* Password with Generator Button */}
-          <div className="space-y-1.5">
-            <div className="flex justify-between items-center">
-              <label htmlFor="item-password" className="block text-xs font-semibold text-foreground uppercase tracking-wider">
-                รหัสผ่าน (Password) *
-              </label>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowGenerator(!showGenerator)}
-                className="text-xs h-7 text-primary hover:text-primary font-medium flex items-center space-x-1 px-2"
-              >
-                <KeyIcon className="size-3.5" />
-                <span>{showGenerator ? 'ซ่อนเครื่องมือสุ่ม' : 'สุ่มรหัสผ่าน (Generate)'}</span>
-              </Button>
-            </div>
-            <div className="relative">
-              <Input
-                id="item-password"
-                type={showPassword ? 'text' : 'password'}
-                name="password"
-                value={formData.password}
-                onChange={handleChange}
-                placeholder="กรอกรหัสผ่านหรือคลิกสุ่มรหัสผ่าน"
-                className="pr-10 font-mono"
-                required
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-              >
-                {showPassword ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
-              </button>
-            </div>
-
-            {/* Embedded Password Generator Drawer */}
-            {showGenerator && (
-              <div className="mt-3 p-4 bg-muted/30 rounded-xl border border-primary/20 animate-content-show space-y-3">
-                <div className="flex justify-between items-center pb-2 border-b border-border">
-                  <Badge variant="outline" className="text-[11px] font-semibold text-primary">
-                    เครื่องมือสุ่มรหัสผ่านในตัว (Embedded Generator)
-                  </Badge>
+          <div className="grid gap-3">
+            <Field label="รหัสผ่าน" required error={fieldErrors.password}>
+              {(props) => (
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <div className="relative flex-1">
+                    <Input
+                      {...props}
+                      ref={passwordInputRef}
+                      name="password"
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      spellCheck={false}
+                      value={formData.password}
+                      onChange={handleChange}
+                      className="pr-11 font-mono"
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => setShowPassword((v) => !v)}
+                      aria-pressed={showPassword}
+                      aria-label="แสดงรหัสผ่าน"
+                      className="absolute right-1 top-1 text-muted-foreground hover:text-foreground"
+                    >
+                      {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                    </Button>
+                  </div>
                   <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setShowGenerator(false)}
-                    className="h-6 text-xs text-muted-foreground hover:text-foreground px-2"
+                    variant="secondary"
+                    onClick={() => setShowGenerator((v) => !v)}
+                    aria-expanded={showGenerator}
+                    aria-controls="item-password-generator"
                   >
-                    ปิด
+                    <KeyIcon />
+                    สร้างรหัสผ่าน
                   </Button>
                 </div>
-                <PasswordGenerator onSelect={handlePasswordSelected} isEmbedded={true} />
+              )}
+            </Field>
+
+            {showGenerator && (
+              <div id="item-password-generator" role="region" aria-label="สร้างรหัสผ่าน" className="rounded-lg border border-border bg-card p-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <p className="text-sm font-ui">สร้างรหัสผ่าน</p>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => setShowGenerator(false)}
+                    aria-label="ปิดตัวสร้างรหัสผ่าน"
+                    className="text-muted-foreground"
+                  >
+                    <CloseIcon />
+                  </Button>
+                </div>
+                <PasswordGenerator onSelect={handlePasswordSelected} isEmbedded={true} compact />
               </div>
             )}
           </div>
 
-          {/* Notes */}
-          <div className="space-y-1">
-            <label htmlFor="item-notes" className="block text-xs font-semibold text-foreground uppercase tracking-wider">
-              หมายเหตุลับ (Secure Notes)
-            </label>
-            <textarea
-              id="item-notes"
-              name="notes"
-              rows={3}
-              value={formData.notes}
-              onChange={handleChange}
-              placeholder="หมายเหตุเพิ่มเติม ข้อความลับ หรือรหัสสำรอง (จะถูกเข้ารหัส AES-256 เช่นกัน)"
-              className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring text-foreground resize-none"
-            />
-          </div>
+          <Field label="เว็บไซต์">
+            {(props) => (
+              <Input
+                {...props}
+                name="url"
+                type="url"
+                inputMode="url"
+                autoComplete="off"
+                value={formData.url}
+                onChange={handleChange}
+                placeholder="https://example.com"
+              />
+            )}
+          </Field>
+        </section>
 
-          {/* Tags */}
-          <div className="space-y-1">
-            <label htmlFor="item-tags" className="block text-xs font-semibold text-foreground uppercase tracking-wider">
-              แท็ก (Tags, คั่นด้วยเครื่องหมายจุลภาค)
-            </label>
-            <Input
-              id="item-tags"
-              type="text"
-              name="tags"
-              value={formData.tags}
-              onChange={handleChange}
-              placeholder="work, personal, dev"
-            />
-          </div>
-        </form>
+        {/* Optional details */}
+        <section aria-labelledby="item-more-heading" className="grid gap-4 border-t border-border pt-6">
+          <h2 id="item-more-heading" className="text-base">
+            <button
+              type="button"
+              onClick={() => setShowMore((v) => !v)}
+              aria-expanded={showMore}
+              aria-controls="item-more-panel"
+              className="-mx-2 flex w-[calc(100%+1rem)] items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left transition-colors duration-fast hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span className="grid gap-0.5">
+                <span>เพิ่มเติม</span>
+                {!showMore && <span className="text-caption text-muted-foreground">{moreSummary}</span>}
+              </span>
+              <ChevronIcon className={`size-4 shrink-0 text-muted-foreground transition-transform duration-fast ${showMore ? 'rotate-180' : ''}`} />
+            </button>
+          </h2>
 
-        {/* Fixed Footer */}
-        <div className="flex-shrink-0 px-6 py-4 border-t border-border bg-muted/30 flex justify-end gap-3">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onClose}
-          >
-            ยกเลิก (Cancel)
-          </Button>
-          <Button
-            type="submit"
-            form="item-modal-form"
-            disabled={loading}
-            className="flex items-center space-x-1.5 shadow-sm"
-          >
-            <CheckIcon className="size-4" />
-            <span>{loading ? 'กำลังเข้ารหัสและบันทึก...' : isEditing ? 'บันทึกการแก้ไข' : 'บันทึกรหัสผ่าน'}</span>
-          </Button>
-        </div>
-      </div>
+          {showMore && (
+          <div id="item-more-panel" className="grid gap-4">
+            <Field label="หมวดหมู่">
+              {(props) => (
+                <Select {...props} name="category" value={formData.category} onChange={handleChange}>
+                  {CATEGORY_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+
+            <Field
+              label="คอลเลกชัน"
+              hint={
+                isOwner
+                  ? 'เลือกคอลเลกชันเพื่อแชร์รายการนี้กับสมาชิกคอลเลกชัน'
+                  : 'เฉพาะเจ้าของรายการเท่านั้นที่ย้ายคอลเลกชันได้'
+              }
+            >
+              {(props) => (
+                <Select
+                  {...props}
+                  value={selectedCollectionId}
+                  onChange={(e) => setSelectedCollectionId(e.target.value)}
+                  disabled={!isOwner}
+                >
+                  <option value="">คลังส่วนตัว</option>
+                  {currentCollectionMissing && (
+                    <option value={selectedCollectionId}>{item?._collection?.name || 'คอลเลกชันปัจจุบัน'}</option>
+                  )}
+                  {collections.map((c) => {
+                    const cid = c.collection_id || c.id;
+                    const perm = c.effective_permission || c.effectivePermission || 'member';
+                    return (
+                      <option key={cid} value={cid}>
+                        {c.name} · {PERMISSION_LABELS[perm] || perm}
+                      </option>
+                    );
+                  })}
+                </Select>
+              )}
+            </Field>
+
+            <Field label="แท็ก" hint="คั่นแต่ละแท็กด้วยเครื่องหมายจุลภาค เช่น งาน, ส่วนตัว">
+              {(props) => (
+                <Input {...props} name="tags" autoComplete="off" value={formData.tags} onChange={handleChange} placeholder="งาน, ส่วนตัว" />
+              )}
+            </Field>
+
+            <Field label="บันทึก">
+              {(props) => (
+                <Textarea
+                  {...props}
+                  name="notes"
+                  rows={4}
+                  value={formData.notes}
+                  onChange={handleChange}
+                  placeholder="รหัสสำรอง คำถามความปลอดภัย หรือข้อมูลอื่น"
+                />
+              )}
+            </Field>
+
+            <label className="flex cursor-pointer items-start gap-3 rounded-md border border-border px-3 py-2.5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring">
+              <input
+                type="checkbox"
+                name="favorite"
+                checked={formData.favorite}
+                onChange={handleChange}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <span className="grid gap-0.5">
+                <span className="text-sm font-ui">รายการโปรด</span>
+                <span className="text-caption text-muted-foreground">แสดงเมื่อกรองด้วย “รายการโปรด”</span>
+              </span>
+            </label>
+          </div>
+          )}
+        </section>
+      </form>
+
+      {/* Mobile: actions stay reachable at the bottom of the screen */}
+      <div className="sticky bottom-0 -mx-4 flex gap-2 border-t border-border bg-background px-4 py-3 sm:hidden">{actions}</div>
+
+      <ConfirmDialog
+        open={confirmLeave}
+        onOpenChange={setConfirmLeave}
+        title="ทิ้งการเปลี่ยนแปลง?"
+        description="ข้อมูลที่กรอกไว้ในหน้านี้ยังไม่ได้บันทึก และจะหายไปเมื่อกลับไปที่รายการ"
+        confirmLabel="ทิ้งการเปลี่ยนแปลง"
+        cancelLabel="แก้ไขต่อ"
+        onConfirm={() => {
+          setConfirmLeave(false);
+          onClose();
+        }}
+      />
     </div>
   );
 }
