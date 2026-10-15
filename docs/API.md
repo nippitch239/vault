@@ -392,25 +392,29 @@ Permission levels: `read` < `write` < `admin`. Effective permission = highest of
 
 `Collection = { id, collection_id, name, description, createdBy, created_by, createdAt, created_at, updatedAt, updated_at, effectivePermission, effective_permission }`
 
-| Method & path | Min. permission | Request | Success | Errors |
+All ids in paths and bodies must be UUIDs → otherwise `400 INVALID_ID`. Invalid JSON → `400 INVALID_JSON`. Unknown collection → `404 NOT_FOUND`; permission below the minimum → `403 FORBIDDEN`. Every change is written to the audit log.
+
+| Method & path | Min. permission | Request | Success | Errors (besides the above) |
 |---|---|---|---|---|
-| `POST /collections` | — | `{ name: string (non-empty), description?: string, encryptedKeyForRecipient?: WrappedKey }` (creator's wrapped collection key) | `201 { collection }` | `400 BAD_REQUEST` (name) |
-| `GET /collections` | read | — | `200 { collections: Collection[] }` (only collections the caller can access) | — |
-| `GET /collections/{collectionId}` | read | — | `200 { collection }` | `404 NOT_FOUND`, `403 FORBIDDEN` |
-| `PUT /collections/{collectionId}` | admin | `{ name?: string (non-empty), description?: string \| null }` | `200 { collection }` | `400 BAD_REQUEST`, `403`, `404` |
-| `DELETE /collections/{collectionId}` | admin | — | `200 { message }` (access, keys and item links are removed; vault items stay) | `403`, `404` |
-| `GET /collections/{collectionId}/access` | admin | — | `200 { access: AccessEntry[] }` | `403`, `404` |
-| `POST /collections/{collectionId}/access` | admin | `{ targetType: "user"\|"group", targetId: uuid, permission?: "read"\|"write"\|"admin" (default read) }` — upsert | `201 { access }` | `400 BAD_REQUEST`, `403`, `404 NOT_FOUND` (collection / target) |
-| `DELETE /collections/{collectionId}/access/{targetType}/{targetId}` | admin | — | `200 { message }` | `403`, `404 NOT_FOUND` (collection / grant) |
-| `GET /collections/{collectionId}/keys` | read | — | `200 { key: { id, collectionId, userId, encryptedKeyForRecipient: WrappedKey, ... } }` (caller's own wrapped key) | `403`, `404 NOT_FOUND`, `404 KEY_NOT_FOUND` |
-| `POST /collections/{collectionId}/keys` | read | `{ userId: uuid, encryptedKeyForRecipient: WrappedKey }` — upsert | `201 { message }` | `400 BAD_REQUEST`, `403`, `404 NOT_FOUND` |
-| `GET /collections/{collectionId}/items` | read | — | `200 { items: VaultItem[] }` (ciphertext + metadata) | `403`, `404` |
-| `POST /collections/{collectionId}/items` | write | `{ itemId: uuid }` | `201 { collectionItem }` | `400 BAD_REQUEST`, `403`, `404 NOT_FOUND` (collection / item), `409 CONFLICT` |
-| `DELETE /collections/{collectionId}/items/{itemId}` | write | — | `200 { message }` (vault item stays) | `403`, `404 NOT_FOUND` |
+| `POST /collections` | — | `{ name: string 1–255, description?: string ≤ 2000 | null, encryptedKeyForRecipient?: WrappedKey }` (creator's wrapped key). Collection, creator grant and key are created atomically. | `201 { collection }` | `400 VALIDATION_FAILED` (`details[]`) |
+| `GET /collections` | read | — | `200 { collections: Collection[] }` — caller's collections with effective permission (one query) | — |
+| `GET /collections/{collectionId}` | read | — | `200 { collection }` | — |
+| `PUT /collections/{collectionId}` | admin | `{ name?: string 1–255, description?: string ≤ 2000 | null }` | `200 { collection }` | `400 VALIDATION_FAILED` |
+| `DELETE /collections/{collectionId}` | admin | — | `200 { message }` — access, keys and item links removed atomically; vault items stay | — |
+| `GET /collections/{collectionId}/access` | admin | — | `200 { access: AccessEntry[] }` | — |
+| `POST /collections/{collectionId}/access` | admin | `{ targetType: "user"|"group", targetId: uuid, permission?: "read"|"write"|"admin" (default read) }` — upsert, case-insensitive | `201 { access }` | `400 BAD_REQUEST` (enum), `404 NOT_FOUND` (target) |
+| `DELETE /collections/{collectionId}/access/{targetType}/{targetId}` | admin | — | `200 { message, keysRemoved }` — wrapped keys of users left without access are deleted | `404 NOT_FOUND` (grant) |
+| `GET /collections/{collectionId}/keys` | read | — | `200 { key: { id, collectionId, userId, encryptedKeyForRecipient: WrappedKey, ... } }` — caller's own wrapped key | `404 KEY_NOT_FOUND` |
+| `POST /collections/{collectionId}/keys` | **admin** | `{ userId: uuid, encryptedKeyForRecipient: WrappedKey }` — upsert. Grant access first. | `201 { message }` | `400 BAD_REQUEST`, `400 TARGET_HAS_NO_ACCESS`, `404 NOT_FOUND` (user) |
+| `GET /collections/{collectionId}/items` | read | — | `200 { items: VaultItem[] }` (ciphertext + metadata) | — |
+| `POST /collections/{collectionId}/items` | write | `{ itemId: uuid }` — caller must **own** the item | `201 { collectionItem }` | `400 BAD_REQUEST`, `403 ITEM_NOT_OWNED`, `404 NOT_FOUND` (item), `409 CONFLICT` |
+| `DELETE /collections/{collectionId}/items/{itemId}` | write | — | `200 { message }` (vault item stays) | `404 NOT_FOUND` (link) |
+
+Group membership changes (`DELETE /groups/{groupId}/members/{userId}`) also delete the removed member's wrapped keys for collections that the group had access to. Group managers can only assign/remove the roles `member` and `manager`.
 
 `AccessEntry = { id, access_id, collectionId, targetType, targetId, permission, createdAt, updatedAt }` (snake_case duplicates included).
 
-> Known defects in this contract are tracked in `REVIEW.md` (step 2) and fixed there; this table is updated with each fix.
+> Fixes applied to this contract are listed in `REVIEW.md`.
 
 ## Known inconsistencies (to be fixed, tracked in REVIEW.md)
 
@@ -446,7 +450,6 @@ Permission levels: `read` < `write` < `admin`. Effective permission = highest of
 - `listVaultItemsHandler` comment says "owns vault or vault is shared" but only owner is allowed (`vault.js:126-130`); shared vaults (`is_shared`) are never honoured.
 - `GET /users/lookup` lets any authenticated user enumerate registered emails and public keys (`share.js:42-82`).
 - `DELETE /shares/{shareId}` allows the recipient to revoke, while the vault-scoped form allows only the sharer (`share.js:283-296`).
-- Group managers can add members with role `admin` (privilege escalation) (`group.js:359-392`).
 - Members can remove themselves even if they are the creator/last admin; managers can remove group admins (`group.js:517-530`).
 - `listGroupsHandler` checks `'admin' || 'ADMIN'` while other group handlers check only `'admin'` (`group.js:175` vs `213, 253, 313, 359, 454, 517`).
 
