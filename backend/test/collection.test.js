@@ -262,3 +262,27 @@ test('C8: listing collections uses a constant number of queries and the supremum
   const adminList = await callRouter({ method: 'GET', path: '/api/v1/collections', claims: sysadmin });
   assert.equal(adminList.data.collections.length, 12);
 });
+
+test('C7: create/delete collection are atomic', async () => {
+  await resetDatabase();
+  const owner = await registerProfile('c7owner');
+  const db = (await import('../src/db/adapter.js')).getDatabase();
+  const original = db.query.bind(db);
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  db.query = (sql, params) => {
+    if (/INSERT INTO collection_keys/.test(sql)) throw new Error('simulated failure');
+    return original(sql, params);
+  };
+  try {
+    const res = await callRouter({ method: 'POST', path: '/api/v1/collections', claims: owner, body: { name: 'Half', encryptedKeyForRecipient: WRAPPED } });
+    assert.equal(res.statusCode, 500);
+  } finally {
+    db.query = original;
+    console.error = originalConsoleError;
+  }
+  const left = await db.query('SELECT COUNT(*) AS n FROM collections');
+  assert.equal(Number(left.rows[0].n), 0, 'collection row must be rolled back');
+  const access = await db.query('SELECT COUNT(*) AS n FROM collection_access');
+  assert.equal(Number(access.rows[0].n), 0, 'access row must be rolled back');
+});

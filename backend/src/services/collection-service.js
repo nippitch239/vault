@@ -36,11 +36,15 @@ export async function pruneOrphanedKeys(db, collectionId) {
 }
 
 export async function createCollection(db, user, { name, description, wrappedKey }) {
-  const collection = await repo.insertCollection(db, { name, description, createdBy: user.user_id });
-  await repo.upsertAccess(db, { collectionId: collection.collection_id, targetType: 'user', targetId: user.user_id, permission: 'admin' });
-  if (wrappedKey) {
-    await repo.upsertKey(db, { collectionId: collection.collection_id, userId: user.user_id, wrappedKey });
-  }
+  // Collection, creator grant and creator key are created together or not at all.
+  const collection = await db.transaction(async (tx) => {
+    const created = await repo.insertCollection(tx, { name, description, createdBy: user.user_id });
+    await repo.upsertAccess(tx, { collectionId: created.collection_id, targetType: 'user', targetId: user.user_id, permission: 'admin' });
+    if (wrappedKey) {
+      await repo.upsertKey(tx, { collectionId: created.collection_id, userId: user.user_id, wrappedKey });
+    }
+    return created;
+  });
   await repo
     .insertAuditLog(db, { actorUserId: user.user_id, actorRole: user.role, action: 'COLLECTION_CREATED', collectionId: collection.collection_id, details: { name } })
     .catch(() => {});
@@ -69,7 +73,7 @@ export async function updateCollection(db, user, collectionId, changes) {
 
 export async function deleteCollection(db, user, collectionId) {
   await requirePermission(db, collectionId, user, 'admin', 'delete collection');
-  await repo.deleteCollection(db, collectionId);
+  await db.transaction((tx) => repo.deleteCollection(tx, collectionId));
 }
 
 export async function listAccess(db, user, collectionId) {
@@ -87,8 +91,10 @@ export async function grantAccess(db, user, collectionId, { targetType, targetId
 export async function revokeAccess(db, user, collectionId, { targetType, targetId }) {
   await requirePermission(db, collectionId, user, 'admin', 'revoke access');
   if (!(await repo.findAccess(db, collectionId, targetType, targetId))) throw notFound('Access entry not found');
-  await repo.deleteAccess(db, collectionId, targetType, targetId);
-  return pruneOrphanedKeys(db, collectionId);
+  return db.transaction(async (tx) => {
+    await repo.deleteAccess(tx, collectionId, targetType, targetId);
+    return pruneOrphanedKeys(tx, collectionId);
+  });
 }
 
 /**
