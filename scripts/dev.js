@@ -13,13 +13,13 @@ console.log('  • Frontend UI: http://localhost:5173');
 console.log('  Press Ctrl+C to terminate both services.\n');
 
 const isWin = process.platform === 'win32';
-const server = spawn('node', ['src/server/local-runner.js'], {
+const server = spawn('node', ['backend/local/local-runner.js'], {
   cwd: ROOT,
   stdio: 'inherit',
   shell: false,
 });
 
-const client = spawn(isWin ? 'npm.cmd' : 'npm', ['--prefix', 'src/client', 'run', 'dev'], {
+const client = spawn(isWin ? 'npm.cmd' : 'npm', ['run', 'dev', '--workspace', 'frontend'], {
   cwd: ROOT,
   stdio: 'inherit',
   shell: isWin,

@@ -12,8 +12,8 @@
 
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { router } from './router.js';
-import { getDatabase } from './db/adapter.js';
+import { router } from '../src/router.js';
+import { getDatabase } from '../src/db/adapter.js';
 
 export const DEFAULT_PORT = parseInt(process.env.PORT || '3000', 10);
 

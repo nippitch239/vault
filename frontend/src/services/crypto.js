@@ -24,14 +24,14 @@ import {
   CryptoError,
   importPublicKey,
   importPrivateKey,
-} from '../../../shared/crypto.js';
+} from '@vault/shared/crypto.js';
 
 import {
   generatePassword,
   generatePassphrase,
   calculateEntropy,
   CHAR_SETS,
-} from '../../../shared/generator.js';
+} from '@vault/shared/generator.js';
 
 import {
   validateRegistration,
@@ -40,7 +40,7 @@ import {
   validateShareRequest,
   validatePasswordReset,
   getErrorMessage,
-} from '../../../shared/validator.js';
+} from '@vault/shared/validator.js';
 
 export const ClientCrypto = {
   // Key Derivation

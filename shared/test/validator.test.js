@@ -14,7 +14,7 @@ import {
   isValidEmail,
   isValidPassword,
   isValidMfaCode,
-} from './validator.js';
+} from '../validator.js';
 
 test('Regex Helper Validators', () => {
   // Username

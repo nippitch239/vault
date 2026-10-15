@@ -10,8 +10,8 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import ClientCrypto from './src/services/crypto.js';
-import { api, setAuthToken } from './src/services/api.js';
+import ClientCrypto from '../src/services/crypto.js';
+import { api, setAuthToken } from '../src/services/api.js';
 
 describe('Milestone 3 — React Client Cryptography & Services Verification', () => {
   let masterPassword = 'Correct-Horse-Battery-Staple-99!';

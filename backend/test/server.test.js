@@ -10,12 +10,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getDatabase, resetDatabase } from './db/adapter.js';
-import { router } from './router.js';
-import { startLocalServer } from './local-runner.js';
-import { signJwt, verifyJwt } from './middleware/auth-guard.js';
-import { generateTotp } from './handlers/auth.js';
-import { hashAuthHash } from '../shared/crypto.js';
+import { getDatabase, resetDatabase } from '../src/db/adapter.js';
+import { router } from '../src/router.js';
+import { startLocalServer } from '../local/local-runner.js';
+import { signJwt, verifyJwt } from '../src/middleware/auth-guard.js';
+import { generateTotp } from '../src/handlers/auth.js';
+import { hashAuthHash } from '@vault/shared/crypto.js';
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 

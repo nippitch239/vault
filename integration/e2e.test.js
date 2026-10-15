@@ -21,9 +21,9 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { startLocalServer } from '../server/local-runner.js';
-import ClientCrypto from './src/services/crypto.js';
-import { api, setAuthToken } from './src/services/api.js';
+import { startLocalServer } from '../backend/local/local-runner.js';
+import ClientCrypto from '../frontend/src/services/crypto.js';
+import { api, setAuthToken } from '../frontend/src/services/api.js';
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 
@@ -150,7 +150,7 @@ describe('Milestone 3 — Frontend E2E Flow Verification (UC-1 through UC-13)', 
 
     // Generate valid TOTP token using shared helper / generator
     // In server auth.js, generateTotp is used
-    import('../server/handlers/auth.js').then(async (authHandler) => {
+    import('../backend/src/handlers/auth.js').then(async (authHandler) => {
       const code = authHandler.generateTotp(mfaSetup.data.secret);
       const verifyRes = await api.auth.mfaVerify(code);
       assert.equal(verifyRes.status, 'success');

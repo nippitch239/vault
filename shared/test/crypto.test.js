@@ -19,7 +19,7 @@ import {
   fromHex,
   CRYPTO_CONSTANTS,
   CryptoError,
-} from './crypto.js';
+} from '../crypto.js';
 
 test('Encoding Utilities: Base64 and Hex roundtrips', () => {
   const originalBytes = new Uint8Array([0, 1, 15, 16, 127, 128, 254, 255]);

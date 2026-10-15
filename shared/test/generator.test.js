@@ -8,7 +8,7 @@ import {
   shuffleArray,
   CHAR_SETS,
   DICEWARE_WORDS,
-} from './generator.js';
+} from '../generator.js';
 
 test('CSPRNG getRandomInt: Bounds and Uniformity', () => {
   // Test 1,000 samples to verify all values in [1, 6] appear and no out-of-bounds

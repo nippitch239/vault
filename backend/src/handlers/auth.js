@@ -15,13 +15,13 @@
 import crypto from 'node:crypto';
 import { getDatabase } from '../db/adapter.js';
 import { signJwt, verifyJwt, authenticate } from '../middleware/auth-guard.js';
-import { hashAuthHash } from '../../shared/crypto.js';
+import { hashAuthHash } from '@vault/shared/crypto.js';
 import {
   isValidEmail,
   isValidUsername,
   isValidAuthHash,
   isValidMfaCode,
-} from '../../shared/validator.js';
+} from '@vault/shared/validator.js';
 
 // In-memory store for pending password reset OTPs: email -> { code, expiresAt }
 const resetOtpStore = new Map();
