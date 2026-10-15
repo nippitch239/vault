@@ -172,3 +172,53 @@ test('C3: revoking access (direct or via group) removes the user\'s wrapped key'
   const keys = await db.query('SELECT user_id FROM collection_keys WHERE collection_id = $1', [collectionId]);
   assert.deepEqual(keys.rows.map((r) => r.user_id), [admin.sub]);
 });
+
+test('C5/C6: malformed collection input returns 400 instead of 500', async () => {
+  await resetDatabase();
+  const admin = await registerProfile('c5admin');
+  const collectionId = await createCollection(admin);
+  const call = (method, path, body) => callRouter({ method, path, claims: admin, body });
+
+  const cases = [
+    ['GET', '/api/v1/collections/not-a-uuid', undefined, 'INVALID_ID'],
+    ['POST', `/api/v1/collections/${collectionId}/access`, { targetType: 'user', targetId: 'abc', permission: 'read' }, 'INVALID_ID'],
+    ['POST', `/api/v1/collections/${collectionId}/access`, { targetType: 'user', targetId: admin.sub, permission: 7 }, 'BAD_REQUEST'],
+    ['POST', `/api/v1/collections/${collectionId}/access`, { targetType: ['user'], targetId: admin.sub }, 'BAD_REQUEST'],
+    ['POST', '/api/v1/collections', { name: 'x'.repeat(256) }, 'VALIDATION_FAILED'],
+    ['POST', '/api/v1/collections', { name: 'ok', description: { html: true } }, 'VALIDATION_FAILED'],
+    ['POST', '/api/v1/collections', { name: 'ok', encryptedKeyForRecipient: 'plain' }, 'VALIDATION_FAILED'],
+    ['PUT', `/api/v1/collections/${collectionId}`, { name: '   ' }, 'VALIDATION_FAILED'],
+    ['POST', `/api/v1/collections/${collectionId}/items`, { itemId: 12 }, 'INVALID_ID'],
+    ['POST', `/api/v1/collections/${collectionId}/keys`, { userId: 'nope', encryptedKeyForRecipient: WRAPPED }, 'INVALID_ID'],
+    ['DELETE', `/api/v1/collections/${collectionId}/access/robot/${admin.sub}`, undefined, 'BAD_REQUEST'],
+  ];
+  for (const [method, path, body, code] of cases) {
+    const res = await call(method, path, body);
+    assert.equal(res.statusCode, 400, `${method} ${path} ${JSON.stringify(body)} -> ${res.statusCode} ${JSON.stringify(res.data)}`);
+    assert.equal(res.data.error, code, `${method} ${path}`);
+  }
+
+  const badJson = await callRouter({ method: 'POST', path: '/api/v1/collections', claims: admin, body: '{"name":' });
+  assert.equal(badJson.data.error, 'INVALID_JSON');
+
+  // Boundaries that must still work: 255-char name, Unicode, null description
+  const long = await call('POST', '/api/v1/collections', { name: `${'ก'.repeat(250)}🔐🔐`, description: null });
+  assert.equal(long.statusCode, 201);
+});
+
+test('C5: mixed-case targetType is normalised (no CHECK-constraint 500)', async () => {
+  await resetDatabase();
+  const admin = await registerProfile('caseadmin');
+  const friend = await registerProfile('casefriend');
+  const collectionId = await createCollection(admin);
+  const res = await callRouter({
+    method: 'POST',
+    path: `/api/v1/collections/${collectionId}/access`,
+    claims: admin,
+    body: { targetType: 'User', targetId: friend.sub, permission: 'WRITE' },
+  });
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.data.access.target_type, 'user');
+  const revoke = await callRouter({ method: 'DELETE', path: `/api/v1/collections/${collectionId}/access/USER/${friend.sub}`, claims: admin });
+  assert.equal(revoke.statusCode, 200);
+});

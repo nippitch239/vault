@@ -13,6 +13,11 @@
 import crypto from 'node:crypto';
 import { getDatabase } from '../db/adapter.js';
 import { authenticate, getEffectiveCollectionPermission } from '../middleware/auth-guard.js';
+import { readJsonBody, badRequest } from '../http/response.js';
+import { requireUuids, requireEnum, checkText, isWrappedKey } from '../http/validate.js';
+
+const NAME_MAX = 255;
+const DESCRIPTION_MAX = 2000;
 
 function jsonResponse(statusCode, data) {
   return {
@@ -23,16 +28,6 @@ function jsonResponse(statusCode, data) {
     },
     body: JSON.stringify(data),
   };
-}
-
-function parseBody(event) {
-  if (!event.body) return {};
-  if (typeof event.body === 'object') return event.body;
-  try {
-    return JSON.parse(event.body);
-  } catch {
-    return {};
-  }
 }
 
 /**
@@ -240,21 +235,21 @@ export async function createCollectionHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
 
-  const body = parseBody(event);
-  const name = body.name;
-  if (!name || typeof name !== 'string' || !name.trim()) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'BAD_REQUEST',
-      message: 'Collection name is required',
-    });
+  const { body, errorResponse: bodyError } = readJsonBody(event);
+  if (bodyError) return bodyError;
+  const nameCheck = checkText('name', body.name, { min: 1, max: NAME_MAX });
+  const descCheck = checkText('description', body.description ?? null, { max: DESCRIPTION_MAX, allowNull: true });
+  const errors = [nameCheck.error, descCheck.error].filter(Boolean);
+  if (body.encryptedKeyForRecipient !== undefined && !isWrappedKey(body.encryptedKeyForRecipient)) {
+    errors.push({ field: 'encryptedKeyForRecipient', message: 'encryptedKeyForRecipient must be { ciphertext, algorithm, hash }' });
   }
+  if (errors.length) return badRequest('Invalid collection', 'VALIDATION_FAILED', errors);
 
   const db = getDatabase();
   const collectionId = crypto.randomUUID();
   const now = new Date().toISOString();
-  const trimmedName = name.trim();
-  const description = body.description || null;
+  const trimmedName = nameCheck.value;
+  const description = descCheck.value || null;
 
   await db.query(
     'INSERT INTO collections (collection_id, name, description, created_by, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)',
@@ -337,6 +332,8 @@ export async function getCollectionHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
@@ -372,6 +369,8 @@ export async function updateCollectionHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
@@ -392,17 +391,18 @@ export async function updateCollectionHandler(event) {
     });
   }
 
-  const body = parseBody(event);
-  if (body.name !== undefined && (typeof body.name !== 'string' || !body.name.trim())) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'BAD_REQUEST',
-      message: 'Collection name cannot be empty',
-    });
-  }
+  const { body, errorResponse: bodyError } = readJsonBody(event);
+  if (bodyError) return bodyError;
+  const nameCheck = body.name !== undefined ? checkText('name', body.name, { min: 1, max: NAME_MAX }) : { value: res.rows[0].name };
+  const descCheck =
+    body.description !== undefined
+      ? checkText('description', body.description, { max: DESCRIPTION_MAX, allowNull: true })
+      : { value: res.rows[0].description };
+  const errors = [nameCheck.error, descCheck.error].filter(Boolean);
+  if (errors.length) return badRequest('Invalid collection', 'VALIDATION_FAILED', errors);
 
-  const updatedName = body.name !== undefined ? body.name.trim() : res.rows[0].name;
-  const updatedDesc = body.description !== undefined ? body.description : res.rows[0].description;
+  const updatedName = nameCheck.value;
+  const updatedDesc = descCheck.value || null;
   const now = new Date().toISOString();
 
   await db.query(
@@ -426,6 +426,8 @@ export async function deleteCollectionHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
@@ -470,6 +472,8 @@ export async function grantCollectionAccessHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
@@ -490,23 +494,15 @@ export async function grantCollectionAccessHandler(event) {
     });
   }
 
-  const body = parseBody(event);
-  const { targetType, targetId, permission = 'read' } = body;
-  if (!targetType || !['user', 'group'].includes(targetType)) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'BAD_REQUEST',
-      message: 'targetType must be "user" or "group"',
-    });
-  }
-
-  if (!permission || !['read', 'write', 'admin'].includes(permission.toLowerCase())) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'BAD_REQUEST',
-      message: 'permission must be "read", "write", or "admin"',
-    });
-  }
+  const { body, errorResponse: bodyError } = readJsonBody(event);
+  if (bodyError) return bodyError;
+  const { targetId, permission = 'read' } = body;
+  const targetType = typeof body.targetType === 'string' ? body.targetType.toLowerCase() : body.targetType;
+  const inputError =
+    requireEnum('targetType', targetType, ['user', 'group']) ||
+    requireEnum('permission', permission, ['read', 'write', 'admin']) ||
+    requireUuids({ targetId });
+  if (inputError) return inputError;
 
   if (targetType === 'user') {
     const u = await db.query('SELECT user_id FROM users WHERE user_id = $1', [targetId]);
@@ -563,6 +559,8 @@ export async function listCollectionAccessHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
@@ -603,8 +601,12 @@ export async function revokeCollectionAccessHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
-  const targetType = event.pathParameters?.targetType;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
+  const targetType = String(event.pathParameters?.targetType || '').toLowerCase();
   const targetId = event.pathParameters?.targetId;
+  const targetError = requireEnum('targetType', targetType, ['user', 'group']) || requireUuids({ targetId });
+  if (targetError) return targetError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
@@ -663,6 +665,8 @@ export async function storeCollectionKeyHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
@@ -685,7 +689,8 @@ export async function storeCollectionKeyHandler(event) {
     });
   }
 
-  const body = parseBody(event);
+  const { body, errorResponse: bodyError } = readJsonBody(event);
+  if (bodyError) return bodyError;
   const targetUserId = body.userId || body.user_id;
   const encryptedKey = body.encryptedKeyForRecipient || body.encrypted_key_for_recipient;
 
@@ -696,8 +701,10 @@ export async function storeCollectionKeyHandler(event) {
       message: 'userId is required',
     });
   }
+  const userIdError = requireUuids({ userId: targetUserId });
+  if (userIdError) return userIdError;
 
-  if (!encryptedKey || typeof encryptedKey !== 'object' || !encryptedKey.ciphertext) {
+  if (!isWrappedKey(encryptedKey)) {
     return jsonResponse(400, {
       status: 'fail',
       error: 'BAD_REQUEST',
@@ -750,6 +757,8 @@ export async function getCollectionKeyHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
@@ -802,6 +811,8 @@ export async function addCollectionItemHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
@@ -822,7 +833,8 @@ export async function addCollectionItemHandler(event) {
     });
   }
 
-  const body = parseBody(event);
+  const { body, errorResponse: bodyError } = readJsonBody(event);
+  if (bodyError) return bodyError;
   const itemId = body.itemId || body.item_id;
   if (!itemId) {
     return jsonResponse(400, {
@@ -831,6 +843,8 @@ export async function addCollectionItemHandler(event) {
       message: 'itemId is required',
     });
   }
+  const itemIdError = requireUuids({ itemId });
+  if (itemIdError) return itemIdError;
 
   const item = await db.query('SELECT item_id, user_id FROM vault_items WHERE item_id = $1', [itemId]);
   if (!item.rows || item.rows.length === 0) {
@@ -890,6 +904,8 @@ export async function listCollectionItemsHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
@@ -933,7 +949,11 @@ export async function removeCollectionItemHandler(event) {
   if (errorResponse) return errorResponse;
 
   const collectionId = event.pathParameters?.collectionId;
+  const idError = requireUuids({ collectionId });
+  if (idError) return idError;
   const itemId = event.pathParameters?.itemId;
+  const itemIdError = requireUuids({ itemId });
+  if (itemIdError) return itemIdError;
   const db = getDatabase();
 
   const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);

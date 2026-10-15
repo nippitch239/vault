@@ -187,6 +187,14 @@ export function CollectionsView() {
       addToast('กรุณาระบุชื่อคอลเลกชัน (Collection name is required)', 'error');
       return;
     }
+    if ([...formData.name.trim()].length > 255) {
+      addToast('ชื่อคอลเลกชันยาวได้ไม่เกิน 255 ตัวอักษร', 'error');
+      return;
+    }
+    if ([...formData.description.trim()].length > 2000) {
+      addToast('คำอธิบายยาวได้ไม่เกิน 2,000 ตัวอักษร', 'error');
+      return;
+    }
 
     setActionLoading(true);
     try {
@@ -602,6 +610,7 @@ export function CollectionsView() {
                   value={formData.name}
                   onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
                   placeholder="เช่น Engineering Production, IT Passwords"
+                  maxLength={255}
                   className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                   required
                 />
@@ -616,6 +625,7 @@ export function CollectionsView() {
                   value={formData.description}
                   onChange={(e) => setFormData((prev) => ({ ...prev, description: e.target.value }))}
                   placeholder="รายละเอียดหรือวัตถุประสงค์ของคอลเลกชัน..."
+                  maxLength={2000}
                   className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
                 />
               </div>
