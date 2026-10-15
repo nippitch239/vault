@@ -7,19 +7,30 @@ import {
   TableRow,
   TableCell,
 } from '../ui/Table.jsx';
-
+import { Button } from '../ui/Button.jsx';
 import {
-  StarIcon,
   EyeIcon,
   EyeOffIcon,
   CopyIcon,
   CheckIcon,
   ExternalLinkIcon,
+  LockIcon,
 } from '../Common/Icons.jsx';
-import { CategoryBadge } from './CategoryBadge.jsx';
+import { CategoryBadge, CollectionBadge, LockedBadge } from './CategoryBadge.jsx';
 import { ItemActionDropdown } from './ItemActionDropdown.jsx';
+import { FavoriteButton, LOCKED_TITLE } from './VaultGridView.jsx';
 import { itemFields } from '../../lib/item-fields.js';
 
+const formatUpdated = (value) =>
+  value ? new Date(value).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+
+const hrefOf = (url) => (url.startsWith('http') ? url : `https://${url}`);
+const hostOf = (url) => url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+/**
+ * Dense table. The dashboard shows it only on wide screens (cards are used below `lg`),
+ * so the wrapper does not clip the row action menus.
+ */
 export function VaultTableView({
   items = [],
   revealedIds = new Set(),
@@ -35,15 +46,21 @@ export function VaultTableView({
   collections = [],
 }) {
   return (
-    <Table className="min-w-full">
+    <Table wrapperClassName="overflow-visible bg-card" className="table-fixed">
+      <caption className="sr-only">รายการในคลังรหัสผ่าน</caption>
       <TableHeader>
-        <TableRow>
-          <TableHead className="w-[30%]">Title / Item</TableHead>
-          <TableHead className="w-[15%]">Category</TableHead>
-          <TableHead className="w-[22%]">Username / Preview</TableHead>
-          <TableHead className="w-[8%] text-center">Favorite</TableHead>
-          <TableHead className="w-[12%]">Updated</TableHead>
-          <TableHead className="w-[13%] text-right">Actions</TableHead>
+        <TableRow className="hover:bg-transparent">
+          <TableHead className="h-9 w-12 px-2">
+            <span className="sr-only">รายการโปรด</span>
+          </TableHead>
+          <TableHead className="h-9 w-[30%] px-3 text-xs font-ui">ชื่อรายการ</TableHead>
+          <TableHead className="h-9 w-[13%] px-3 text-xs font-ui">หมวดหมู่</TableHead>
+          <TableHead className="h-9 w-[18%] px-3 text-xs font-ui">ชื่อผู้ใช้</TableHead>
+          <TableHead className="h-9 w-[17%] px-3 text-xs font-ui">รหัสผ่าน</TableHead>
+          <TableHead className="h-9 w-[13%] px-3 text-xs font-ui">อัปเดตล่าสุด</TableHead>
+          <TableHead className="h-9 w-12 px-2">
+            <span className="sr-only">ตัวเลือก</span>
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -53,168 +70,140 @@ export function VaultTableView({
           const dec = it._decrypted || {};
           const isRevealed = revealedIds.has(id);
           const isFav = Boolean(meta.favorite);
-          const { title, username, url } = itemFields(it);
+          const { title, username, url, locked } = itemFields(it);
+          const displayTitle = locked ? LOCKED_TITLE : title;
           const password = dec.password || '';
           const colId = it._collectionId || meta.collection_id;
           const collection =
             it._collection ||
             (colId ? collections.find((c) => (c.collection_id || c.id) === colId) : null);
 
-          // Format updated date
-          const updatedDate = it.updated_at || it.created_at;
-          const formattedDate = updatedDate
-            ? new Date(updatedDate).toLocaleDateString(undefined, {
-                month: 'short',
-                day: 'numeric',
-                year: 'numeric',
-              })
-            : '—';
-
           return (
             <TableRow
               key={id}
-              className="cursor-pointer group hover:bg-muted/40 transition-colors"
-              onClick={() => onEdit(it)}
+              className={`group hover:bg-accent/60 ${locked ? '' : 'cursor-pointer'}`}
+              onClick={() => {
+                if (!locked) onEdit(it);
+              }}
             >
-              {/* Column 1: Title / Item */}
-              <TableCell className="font-medium">
-                <div className="flex flex-col">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-foreground text-sm truncate max-w-[220px]">
-                      {title}
+              <TableCell className="px-2 py-2">
+                <FavoriteButton active={isFav} title={displayTitle} onToggle={() => onToggleFavorite(it)} />
+              </TableCell>
+
+              <TableCell className="px-3 py-2">
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  {locked ? (
+                    <span className="flex items-center gap-1.5 text-sm font-ui text-muted-foreground">
+                      <LockIcon className="size-4 shrink-0" />
+                      <span className="truncate">{LOCKED_TITLE}</span>
                     </span>
-                    {it.version > 1 && (
-                      <span className="text-[10px] font-mono px-1 py-0.2 bg-muted text-muted-foreground rounded border border-border">
-                        v{it.version}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
-                    {url ? (
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onEdit(it);
+                      }}
+                      className="truncate rounded-sm text-left text-sm font-ui text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      title={`แก้ไข ${title}`}
+                    >
+                      {title}
+                    </button>
+                  )}
+                  <div className="flex min-w-0 items-center gap-2">
+                    {url && !locked ? (
                       <a
-                        href={url.startsWith('http') ? url : `https://${url}`}
+                        href={hrefOf(url)}
                         target="_blank"
                         rel="noreferrer"
-                        className="hover:underline hover:text-foreground text-muted-foreground truncate max-w-[180px] flex items-center gap-1"
                         onClick={(e) => e.stopPropagation()}
+                        className="inline-flex min-w-0 items-center gap-1 rounded-sm text-caption text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
-                        <span className="truncate">{url.replace(/^https?:\/\//, '')}</span>
-                        <ExternalLinkIcon className="w-3 h-3 shrink-0" />
+                        <span className="truncate">{hostOf(url)}</span>
+                        <ExternalLinkIcon className="size-3 shrink-0" />
+                        <span className="sr-only">(เปิดในแท็บใหม่)</span>
                       </a>
-                    ) : (
-                      <span>—</span>
-                    )}
-                    {collection && (
-                      <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 truncate max-w-[110px]">
-                        📁 {collection.name}
-                      </span>
-                    )}
+                    ) : null}
+                    {collection && <CollectionBadge name={collection.name} className="max-w-[9rem]" />}
                   </div>
                 </div>
               </TableCell>
 
-              {/* Column 2: Category */}
-              <TableCell>
-                <CategoryBadge category={it.item_type || 'login'} />
+              <TableCell className="px-3 py-2">
+                <div className="flex flex-wrap gap-1">
+                  <CategoryBadge category={it.item_type || 'login'} />
+                  {locked && <LockedBadge />}
+                </div>
               </TableCell>
 
-              {/* Column 3: Username / Preview */}
-              <TableCell>
+              <TableCell className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                 {username ? (
-                  <div
-                    className="flex items-center gap-1.5"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <span className="font-mono text-xs text-foreground truncate max-w-[160px] select-all">
-                      {username}
-                    </span>
-                    <button
-                      type="button"
+                  <div className="flex min-w-0 items-center gap-1">
+                    <span className="truncate font-mono text-xs">{username}</span>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="shrink-0 text-muted-foreground hover:text-foreground"
                       onClick={() => onCopyUsername(username)}
-                      className="p-1 text-muted-foreground hover:text-foreground rounded transition-colors"
-                      title="คัดลอกชื่อผู้ใช้"
+                      aria-label={`คัดลอกชื่อผู้ใช้ของ ${title}`}
                     >
-                      <CopyIcon className="w-3.5 h-3.5" />
-                    </button>
+                      <CopyIcon />
+                    </Button>
                   </div>
                 ) : (
-                  <span className="text-xs text-muted-foreground">—</span>
+                  <span className="text-caption text-muted-foreground">—</span>
                 )}
               </TableCell>
 
-              {/* Column 4: Favorite */}
-              <TableCell className="text-center">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleFavorite(it);
-                  }}
-                  className={`p-1.5 rounded-lg transition-colors inline-flex items-center justify-center ${
-                    isFav
-                      ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-400/10'
-                      : 'text-muted-foreground hover:text-amber-400 hover:bg-accent'
-                  }`}
-                  title={isFav ? 'นำออกจากรายการโปรด' : 'เพิ่มในรายการโปรด'}
-                  aria-label={isFav ? 'นำออกจากรายการโปรด' : 'เพิ่มในรายการโปรด'}
-                >
-                  <StarIcon className="w-4 h-4" filled={isFav} />
-                </button>
-              </TableCell>
-
-              {/* Column 5: Updated */}
-              <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                {formattedDate}
-              </TableCell>
-
-              {/* Column 6: Actions */}
-              <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center justify-end gap-1">
-                  {/* Quick Reveal Password */}
-                  {password && (
-                    <button
-                      type="button"
+              <TableCell className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                {password ? (
+                  <div className="flex min-w-0 items-center gap-1">
+                    <span className="truncate font-mono text-xs" title={isRevealed ? password : undefined}>
+                      {isRevealed ? password : '••••••••'}
+                      {!isRevealed && <span className="sr-only">ซ่อนอยู่</span>}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="shrink-0 text-muted-foreground hover:text-foreground"
                       onClick={() => onToggleReveal(id)}
-                      className="p-1.5 text-muted-foreground hover:text-foreground rounded-lg hover:bg-accent transition-colors"
-                      title={isRevealed ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+                      aria-pressed={isRevealed}
+                      aria-label={`แสดงรหัสผ่านของ ${title}`}
                     >
-                      {isRevealed ? (
-                        <EyeOffIcon className="w-4 h-4" />
-                      ) : (
-                        <EyeIcon className="w-4 h-4" />
-                      )}
-                    </button>
-                  )}
-
-                  {/* Quick Copy Password */}
-                  {password && (
-                    <button
-                      type="button"
+                      {isRevealed ? <EyeOffIcon /> : <EyeIcon />}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className={`shrink-0 ${copiedId === id ? 'text-success-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                       onClick={() => onCopyPassword(password, id, title)}
-                      className="p-1.5 text-muted-foreground hover:text-emerald-400 rounded-lg hover:bg-accent transition-colors"
-                      title="คัดลอกรหัสผ่าน (Auto-clear 30s)"
+                      aria-label={copiedId === id ? `คัดลอกรหัสผ่านของ ${title} แล้ว` : `คัดลอกรหัสผ่านของ ${title} (ล้างคลิปบอร์ดใน 30 วินาที)`}
                     >
-                      {copiedId === id ? (
-                        <CheckIcon className="w-4 h-4 text-emerald-400" />
-                      ) : (
-                        <CopyIcon className="w-4 h-4" />
-                      )}
-                    </button>
-                  )}
+                      {copiedId === id ? <CheckIcon /> : <CopyIcon />}
+                    </Button>
+                  </div>
+                ) : (
+                  <span className="text-caption text-muted-foreground">—</span>
+                )}
+              </TableCell>
 
-                  {/* Contextual Dropdown */}
-                  <ItemActionDropdown
-                    item={it}
-                    isRevealed={isRevealed}
-                    onToggleReveal={onToggleReveal}
-                    onCopyUsername={onCopyUsername}
-                    onCopyPassword={(pw, ttl) => onCopyPassword(pw, id, ttl || title)}
-                    onEdit={onEdit}
-                    onShare={onShare}
-                    onHistory={onHistory}
-                    onDelete={onDelete}
-                  />
-                </div>
+              <TableCell className="px-3 py-2 text-caption text-muted-foreground">
+                <span className="block truncate">{formatUpdated(it.updated_at || it.created_at)}</span>
+                <span className="block">v{it.version || 1}</span>
+              </TableCell>
+
+              <TableCell className="px-2 py-2 text-right" onClick={(e) => e.stopPropagation()}>
+                <ItemActionDropdown
+                  item={it}
+                  isRevealed={isRevealed}
+                  onToggleReveal={onToggleReveal}
+                  onCopyUsername={onCopyUsername}
+                  onCopyPassword={(pw, ttl) => onCopyPassword(pw, id, ttl || title)}
+                  onEdit={onEdit}
+                  onShare={onShare}
+                  onHistory={onHistory}
+                  onDelete={onDelete}
+                />
               </TableCell>
             </TableRow>
           );

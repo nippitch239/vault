@@ -6,8 +6,7 @@ import { ItemModal } from './ItemModal.jsx';
 import { DeleteConfirmModal } from './DeleteConfirmModal.jsx';
 import { ShareModal } from '../Sharing/ShareModal.jsx';
 import { HistoryDrawer } from '../History/HistoryDrawer.jsx';
-import { Button } from '../ui/Button.jsx';
-import { Input } from '../ui/Input.jsx';
+import { Button, Card, Input, Field, Alert, Skeleton, EmptyState } from '../ui/index.js';
 import {
   KeyIcon,
   PlusIcon,
@@ -20,21 +19,55 @@ import {
 import { useToast } from '../Common/Toast.jsx';
 import { VaultGridView } from './VaultGridView.jsx';
 import { VaultTableView } from './VaultTableView.jsx';
+import { CATEGORY_OPTIONS } from './CategoryBadge.jsx';
 import { itemFields, buildMetadata } from '../../lib/item-fields.js';
 
-function LayoutGridIcon({ className = 'w-4 h-4' }) {
+function LayoutGridIcon({ className = 'size-4' }) {
   return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
       <path strokeLinecap="round" strokeLinejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
     </svg>
   );
 }
 
-function ListIcon({ className = 'w-4 h-4' }) {
+function ListIcon({ className = 'size-4' }) {
   return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
       <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
     </svg>
+  );
+}
+
+function FolderIcon({ className = 'size-3.5' }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+    </svg>
+  );
+}
+
+const VIEW_OPTIONS = [
+  { value: 'grid', label: 'การ์ด', Icon: LayoutGridIcon },
+  { value: 'table', label: 'ตาราง', Icon: ListIcon },
+];
+
+const CATEGORY_FILTERS = [{ value: 'ALL', label: 'ทั้งหมด' }, ...CATEGORY_OPTIONS];
+
+/** Pill toggle used by every filter in the toolbar. */
+function FilterPill({ pressed, onClick, children }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={pressed}
+      onClick={onClick}
+      className={`inline-flex h-8 max-w-[14rem] items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-xs font-ui transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5 [&_svg]:shrink-0 ${
+        pressed
+          ? 'border-input bg-accent text-foreground'
+          : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -161,7 +194,7 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
         })
       );
       if (failedCollections.length && !isStale()) {
-        addToast(`โหลดรายการจากคอลเลกชันไม่สำเร็จ: ${failedCollections.join(', ')}`, 'error', 6000);
+        addToast(`โหลดรายการจากคอลเลกชันไม่สำเร็จ: ${failedCollections.join(', ')} ลองโหลดใหม่อีกครั้ง`, 'error', 6000);
       }
 
       // 4. Decrypt personal items with MEK or collection key
@@ -220,7 +253,7 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
 
       if (!isStale()) setItems(allCombined);
     } catch (err) {
-      if (!isStale()) setError(err.message || 'ไม่สามารถโหลดรายการรหัสผ่านได้');
+      if (!isStale()) setError(err.message || 'โหลดรายการไม่สำเร็จ ลองอีกครั้ง');
     } finally {
       if (!isStale()) setLoading(false);
     }
@@ -232,15 +265,18 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
 
   const handleUnlock = async (e) => {
     e.preventDefault();
-    if (!unlockPassword) return;
+    if (!unlockPassword) {
+      setUnlockError('กรุณากรอกรหัสผ่านหลัก');
+      return;
+    }
     setUnlockLoading(true);
     setUnlockError(null);
     try {
       await unlockVault(unlockPassword);
       setUnlockPassword('');
-      addToast('ปลดล็อกคลังรหัสผ่านสำเร็จ!', 'success');
+      addToast('ปลดล็อกคลังรหัสผ่านแล้ว', 'success');
     } catch (err) {
-      setUnlockError(err.message || 'รหัสผ่านหลักไม่ถูกต้อง');
+      setUnlockError(err.message || 'รหัสผ่านหลักไม่ถูกต้อง ลองอีกครั้ง');
     } finally {
       setUnlockLoading(false);
     }
@@ -262,7 +298,7 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
       copyPasswordWithAutoClear(password, 30, itemTitle);
     } else {
       navigator.clipboard.writeText(password);
-      addToast('คัดลอกรหัสผ่านแล้ว!', 'success');
+      addToast('คัดลอกรหัสผ่านแล้ว', 'success');
     }
     const resolvedId = typeof itemId === 'object' && itemId !== null
       ? (itemId.item_id || itemId.id)
@@ -277,7 +313,7 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
   const handleCopyUsername = (username) => {
     if (!username) return;
     navigator.clipboard.writeText(username);
-    addToast('คัดลอกชื่อผู้ใช้แล้ว (Username copied to clipboard)', 'info');
+    addToast('คัดลอกชื่อผู้ใช้แล้ว', 'success');
   };
 
   // Interactive favorite star button toggling with optimistic update & API sync
@@ -330,8 +366,8 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
       );
 
       addToast(
-        updatedFav ? 'เพิ่มในรายการโปรดแล้ว (Added to favorites)' : 'นำออกจากรายการโปรดแล้ว (Removed from favorites)',
-        'info'
+        updatedFav ? 'เพิ่มในรายการโปรดแล้ว' : 'นำออกจากรายการโปรดแล้ว',
+        'success'
       );
     } catch (err) {
       // Revert state if failed
@@ -346,7 +382,7 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
           return it;
         })
       );
-      addToast(err.message || 'ไม่สามารถอัปเดตรายการโปรดได้', 'error');
+      addToast(err.message || 'อัปเดตรายการโปรดไม่สำเร็จ ลองอีกครั้ง', 'error');
     }
   };
 
@@ -355,12 +391,12 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
     try {
       const itemId = itemToDelete.item_id || itemToDelete.id;
       await api.vault.deleteItem(itemId, itemToDelete.vault_id);
-      addToast('ลบรายการรหัสผ่านสำเร็จ (Deleted)', 'success');
+      addToast('ลบรายการแล้ว', 'success');
       setActiveModal(null);
       setSelectedItem(null);
       loadItems();
     } catch (err) {
-      addToast(err.message || 'ไม่สามารถลบรายการได้', 'error');
+      addToast(err.message || 'ลบรายการไม่สำเร็จ ลองอีกครั้ง', 'error');
     } finally {
       setActionLoading(false);
     }
@@ -419,362 +455,315 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
     });
   }, [items, searchQuery, selectedCategory, filterFavorites, selectedCollectionFilter]);
 
+  const hasFilters =
+    Boolean(searchQuery.trim()) || selectedCategory !== 'ALL' || filterFavorites || selectedCollectionFilter !== 'ALL';
+
+  const clearFilters = () => {
+    setSearchQuery('');
+    setSelectedCategory('ALL');
+    setFilterFavorites(false);
+    setSelectedCollectionFilter('ALL');
+  };
+
+  const openAdd = () => {
+    setSelectedItem(null);
+    setActiveModal('add');
+  };
+
+  const closeModal = () => {
+    setActiveModal(null);
+    setSelectedItem(null);
+  };
+
+  // Radiogroup keyboard support: arrow keys move the selection between the two views.
+  const handleViewKeyDown = (e) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+    e.preventDefault();
+    const next = viewMode === 'grid' ? 'table' : 'grid';
+    handleViewChange(next);
+    e.currentTarget.parentElement?.querySelector(`[data-view="${next}"]`)?.focus();
+  };
+
   // If vault is locked in current session
   if (!isVaultUnlocked) {
     return (
-      <div className="max-w-md mx-auto my-12 p-8 bg-card text-card-foreground border border-border rounded-2xl shadow-2xl text-center">
-        <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto mb-4">
-          <LockIcon className="w-8 h-8" />
+      <Card className="mx-auto mt-6 max-w-md p-6 sm:mt-12 sm:p-8">
+        <div className="mb-5 flex size-10 items-center justify-center rounded-lg border border-border bg-secondary text-muted-foreground" aria-hidden="true">
+          <LockIcon className="size-5" />
         </div>
-        <h2 className="text-xl font-bold text-foreground mb-2">คลังรหัสผ่านถูกล็อกอยู่ (Vault Locked)</h2>
-        <p className="text-sm text-muted-foreground mb-6">
-          กรุณากรอกรหัสผ่านหลักของคุณเพื่อคำนวณคีย์ถอดรหัส (MEK) ในหน่วยความจำชั่วคราว
+        <h1 className="text-2xl tracking-tight">คลังรหัสผ่านถูกล็อก</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          กรอกรหัสผ่านหลักเพื่อเปิดคลัง คีย์สำหรับถอดรหัสจะอยู่เฉพาะในแท็บเบราว์เซอร์นี้เท่านั้น
+          และจะหายไปเมื่อปิดแท็บหรือออกจากระบบ
         </p>
 
-        {unlockError && (
-          <div className="mb-4 p-3 bg-destructive/10 border border-destructive/30 rounded-xl text-destructive text-xs">
-            {unlockError}
-          </div>
-        )}
-
-        <form onSubmit={handleUnlock} className="space-y-4">
-          <Input
-            type="password"
-            value={unlockPassword}
-            onChange={(e) => setUnlockPassword(e.target.value)}
-            placeholder="รหัสผ่านหลัก (Master Password)"
-            autoFocus
-            required
-          />
-          <Button
-            type="submit"
-            disabled={unlockLoading || !unlockPassword}
-            className="w-full flex items-center justify-center space-x-2"
-          >
-            <UnlockIcon className="w-4 h-4" />
-            <span>{unlockLoading ? 'กำลังปลดล็อก...' : 'ปลดล็อกคลังรหัสผ่าน'}</span>
+        <form onSubmit={handleUnlock} noValidate className="mt-6 grid gap-4">
+          <Field label="รหัสผ่านหลัก" required error={unlockError}>
+            {(props) => (
+              <Input
+                {...props}
+                type="password"
+                autoComplete="current-password"
+                value={unlockPassword}
+                onChange={(e) => {
+                  setUnlockPassword(e.target.value);
+                  if (unlockError) setUnlockError(null);
+                }}
+                autoFocus
+              />
+            )}
+          </Field>
+          <Button type="submit" loading={unlockLoading} className="w-full">
+            {!unlockLoading && <UnlockIcon />}
+            {unlockLoading ? 'กำลังปลดล็อก…' : 'ปลดล็อก'}
           </Button>
         </form>
-      </div>
+      </Card>
     );
   }
 
+  // Add / edit form replaces the list (UC-4 / UC-5)
+  if (activeModal === 'add' || activeModal === 'edit') {
+    return <ItemModal isOpen={true} item={selectedItem} onClose={closeModal} onSuccess={loadItems} />;
+  }
+
+  const viewProps = {
+    items: filteredItems,
+    revealedIds,
+    copiedId,
+    onToggleReveal: toggleReveal,
+    onCopyPassword: handleCopyPassword,
+    onCopyUsername: handleCopyUsername,
+    onToggleFavorite: handleToggleFavorite,
+    onEdit: (it) => {
+      setSelectedItem(it);
+      setActiveModal('edit');
+    },
+    onShare: (it) => {
+      setSelectedItem(it);
+      setActiveModal('share');
+    },
+    onHistory: (it) => {
+      setSelectedItem(it);
+      setActiveModal('history');
+    },
+    onDelete: (it) => {
+      setSelectedItem(it);
+      setActiveModal('delete');
+    },
+    collections,
+  };
+
   return (
     <div className="space-y-6">
-      {/* Top Action Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-border">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center space-x-2.5">
-            <KeyIcon className="w-7 h-7 text-emerald-400" />
-            <span>คลังรหัสผ่านของฉัน (My Vault)</span>
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            ข้อมูลทั้งหมดเข้ารหัสลับด้วย AES-256-GCM (Zero-Knowledge) ฝั่งไคลเอนต์
+          <h1 className="text-2xl tracking-tight">คลังรหัสผ่าน</h1>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            ทุกรายการถูกเข้ารหัสบนเครื่องของคุณก่อนบันทึก เซิร์ฟเวอร์อ่านรหัสผ่านของคุณไม่ได้
           </p>
         </div>
+        <Button onClick={openAdd} className="w-full sm:w-auto">
+          <PlusIcon />
+          เพิ่มรายการ
+        </Button>
+      </header>
 
-        <div className="flex items-center space-x-3">
-          {/* View Toggle: Card Grid vs Table */}
-          <div className="flex items-center rounded-lg border border-border bg-muted/40 p-0.5">
-            <button
-              type="button"
-              onClick={() => handleViewChange('grid')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
-                viewMode === 'grid'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-              title="มุมมองแบบการ์ด (Card Grid View)"
-              aria-label="มุมมองแบบการ์ด"
-            >
-              <LayoutGridIcon className="w-4 h-4" />
-              <span className="hidden sm:inline">Grid</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleViewChange('table')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
-                viewMode === 'table'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-              title="มุมมองแบบตาราง (Accessible Table View)"
-              aria-label="มุมมองแบบตาราง"
-            >
-              <ListIcon className="w-4 h-4" />
-              <span className="hidden sm:inline">Table</span>
-            </button>
+      {/* Toolbar */}
+      <div className="grid gap-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="relative w-full sm:max-w-sm">
+            <label htmlFor="vault-search" className="sr-only">
+              ค้นหารายการ
+            </label>
+            <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              id="vault-search"
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="ค้นหาจากชื่อ ชื่อผู้ใช้ เว็บไซต์ แท็ก หรือบันทึก"
+              className="pl-9"
+            />
           </div>
-
-          {/* Refresh Button */}
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            onClick={loadItems}
-            disabled={loading}
-            title="รีเฟรชข้อมูล"
-          >
-            <RefreshIcon className={`w-4 h-4 ${loading ? 'animate-spin text-emerald-400' : ''}`} />
-          </Button>
-
-          {/* Add Item Button */}
-          <Button
-            type="button"
-            onClick={() => {
-              setSelectedItem(null);
-              setActiveModal('add');
-            }}
-            className="flex items-center space-x-2 shadow-sm"
-          >
-            <PlusIcon className="w-4 h-4" />
-            <span>เพิ่มรหัสผ่าน (Add Item)</span>
-          </Button>
-        </div>
-      </div>
-
-      {error && (
-        <div className="p-4 bg-destructive/10 border border-destructive/30 rounded-xl text-destructive text-sm">
-          {error}
-        </div>
-      )}
-
-      {/* Filter and Search Bar */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
-        {/* Search */}
-        <div className="md:col-span-5 relative">
-          <SearchIcon className="w-4 h-4 text-muted-foreground absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <Input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="ค้นหาชื่อรายการ, บัญชี, เว็บไซต์, หรือแท็ก..."
-            className="pl-10"
-          />
+          <div className="flex items-center gap-2 sm:ml-auto">
+            <div role="radiogroup" aria-label="รูปแบบการแสดงผล" className="inline-flex rounded-md border border-border p-0.5">
+              {VIEW_OPTIONS.map(({ value, label, Icon }) => {
+                const checked = viewMode === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    data-view={value}
+                    aria-checked={checked}
+                    tabIndex={checked ? 0 : -1}
+                    onClick={() => handleViewChange(value)}
+                    onKeyDown={handleViewKeyDown}
+                    className={`inline-flex h-8 items-center gap-1.5 rounded px-3 text-sm font-ui transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      checked ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    <Icon />
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <Button variant="outline" size="icon" onClick={loadItems} disabled={loading} aria-label="โหลดรายการใหม่">
+              <RefreshIcon className={loading ? 'animate-spin' : ''} />
+            </Button>
+          </div>
         </div>
 
-        {/* Category Filter Tabs */}
-        <div className="md:col-span-5 flex items-center overflow-x-auto space-x-1.5 py-1 text-xs">
-          {[
-            { id: 'ALL', label: 'ทั้งหมด' },
-            { id: 'LOGIN', label: 'Logins' },
-            { id: 'SECURE_NOTE', label: 'Notes' },
-            { id: 'CARD', label: 'Cards' },
-            { id: 'IDENTITY', label: 'Identities' },
-            { id: 'SERVER', label: 'Servers' },
-          ].map((cat) => (
-            <button
-              key={cat.id}
-              type="button"
-              onClick={() => setSelectedCategory(cat.id)}
-              className={`px-3 py-1.5 rounded-lg font-medium whitespace-nowrap transition-colors ${
-                selectedCategory === cat.id
-                  ? 'bg-primary text-primary-foreground shadow-sm'
-                  : 'bg-muted/50 text-muted-foreground hover:text-foreground hover:bg-muted border border-border'
-              }`}
-            >
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="กรองตามหมวดหมู่">
+          {CATEGORY_FILTERS.map((cat) => (
+            <FilterPill key={cat.value} pressed={selectedCategory === cat.value} onClick={() => setSelectedCategory(cat.value)}>
               {cat.label}
-            </button>
+            </FilterPill>
           ))}
+          <span className="mx-1 hidden h-5 w-px bg-border sm:block" aria-hidden="true" />
+          <FilterPill pressed={filterFavorites} onClick={() => setFilterFavorites(!filterFavorites)}>
+            <StarIcon filled={filterFavorites} />
+            รายการโปรด
+          </FilterPill>
         </div>
 
-        {/* Favorite Toggle */}
-        <div className="md:col-span-2 flex justify-end">
-          <Button
-            type="button"
-            variant={filterFavorites ? 'secondary' : 'outline'}
-            size="sm"
-            onClick={() => setFilterFavorites(!filterFavorites)}
-            className={`flex items-center space-x-1.5 ${
-              filterFavorites ? 'border-amber-500/50 text-amber-400 bg-amber-500/10' : ''
-            }`}
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="vault-collection-filter-label">
+          <span id="vault-collection-filter-label" className="text-caption text-muted-foreground">
+            คอลเลกชัน
+          </span>
+          <FilterPill pressed={selectedCollectionFilter === 'ALL'} onClick={() => setSelectedCollectionFilter('ALL')}>
+            ทั้งหมด
+          </FilterPill>
+          <FilterPill pressed={selectedCollectionFilter === 'PERSONAL'} onClick={() => setSelectedCollectionFilter('PERSONAL')}>
+            <LockIcon />
+            คลังส่วนตัว
+          </FilterPill>
+          {collections.map((col) => {
+            const cid = col.collection_id || col.id;
+            return (
+              <FilterPill key={cid} pressed={selectedCollectionFilter === cid} onClick={() => setSelectedCollectionFilter(cid)}>
+                <FolderIcon />
+                <span className="truncate">{col.name}</span>
+              </FilterPill>
+            );
+          })}
+        </div>
+      </div>
+
+      <section aria-live="polite" aria-busy={loading} aria-label="รายการในคลัง">
+        {error && (
+          <Alert
+            variant="error"
+            title="โหลดรายการไม่สำเร็จ"
+            className="mb-4"
+            action={
+              <Button variant="outline" size="sm" onClick={loadItems} disabled={loading}>
+                ลองอีกครั้ง
+              </Button>
+            }
           >
-            <StarIcon className="w-4 h-4" filled={filterFavorites} />
-            <span>รายการโปรด</span>
-          </Button>
-        </div>
-      </div>
+            {error}
+          </Alert>
+        )}
 
-      {/* Collection Filter Row */}
-      <div className="flex items-center space-x-2 overflow-x-auto py-1 text-xs">
-        <span className="text-muted-foreground font-semibold whitespace-nowrap">📁 คอลเลกชัน:</span>
-        <button
-          type="button"
-          onClick={() => setSelectedCollectionFilter('ALL')}
-          className={`px-3 py-1.5 rounded-lg font-medium whitespace-nowrap transition-colors ${
-            selectedCollectionFilter === 'ALL'
-              ? 'bg-indigo-600 text-white shadow-sm'
-              : 'bg-muted/50 text-muted-foreground hover:text-foreground hover:bg-muted border border-border'
-          }`}
-        >
-          ทั้งหมด (All)
-        </button>
-        <button
-          type="button"
-          onClick={() => setSelectedCollectionFilter('PERSONAL')}
-          className={`px-3 py-1.5 rounded-lg font-medium whitespace-nowrap transition-colors ${
-            selectedCollectionFilter === 'PERSONAL'
-              ? 'bg-indigo-600 text-white shadow-sm'
-              : 'bg-muted/50 text-muted-foreground hover:text-foreground hover:bg-muted border border-border'
-          }`}
-        >
-          🔒 คลังส่วนตัว (Personal)
-        </button>
-        {collections.map((col) => {
-          const cid = col.collection_id || col.id;
-          return (
-            <button
-              key={cid}
-              type="button"
-              onClick={() => setSelectedCollectionFilter(cid)}
-              className={`px-3 py-1.5 rounded-lg font-medium whitespace-nowrap transition-colors ${
-                selectedCollectionFilter === cid
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'bg-muted/50 text-muted-foreground hover:text-foreground hover:bg-muted border border-border'
-              }`}
-            >
-              📁 {col.name}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Items Display: Grid View vs Table View */}
-      {loading ? (
-        <div className="py-20 text-center text-muted-foreground">
-          <div className="inline-block w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mb-3" />
-          <p className="text-sm">กำลังถอดรหัสข้อมูลคลังรหัสผ่านของคุณ...</p>
-        </div>
-      ) : filteredItems.length === 0 ? (
-        <div className="py-16 text-center bg-card text-card-foreground border border-border rounded-2xl p-8 shadow-sm">
-          <div className="w-16 h-16 rounded-2xl bg-primary/10 border border-primary/20 text-primary flex items-center justify-center mx-auto mb-4">
-            <KeyIcon className="w-8 h-8" />
+        {loading ? (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <Card key={i} className="space-y-3 p-4">
+                <div className="flex items-center gap-3">
+                  <Skeleton className="size-9 shrink-0" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-4 w-2/3" />
+                    <Skeleton className="h-3 w-1/2" />
+                  </div>
+                </div>
+                <Skeleton className="h-16 w-full" />
+                <Skeleton className="h-5 w-1/3" />
+              </Card>
+            ))}
+            <span className="sr-only">กำลังโหลดและถอดรหัสรายการ</span>
           </div>
-          <h3 className="text-lg font-semibold text-foreground">ไม่พบรายการรหัสผ่าน</h3>
-          <p className="text-sm text-muted-foreground mt-1 max-w-md mx-auto mb-5">
-            {searchQuery || selectedCategory !== 'ALL' || filterFavorites
-              ? 'ไม่พบข้อมูลที่ตรงกับเงื่อนไขการค้นหาของคุณ ลองเปลี่ยนตัวกรอง'
-              : 'เริ่มต้นบันทึกรหัสผ่านแรกของคุณไว้ในคลังข้อมูลที่ปลอดภัย'}
-          </p>
-          <Button
-            type="button"
-            onClick={() => {
-              setSelectedItem(null);
-              setActiveModal('add');
-            }}
-            className="inline-flex items-center space-x-2"
-          >
-            <PlusIcon className="w-4 h-4" />
-            <span>เพิ่มรหัสผ่านใหม่ (Add Password)</span>
-          </Button>
-        </div>
-      ) : viewMode === 'table' ? (
-        <VaultTableView
-          items={filteredItems}
-          revealedIds={revealedIds}
-          copiedId={copiedId}
-          onToggleReveal={toggleReveal}
-          onCopyPassword={handleCopyPassword}
-          onCopyUsername={handleCopyUsername}
-          onToggleFavorite={handleToggleFavorite}
-          onEdit={(it) => {
-            setSelectedItem(it);
-            setActiveModal('edit');
-          }}
-          onShare={(it) => {
-            setSelectedItem(it);
-            setActiveModal('share');
-          }}
-          onHistory={(it) => {
-            setSelectedItem(it);
-            setActiveModal('history');
-          }}
-          onDelete={(it) => {
-            setSelectedItem(it);
-            setActiveModal('delete');
-          }}
-          collections={collections}
-        />
-      ) : (
-        <VaultGridView
-          items={filteredItems}
-          revealedIds={revealedIds}
-          copiedId={copiedId}
-          onToggleReveal={toggleReveal}
-          onCopyPassword={handleCopyPassword}
-          onCopyUsername={handleCopyUsername}
-          onToggleFavorite={handleToggleFavorite}
-          onEdit={(it) => {
-            setSelectedItem(it);
-            setActiveModal('edit');
-          }}
-          onShare={(it) => {
-            setSelectedItem(it);
-            setActiveModal('share');
-          }}
-          onHistory={(it) => {
-            setSelectedItem(it);
-            setActiveModal('history');
-          }}
-          onDelete={(it) => {
-            setSelectedItem(it);
-            setActiveModal('delete');
-          }}
-          collections={collections}
-        />
-      )}
+        ) : error && items.length === 0 ? null : items.length === 0 ? (
+          <EmptyState
+            icon={<KeyIcon className="size-5" />}
+            title="ยังไม่มีรายการในคลัง"
+            description="เก็บรหัสผ่าน บัตร หรือบันทึกสำคัญไว้ที่นี่ ทุกอย่างถูกเข้ารหัสบนเครื่องของคุณก่อนบันทึก"
+            action={
+              <Button onClick={openAdd}>
+                <PlusIcon />
+                เพิ่มรายการแรก
+              </Button>
+            }
+          />
+        ) : filteredItems.length === 0 ? (
+          <EmptyState
+            icon={<SearchIcon className="size-5" />}
+            title="ไม่พบรายการที่ตรงกับตัวกรอง"
+            description={
+              searchQuery.trim()
+                ? `ไม่มีรายการที่ตรงกับ “${searchQuery.trim()}” ในตัวกรองที่เลือก`
+                : 'ลองเปลี่ยนหมวดหมู่ คอลเลกชัน หรือปิดตัวกรองรายการโปรด'
+            }
+            action={
+              hasFilters && (
+                <Button variant="outline" onClick={clearFilters}>
+                  ล้างตัวกรอง
+                </Button>
+              )
+            }
+          />
+        ) : (
+          <>
+            <div className="mb-3 flex min-h-8 items-center justify-between gap-3">
+              <p className="text-caption text-muted-foreground">
+                {hasFilters
+                  ? `แสดง ${filteredItems.length.toLocaleString('th-TH')} จาก ${items.length.toLocaleString('th-TH')} รายการ`
+                  : `${items.length.toLocaleString('th-TH')} รายการ`}
+              </p>
+              {hasFilters && (
+                <Button variant="ghost" size="sm" className="h-8" onClick={clearFilters}>
+                  ล้างตัวกรอง
+                </Button>
+              )}
+            </div>
+            {viewMode === 'table' ? (
+              <>
+                {/* Narrow screens get cards; the table needs room for its columns. */}
+                <div className="lg:hidden">
+                  <VaultGridView {...viewProps} />
+                </div>
+                <div className="hidden lg:block">
+                  <VaultTableView {...viewProps} />
+                </div>
+              </>
+            ) : (
+              <VaultGridView {...viewProps} />
+            )}
+          </>
+        )}
+      </section>
 
-      {/* Add / Edit Modal (UC-4 / UC-5) */}
-      {(activeModal === 'add' || activeModal === 'edit') && (
-        <ItemModal
-          isOpen={true}
-          item={selectedItem}
-          onClose={() => {
-            setActiveModal(null);
-            setSelectedItem(null);
-          }}
-          onSuccess={loadItems}
-        />
-      )}
-
-      {/* Delete Confirmation Modal (UC-6) */}
+      {/* Delete Confirmation (UC-6) */}
       {activeModal === 'delete' && selectedItem && (
         <DeleteConfirmModal
           isOpen={true}
           item={selectedItem}
           loading={actionLoading}
-          onClose={() => {
-            setActiveModal(null);
-            setSelectedItem(null);
-          }}
+          onClose={closeModal}
           onConfirm={handleDeleteItem}
         />
       )}
 
-      {/* Share Modal (UC-10) */}
+      {/* Share (UC-10) */}
       {activeModal === 'share' && selectedItem && (
-        <ShareModal
-          isOpen={true}
-          item={selectedItem}
-          onClose={() => {
-            setActiveModal(null);
-            setSelectedItem(null);
-          }}
-          onSuccess={loadItems}
-        />
+        <ShareModal isOpen={true} item={selectedItem} onClose={closeModal} onSuccess={loadItems} />
       )}
 
-      {/* History Drawer (UC-11) */}
+      {/* History (UC-11) */}
       {activeModal === 'history' && selectedItem && (
-        <HistoryDrawer
-          isOpen={true}
-          item={selectedItem}
-          onClose={() => {
-            setActiveModal(null);
-            setSelectedItem(null);
-          }}
-          onRestoreSuccess={loadItems}
-        />
+        <HistoryDrawer isOpen={true} item={selectedItem} onClose={closeModal} onRestoreSuccess={loadItems} />
       )}
     </div>
   );

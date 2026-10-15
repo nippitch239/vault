@@ -4,7 +4,6 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
 } from '../ui/DropdownMenu.jsx';
 import { Button } from '../ui/Button.jsx';
@@ -19,19 +18,39 @@ import {
 } from '../Common/Icons.jsx';
 import { itemFields } from '../../lib/item-fields.js';
 
-function MoreVerticalIcon({ className = 'w-4 h-4' }) {
+function MoreIcon({ className = 'size-4' }) {
   return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h.01M12 12h.01M19 12h.01M6 12a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0z" />
     </svg>
   );
 }
 
-function UserIcon({ className = 'w-4 h-4' }) {
+function UserIcon({ className = 'size-4' }) {
   return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
       <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
     </svg>
+  );
+}
+
+/** Menu item that is reachable with Tab and activates with Enter / Space. */
+function MenuItem({ children, disabled, ...props }) {
+  return (
+    <DropdownMenuItem
+      tabIndex={disabled ? -1 : 0}
+      disabled={disabled}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.currentTarget.click();
+        }
+      }}
+      className="focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4 [&_svg]:shrink-0"
+      {...props}
+    >
+      {children}
+    </DropdownMenuItem>
   );
 }
 
@@ -48,122 +67,107 @@ export function ItemActionDropdown({
 }) {
   const dec = item._decrypted || {};
   const itemId = item.item_id || item.id;
-  const { username, title } = itemFields(item);
+  const { username, title, locked } = itemFields(item);
   const password = dec.password || '';
+  const displayTitle = locked ? 'รายการที่ถอดรหัสไม่ได้' : title;
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          size="sm"
-          className="h-8 w-8 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent/60"
-          title="การดำเนินการเพิ่มเติม (Item Actions)"
+          size="icon-sm"
+          className="text-muted-foreground hover:text-foreground"
+          aria-label={`ตัวเลือกเพิ่มเติมของ ${displayTitle}`}
         >
-          <MoreVerticalIcon className="w-4 h-4" />
-          <span className="sr-only">ตัวเลือก</span>
+          <MoreIcon />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-52">
-        <DropdownMenuLabel className="truncate max-w-[200px]">
-          {title}
-        </DropdownMenuLabel>
-        <DropdownMenuSeparator />
+      <DropdownMenuContent align="end" className="w-56" aria-label={`ตัวเลือกของ ${displayTitle}`}>
+        <p className="truncate px-2 py-1.5 text-caption text-muted-foreground">{displayTitle}</p>
+        <DropdownMenuSeparator className="bg-border" />
 
-        {/* Copy Username */}
         {username ? (
-          <DropdownMenuItem
+          <MenuItem
             onClick={(e) => {
               e.stopPropagation();
               onCopyUsername(username);
             }}
           >
-            <UserIcon className="w-4 h-4 mr-2 text-sky-400 shrink-0" />
+            <UserIcon className="text-muted-foreground" />
             <span>คัดลอกชื่อผู้ใช้</span>
-          </DropdownMenuItem>
+          </MenuItem>
         ) : null}
 
-        {/* Copy Password */}
         {password ? (
-          <DropdownMenuItem
+          <MenuItem
             onClick={(e) => {
               e.stopPropagation();
               onCopyPassword(password, title);
             }}
           >
-            <KeyIcon className="w-4 h-4 mr-2 text-emerald-400 shrink-0" />
-            <span>คัดลอกรหัสผ่าน (30s)</span>
-          </DropdownMenuItem>
+            <KeyIcon className="text-muted-foreground" />
+            <span>คัดลอกรหัสผ่าน</span>
+            <span className="ml-auto text-xs text-muted-foreground">ล้างใน 30 วิ</span>
+          </MenuItem>
         ) : null}
 
-        {/* Reveal / Mask Password */}
-        <DropdownMenuItem
+        <MenuItem
+          disabled={!password}
           onClick={(e) => {
             e.stopPropagation();
             onToggleReveal(itemId);
           }}
         >
-          {isRevealed ? (
-            <>
-              <EyeOffIcon className="w-4 h-4 mr-2 text-muted-foreground shrink-0" />
-              <span>ซ่อนรหัสผ่าน</span>
-            </>
-          ) : (
-            <>
-              <EyeIcon className="w-4 h-4 mr-2 text-muted-foreground shrink-0" />
-              <span>แสดงรหัสผ่าน</span>
-            </>
-          )}
-        </DropdownMenuItem>
+          {isRevealed ? <EyeOffIcon className="text-muted-foreground" /> : <EyeIcon className="text-muted-foreground" />}
+          <span>{isRevealed ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}</span>
+        </MenuItem>
 
-        <DropdownMenuSeparator />
+        <DropdownMenuSeparator className="bg-border" />
 
-        {/* Edit */}
-        <DropdownMenuItem
+        <MenuItem
+          disabled={locked}
           onClick={(e) => {
             e.stopPropagation();
             onEdit(item);
           }}
         >
-          <EditIcon className="w-4 h-4 mr-2 text-primary shrink-0" />
-          <span>แก้ไขข้อมูล (Edit)</span>
-        </DropdownMenuItem>
+          <EditIcon className="text-muted-foreground" />
+          <span>แก้ไข</span>
+        </MenuItem>
 
-        {/* Share */}
-        <DropdownMenuItem
+        <MenuItem
           onClick={(e) => {
             e.stopPropagation();
             onShare(item);
           }}
         >
-          <ShareIcon className="w-4 h-4 mr-2 text-blue-400 shrink-0" />
-          <span>แชร์รหัสผ่าน (Share)</span>
-        </DropdownMenuItem>
+          <ShareIcon className="text-muted-foreground" />
+          <span>แชร์</span>
+        </MenuItem>
 
-        {/* History */}
-        <DropdownMenuItem
+        <MenuItem
           onClick={(e) => {
             e.stopPropagation();
             onHistory(item);
           }}
         >
-          <HistoryIcon className="w-4 h-4 mr-2 text-amber-400 shrink-0" />
-          <span>ประวัติเวอร์ชัน (History)</span>
-        </DropdownMenuItem>
+          <HistoryIcon className="text-muted-foreground" />
+          <span>ประวัติเวอร์ชัน</span>
+        </MenuItem>
 
-        <DropdownMenuSeparator />
+        <DropdownMenuSeparator className="bg-border" />
 
-        {/* Delete */}
-        <DropdownMenuItem
+        <MenuItem
           destructive
           onClick={(e) => {
             e.stopPropagation();
             onDelete(item);
           }}
         >
-          <TrashIcon className="w-4 h-4 mr-2 text-destructive shrink-0" />
-          <span>ลบรายการ (Delete)</span>
-        </DropdownMenuItem>
+          <TrashIcon />
+          <span>ลบรายการ</span>
+        </MenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
