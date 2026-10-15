@@ -1,7 +1,89 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import { CheckIcon, CloseIcon, ShieldIcon } from './Icons.jsx';
 
 const ToastContext = createContext(null);
+
+function cn(...inputs) {
+  return inputs.flat().filter(Boolean).join(' ');
+}
+
+function ToastSvg({ children, className = 'size-4' }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {children}
+    </svg>
+  );
+}
+
+const ICONS = {
+  success: (
+    <ToastSvg>
+      <path d="M20 6 9 17l-5-5" />
+    </ToastSvg>
+  ),
+  error: (
+    <ToastSvg>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M15 9l-6 6M9 9l6 6" />
+    </ToastSvg>
+  ),
+  warning: (
+    <ToastSvg>
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+      <path d="M12 9v4M12 17h.01" />
+    </ToastSvg>
+  ),
+  info: (
+    <ToastSvg>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 16v-4M12 8h.01" />
+    </ToastSvg>
+  ),
+  shield: (
+    <ToastSvg>
+      <path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6L12 3z" />
+      <path d="m9 12 2 2 4-4" />
+    </ToastSvg>
+  ),
+  close: (
+    <ToastSvg>
+      <path d="M18 6 6 18M6 6l12 12" />
+    </ToastSvg>
+  ),
+};
+
+// Status token pairs per variant; the icon + screen-reader prefix make sure colour is never the only signal.
+const VARIANTS = {
+  success: { chip: 'bg-success text-success-foreground', srLabel: 'สำเร็จ:' },
+  error: { chip: 'bg-error text-error-foreground', srLabel: 'ข้อผิดพลาด:' },
+  warning: { chip: 'bg-warning text-warning-foreground', srLabel: 'คำเตือน:' },
+  info: { chip: 'bg-info text-info-foreground', srLabel: 'แจ้งให้ทราบ:' },
+};
+
+const TOAST_SURFACE =
+  'pointer-events-auto w-full rounded-lg border border-border bg-popover text-popover-foreground shadow-dialog animate-content-show';
+
+function CloseToastButton({ onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label="ปิดการแจ้งเตือน"
+      className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-fast hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {ICONS.close}
+    </button>
+  );
+}
 
 function ClipboardToastItem({ toast, onRemove, onClearClipboard }) {
   const [remaining, setRemaining] = useState(toast.secondsRemaining || 30);
@@ -25,54 +107,63 @@ function ClipboardToastItem({ toast, onRemove, onClearClipboard }) {
   const percent = Math.max(0, Math.min(100, (remaining / total) * 100));
 
   return (
-    <div className="pointer-events-auto flex flex-col p-4 rounded-xl shadow-2xl border border-indigo-500/40 bg-card text-card-foreground backdrop-blur-md transition-all">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0 mt-0.5">
-            <ShieldIcon className="w-4 h-4" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-foreground">
-                {toast.message || 'คัดลอกรหัสผ่านแล้ว!'}
-              </span>
-              <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-indigo-500/10 text-indigo-400 border border-indigo-500/30">
-                {remaining}s
-              </span>
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              คลิปบอร์ดจะถูกล้างอัตโนมัติเพื่อความปลอดภัย
-            </p>
-          </div>
+    <div className={cn(TOAST_SURFACE, 'p-3')}>
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-info text-info-foreground">
+          {ICONS.shield}
+        </span>
+
+        {/* Announced once; the per-second countdown below is hidden from screen readers. */}
+        <div role="status" aria-atomic="true" className="min-w-0 flex-1">
+          <p className="text-sm font-ui text-foreground">{toast.message || 'คัดลอกรหัสผ่านแล้ว'}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            <span aria-hidden="true">ระบบจะล้างคลิปบอร์ดใน {remaining} วินาที</span>
+            <span className="sr-only">ระบบจะล้างคลิปบอร์ดอัตโนมัติใน {total} วินาที</span>
+          </p>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
             onClick={() => onClearClipboard(toast.id, toast.secret)}
-            className="px-2.5 py-1 text-xs font-medium rounded-md bg-secondary hover:bg-secondary/80 text-secondary-foreground border border-border transition-colors"
-            title="ล้างคลิปบอร์ดทันที"
+            className="inline-flex h-8 items-center rounded-md border border-border bg-secondary px-2.5 text-xs font-ui text-secondary-foreground transition-colors duration-fast hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             ล้างทันที
           </button>
-          <button
-            type="button"
-            onClick={() => onRemove(toast.id)}
-            className="p-1 text-muted-foreground hover:text-foreground transition-colors rounded-md"
-            title="ปิดการแจ้งเตือน"
-          >
-            <CloseIcon className="w-4 h-4" />
-          </button>
+          <CloseToastButton onClick={() => onRemove(toast.id)} />
         </div>
       </div>
 
-      {/* Progress countdown bar */}
-      <div className="mt-3 w-full bg-muted rounded-full h-1 overflow-hidden">
+      {/* Countdown bar */}
+      <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
         <div
-          className="h-full bg-indigo-500 transition-all duration-1000 ease-linear rounded-full"
+          className="h-full rounded-full bg-info-foreground transition-[width] duration-1000 ease-linear"
           style={{ width: `${percent}%` }}
         />
       </div>
+    </div>
+  );
+}
+
+function ToastItem({ toast, onRemove }) {
+  const variant = VARIANTS[toast.type] ? toast.type : 'info';
+  const { chip, srLabel } = VARIANTS[variant];
+  const isUrgent = variant === 'error';
+
+  return (
+    <div className={cn(TOAST_SURFACE, 'flex items-start gap-3 p-3')}>
+      <span className={cn('mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md', chip)}>
+        {ICONS[variant]}
+      </span>
+      <div
+        role={isUrgent ? 'alert' : 'status'}
+        aria-atomic="true"
+        className="min-w-0 flex-1 self-center text-sm text-foreground"
+      >
+        <span className="sr-only">{srLabel} </span>
+        {toast.message}
+      </div>
+      <CloseToastButton onClick={() => onRemove(toast.id)} />
     </div>
   );
 }
@@ -118,7 +209,7 @@ export function ToastProvider({ children }) {
 
     // Remove the countdown toast and display cleared confirmation
     setToasts((prev) => prev.filter((t) => t.id !== id));
-    addToast('ล้างคลิปบอร์ดเรียบร้อยแล้ว (Clipboard cleared for security)', 'info', 3000);
+    addToast('ล้างคลิปบอร์ดแล้ว', 'info', 3000);
   }, [addToast]);
 
   const copyPasswordWithAutoClear = useCallback(
@@ -134,7 +225,7 @@ export function ToastProvider({ children }) {
       }
 
       const id = 'clip_' + Date.now() + Math.random().toString(36).substring(2, 6);
-      const message = label ? `คัดลอกรหัสผ่านสำหรับ "${label}" แล้ว!` : 'คัดลอกรหัสผ่านแล้ว!';
+      const message = label ? `คัดลอกรหัสผ่านของ “${label}” แล้ว` : 'คัดลอกรหัสผ่านแล้ว';
 
       setToasts((prev) => [
         // Remove prior clipboard toasts if any
@@ -156,57 +247,23 @@ export function ToastProvider({ children }) {
     <ToastContext.Provider value={{ addToast, removeToast, copyPasswordWithAutoClear }}>
       {children}
       {/* Toast container must reside at z-[100] as specified in PROJECT.md interface contract */}
-      <div className="fixed bottom-5 right-4 sm:right-5 z-[100] flex flex-col space-y-2 max-w-[calc(100vw-2rem)] sm:max-w-md w-full pointer-events-none">
-        {toasts.map((toast) => {
-          if (toast.type === 'clipboard') {
-            return (
-              <ClipboardToastItem
-                key={toast.id}
-                toast={toast}
-                onRemove={removeToast}
-                onClearClipboard={clearClipboardContent}
-              />
-            );
-          }
-
-          const isSuccess = toast.type === 'success';
-          const isError = toast.type === 'error';
-          const isWarning = toast.type === 'warning';
-
-          return (
-            <div
+      <section
+        aria-label="การแจ้งเตือน"
+        className="pointer-events-none fixed inset-x-4 bottom-4 z-[100] flex flex-col gap-2 sm:inset-x-auto sm:bottom-5 sm:right-5 sm:w-full sm:max-w-sm"
+      >
+        {toasts.map((toast) =>
+          toast.type === 'clipboard' ? (
+            <ClipboardToastItem
               key={toast.id}
-              className={`pointer-events-auto flex items-center justify-between p-4 rounded-xl shadow-xl border text-sm font-medium transition-all backdrop-blur-md ${
-                isSuccess
-                  ? 'bg-card text-card-foreground border-emerald-500/50'
-                  : isError
-                  ? 'bg-card text-card-foreground border-destructive/50'
-                  : isWarning
-                  ? 'bg-card text-card-foreground border-amber-500/50'
-                  : 'bg-card text-card-foreground border-border'
-              }`}
-            >
-              <div className="flex items-center space-x-2.5">
-                {isSuccess && <CheckIcon className="w-5 h-5 text-emerald-400 shrink-0" />}
-                {isError && (
-                  <div className="w-2 h-2 rounded-full bg-destructive shrink-0" />
-                )}
-                {isWarning && (
-                  <div className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-                )}
-                <span className="text-foreground">{toast.message}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => removeToast(toast.id)}
-                className="ml-3 text-muted-foreground hover:text-foreground transition-colors p-1 rounded"
-              >
-                <CloseIcon className="w-4 h-4" />
-              </button>
-            </div>
-          );
-        })}
-      </div>
+              toast={toast}
+              onRemove={removeToast}
+              onClearClipboard={clearClipboardContent}
+            />
+          ) : (
+            <ToastItem key={toast.id} toast={toast} onRemove={removeToast} />
+          )
+        )}
+      </section>
     </ToastContext.Provider>
   );
 }

@@ -1,10 +1,49 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
-import { BellIcon, CloseIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
-import { Button } from '../ui/Button.jsx';
-import { Badge } from '../ui/Badge.jsx';
+import {
+  Button,
+  Badge,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  Alert,
+  Skeleton,
+  EmptyState,
+} from '../ui/index.js';
+
+function ShieldCheckIcon({ className = 'size-5' }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6L12 3z" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  );
+}
+
+const SEVERITY = {
+  CRITICAL: { label: 'วิกฤต', variant: 'destructive' },
+  HIGH: { label: 'สูง', variant: 'destructive' },
+  WARNING: { label: 'คำเตือน', variant: 'warning' },
+  MEDIUM: { label: 'ปานกลาง', variant: 'warning' },
+  INFO: { label: 'ข้อมูล', variant: 'info' },
+  LOW: { label: 'ต่ำ', variant: 'info' },
+};
+
+const STATUS_LABELS = {
+  ACTIVE: 'ยังไม่ได้จัดการ',
+  OPEN: 'ยังไม่ได้จัดการ',
+  RESOLVED: 'จัดการแล้ว',
+  ACKNOWLEDGED: 'รับทราบแล้ว',
+};
+
+const severityOf = (sev) => SEVERITY[(sev || 'INFO').toUpperCase()] || { label: sev, variant: 'info' };
+const formatDateTime = (value) =>
+  value ? new Date(value).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' }) : 'เมื่อสักครู่';
 
 export function SecurityNotificationModal({ isOpen, onClose }) {
   const { isAdmin } = useAuth();
@@ -22,7 +61,7 @@ export function SecurityNotificationModal({ isOpen, onClose }) {
       const res = await api.logs.getSecurityNotifications();
       setAlerts(res?.data || []);
     } catch (err) {
-      setError(err.message || 'ไม่สามารถโหลดการแจ้งเตือนความปลอดภัยได้');
+      setError(err.message || 'โหลดการแจ้งเตือนไม่สำเร็จ ลองอีกครั้ง');
     } finally {
       setLoading(false);
     }
@@ -34,8 +73,6 @@ export function SecurityNotificationModal({ isOpen, onClose }) {
     }
   }, [isOpen]);
 
-  if (!isOpen) return null;
-
   const handleSimulateAlert = async () => {
     setSimulating(true);
     try {
@@ -44,132 +81,137 @@ export function SecurityNotificationModal({ isOpen, onClose }) {
         severity: 'CRITICAL',
         description: 'Simulated brute-force anomaly detected via GuardDuty / CloudWatch Alarm',
       });
-      addToast('จำลองเหตุการณ์แจ้งเตือนความปลอดภัยสำเร็จ!', 'info');
+      addToast('จำลองเหตุการณ์ความปลอดภัยแล้ว', 'success');
       loadAlerts();
     } catch (err) {
-      addToast(err.message || 'ไม่สามารถจำลองเหตุการณ์ได้', 'error');
+      addToast(err.message || 'จำลองเหตุการณ์ไม่สำเร็จ ลองอีกครั้ง', 'error');
     } finally {
       setSimulating(false);
     }
   };
 
-  const getSeverityBadgeVariant = (sev) => {
-    const s = (sev || 'INFO').toUpperCase();
-    if (s === 'CRITICAL') return 'destructive';
-    if (s === 'WARNING') return 'warning';
-    return 'info';
+  const renderBody = () => {
+    if (loading) {
+      return (
+        <div aria-busy="true" className="space-y-2">
+          <span className="sr-only">กำลังโหลดการแจ้งเตือน</span>
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="space-y-2 rounded-lg border border-border p-4">
+              <div className="flex items-center justify-between">
+                <Skeleton className="h-5 w-16 rounded-full" />
+                <Skeleton className="h-4 w-28" />
+              </div>
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-4 w-full" />
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (error) {
+      return (
+        <Alert
+          variant="error"
+          title="โหลดการแจ้งเตือนไม่สำเร็จ"
+          action={
+            <Button variant="outline" size="sm" onClick={loadAlerts}>
+              ลองอีกครั้ง
+            </Button>
+          }
+        >
+          {error}
+        </Alert>
+      );
+    }
+
+    if (alerts.length === 0) {
+      return (
+        <EmptyState
+          className="py-10"
+          icon={<ShieldCheckIcon />}
+          title="ไม่มีการแจ้งเตือนความปลอดภัย"
+          description="ยังไม่พบกิจกรรมผิดปกติในบัญชีของคุณ ระบบจะแจ้งที่นี่ทันทีเมื่อพบสิ่งที่ควรตรวจสอบ"
+          action={
+            <Button variant="outline" size="sm" onClick={loadAlerts}>
+              ตรวจสอบอีกครั้ง
+            </Button>
+          }
+        />
+      );
+    }
+
+    return (
+      <ul className="space-y-2">
+        {alerts.map((al, idx) => {
+          const sev = severityOf(al.severity);
+          const status = (al.status || 'ACTIVE').toUpperCase();
+          return (
+            <li key={al.notification_id || idx} className="space-y-2 rounded-lg border border-border bg-card p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Badge variant={sev.variant}>
+                  <span className="sr-only">ระดับความรุนแรง: </span>
+                  {sev.label}
+                </Badge>
+                <time dateTime={al.timestamp || undefined} className="text-xs text-muted-foreground">
+                  {formatDateTime(al.timestamp)}
+                </time>
+              </div>
+
+              <p className="break-words text-sm font-ui text-foreground">
+                {al.title || al.type || 'พบกิจกรรมผิดปกติ'}
+              </p>
+
+              <p className="break-words text-sm text-muted-foreground">
+                {al.description || 'ตรวจพบการเข้าใช้งานที่ผิดปกติ'}
+              </p>
+
+              <div className="flex flex-col gap-1 border-t border-border pt-2 text-xs text-muted-foreground sm:flex-row sm:justify-between">
+                <span className="break-words">แหล่งที่มา: {al.source || 'ระบบตรวจจับอัตโนมัติ'}</span>
+                <span>สถานะ: {STATUS_LABELS[status] || al.status}</span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    );
   };
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6 bg-background/80 backdrop-blur-sm animate-content-show"
-    >
-      <div className="relative w-full max-w-lg max-h-[85vh] flex flex-col bg-card text-card-foreground border border-border rounded-xl shadow-2xl overflow-hidden">
-        {/* Fixed Header */}
-        <div className="flex-shrink-0 px-6 py-4 border-b border-border flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="size-10 rounded-xl bg-destructive/10 border border-destructive/20 flex items-center justify-center text-destructive shrink-0">
-              <BellIcon className="size-5" />
-            </div>
-            <div>
-              <h3 className="text-base sm:text-lg font-bold text-foreground">
-                ศูนย์แจ้งเตือนความปลอดภัย (UC-8)
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                การตรวจจับพฤติกรรมผิดปกติและการแจ้งเตือน (GuardDuty & Alerts)
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring text-muted-foreground hover:text-foreground p-1"
-            aria-label="Close"
-          >
-            <CloseIcon className="size-5" />
-          </button>
-        </div>
+    <Dialog open={!!isOpen} onOpenChange={(open) => !open && onClose?.()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>การแจ้งเตือนความปลอดภัย</DialogTitle>
+          <DialogDescription>กิจกรรมผิดปกติที่ระบบตรวจพบในบัญชีและคลังรหัสผ่านของคุณ</DialogDescription>
+        </DialogHeader>
 
-        {/* Scrollable Body */}
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
-          {error && (
-            <div className="p-3 bg-destructive/15 border border-destructive/30 rounded-lg text-destructive text-xs font-medium">
-              {error}
-            </div>
-          )}
-
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              รายการแจ้งเตือน ({alerts.length})
-            </span>
-            {isAdmin && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={handleSimulateAlert}
-                disabled={simulating}
-                className="text-xs h-7 border-destructive/40 text-destructive hover:bg-destructive/10"
-              >
-                {simulating ? 'กำลังจำลอง...' : '+ จำลองแจ้งเตือน (Simulate Event)'}
-              </Button>
-            )}
-          </div>
-
-          {loading ? (
-            <div className="py-12 text-center text-muted-foreground text-sm">
-              กำลังโหลดการแจ้งเตือนความปลอดภัย...
-            </div>
-          ) : alerts.length === 0 ? (
-            <div className="py-12 text-center bg-muted/30 rounded-xl border border-border text-muted-foreground text-sm">
-              ระบบปลอดภัย ไม่พบกิจกรรมหรือพฤติกรรมที่น่าสงสัยในขณะนี้
-            </div>
-          ) : (
-            alerts.map((al, idx) => (
-              <div
-                key={al.notification_id || idx}
-                className="bg-card border border-border rounded-xl p-4 space-y-2 text-xs shadow-sm"
-              >
-                <div className="flex items-center justify-between">
-                  <Badge variant={getSeverityBadgeVariant(al.severity)} round={true}>
-                    {al.severity || 'INFO'}
-                  </Badge>
-                  <span className="text-muted-foreground font-mono text-[11px]">
-                    {al.timestamp ? new Date(al.timestamp).toLocaleString('th-TH') : 'Just now'}
-                  </span>
-                </div>
-
-                <div className="font-semibold text-foreground text-sm">
-                  {al.type || al.title || 'Security Anomaly'}
-                </div>
-
-                <p className="text-muted-foreground leading-relaxed">
-                  {al.description || 'ตรวจพบความผิดปกติของการเข้าใช้งานระบบ'}
-                </p>
-
-                <div className="flex items-center justify-between pt-2 text-[11px] text-muted-foreground border-t border-border">
-                  <span>แหล่งที่มา: {al.source || 'CloudWatch/GuardDuty'}</span>
-                  <span>สถานะ: {al.status || 'ACTIVE'}</span>
-                </div>
-              </div>
-            ))
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted-foreground" aria-live="polite">
+            {loading ? 'กำลังโหลด…' : error ? '' : `ทั้งหมด ${alerts.length} รายการ`}
+          </p>
+          {isAdmin && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSimulateAlert}
+              loading={simulating}
+              disabled={loading}
+              className="w-full sm:w-auto"
+            >
+              {simulating ? 'กำลังจำลอง…' : 'จำลองเหตุการณ์'}
+            </Button>
           )}
         </div>
 
-        {/* Fixed Footer */}
-        <div className="flex-shrink-0 px-6 py-4 border-t border-border bg-muted/30 flex justify-end">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onClose}
-          >
-            ปิดหน้าต่าง (Close)
+        {renderBody()}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} className="w-full sm:w-auto" data-autofocus>
+            ปิด
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

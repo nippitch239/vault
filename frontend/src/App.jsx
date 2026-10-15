@@ -122,7 +122,7 @@ function MainApp() {
   // Logged-out authentication screens
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4 sm:p-6 bg-background text-foreground">
+      <main className="flex min-h-screen w-full items-center justify-center bg-background px-4 py-8 text-foreground sm:p-6">
         {authView === 'login' && (
           <LoginView
             onNavigateRegister={() => setAuthView('register')}
@@ -148,7 +148,7 @@ function MainApp() {
         {authView === 'reset' && (
           <ResetPasswordView onNavigateLogin={() => setAuthView('login')} />
         )}
-      </div>
+      </main>
     );
   }
 
@@ -188,7 +188,14 @@ function MainApp() {
   };
 
   return (
-    <div className="flex h-screen bg-background text-foreground overflow-hidden font-sans">
+    <div className="flex h-screen overflow-hidden bg-background font-sans text-foreground">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-3 focus:z-[70] focus:rounded-md focus:border focus:border-border focus:bg-popover focus:px-3 focus:py-2 focus:text-sm focus:font-ui focus:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+      >
+        ข้ามไปยังเนื้อหาหลัก
+      </a>
+
       {/* Left Collapsible Rail / Sidebar Navigation */}
       <Sidebar
         currentTab={currentTab}
@@ -200,7 +207,7 @@ function MainApp() {
       />
 
       {/* Main Viewport Container */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Top Sticky Header */}
         <AppHeader
           currentTab={currentTab}
@@ -214,8 +221,8 @@ function MainApp() {
         />
 
         {/* Scrollable Main Application Content Area */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8">
-          <div className="max-w-7xl mx-auto w-full">
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-6 focus:outline-none sm:px-6 lg:px-8">
+          <div className="mx-auto w-full max-w-7xl">
             {renderCurrentTab()}
           </div>
         </main>

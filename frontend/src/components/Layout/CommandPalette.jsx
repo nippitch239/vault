@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useId } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '../ui/Dialog.jsx';
 import {
   SearchIcon,
   KeyIcon,
@@ -22,6 +23,9 @@ function cn(...inputs) {
   return inputs.flat().filter(Boolean).join(' ');
 }
 
+const GROUP_NAV = 'ไปที่';
+const GROUP_ACTIONS = 'คำสั่งด่วน';
+
 export function CommandPalette({
   open = false,
   onOpenChange,
@@ -37,67 +41,64 @@ export function CommandPalette({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef(null);
   const listRef = useRef(null);
+  const baseId = useId();
+  const listboxId = `${baseId}-listbox`;
+  const optionId = (cmdId) => `${baseId}-${cmdId}`;
 
-  // All registered commands
+  // All registered commands (English keywords kept so either language finds them)
   const allCommands = useMemo(() => {
     const navItems = [
       {
         id: 'nav-vault',
-        type: 'navigation',
-        group: 'Navigation',
-        label: 'Vault Items',
-        description: 'Passwords, credentials & secure notes',
-        keywords: 'passwords logins notes credentials vault secret คลังรหัสผ่าน',
+        group: GROUP_NAV,
+        label: 'รายการรหัสผ่าน',
+        description: 'รหัสผ่าน บันทึก และข้อมูลเข้าสู่ระบบ',
+        keywords: 'passwords logins notes credentials vault secret items คลังรหัสผ่าน รายการ',
         icon: <KeyIcon className="size-4 shrink-0" />,
         action: () => onSelectTab?.('vault'),
       },
       {
         id: 'nav-shared',
-        type: 'navigation',
-        group: 'Navigation',
-        label: 'Shared Items',
-        description: 'Zero-knowledge shared passwords & items',
-        keywords: 'shared share with me items asymmetric rsa แบ่งปัน แชร์',
+        group: GROUP_NAV,
+        label: 'แชร์กับฉัน',
+        description: 'รายการที่ผู้อื่นแชร์ให้คุณ',
+        keywords: 'shared share with me items แบ่งปัน แชร์',
         icon: <ShareIcon className="size-4 shrink-0" />,
         action: () => onSelectTab?.('shared'),
       },
       {
         id: 'nav-collections',
-        type: 'navigation',
-        group: 'Navigation',
-        label: 'Collections',
-        description: 'Encrypted organizational folders',
-        keywords: 'collections folders zk shared keys คอลเลกชัน',
+        group: GROUP_NAV,
+        label: 'คอลเลกชัน',
+        description: 'โฟลเดอร์ที่ใช้ร่วมกันแบบเข้ารหัส',
+        keywords: 'collections folders shared คอลเลกชัน โฟลเดอร์',
         icon: <FolderIcon className="size-4 shrink-0" />,
         action: () => onSelectTab?.('collections'),
       },
       {
         id: 'nav-groups',
-        type: 'navigation',
-        group: 'Navigation',
-        label: 'User Groups',
-        description: 'Role-based access & team membership',
-        keywords: 'groups teams rbac access control members กลุ่มผู้ใช้',
+        group: GROUP_NAV,
+        label: 'กลุ่ม',
+        description: 'สมาชิกและสิทธิ์การเข้าถึงของทีม',
+        keywords: 'groups teams rbac access control members กลุ่ม สมาชิก',
         icon: <UsersIcon className="size-4 shrink-0" />,
         action: () => onSelectTab?.('groups'),
       },
       {
         id: 'nav-generator',
-        type: 'navigation',
-        group: 'Navigation',
-        label: 'Password Generator',
-        description: 'CSPRNG & Diceware passphrase generator',
-        keywords: 'generator random password passphrase diceware csprng เครื่องมือสุ่ม',
+        group: GROUP_NAV,
+        label: 'สร้างรหัสผ่าน',
+        description: 'สุ่มรหัสผ่านหรือวลีรหัสผ่านที่คาดเดายาก',
+        keywords: 'generator random password passphrase diceware สุ่ม สร้างรหัสผ่าน',
         icon: <SparklesIcon className="size-4 shrink-0" />,
         action: () => onSelectTab?.('generator'),
       },
       {
         id: 'nav-activity',
-        type: 'navigation',
-        group: 'Navigation',
-        label: 'Activity Log',
-        description: 'Personal authentication and vault audit trail',
-        keywords: 'activity log history timeline กิจกรรม',
+        group: GROUP_NAV,
+        label: 'กิจกรรมของฉัน',
+        description: 'ประวัติการเข้าสู่ระบบและการใช้งานคลัง',
+        keywords: 'activity log history timeline กิจกรรม ประวัติ',
         icon: <ActivityIcon className="size-4 shrink-0" />,
         action: () => onSelectTab?.('activity'),
       },
@@ -105,21 +106,19 @@ export function CommandPalette({
         ? [
             {
               id: 'nav-audit',
-              type: 'navigation',
-              group: 'Navigation',
-              label: 'Audit Logs',
-              description: 'System-wide compliance and security logs',
-              keywords: 'audit logs admin compliance security บันทึกระบบ',
+              group: GROUP_NAV,
+              label: 'บันทึกการตรวจสอบ',
+              description: 'บันทึกเหตุการณ์ด้านความปลอดภัยทั้งระบบ',
+              keywords: 'audit logs admin compliance security บันทึกการตรวจสอบ',
               icon: <FileTextIcon className="size-4 shrink-0" />,
               action: () => onSelectTab?.('audit'),
             },
             {
               id: 'nav-monitoring',
-              type: 'navigation',
-              group: 'Navigation',
-              label: 'System Monitoring',
-              description: 'Real-time performance and health metrics',
-              keywords: 'monitoring metrics latency health sysinfo มอนิเตอร์',
+              group: GROUP_NAV,
+              label: 'สถานะระบบ',
+              description: 'ประสิทธิภาพและสุขภาพของระบบแบบเรียลไทม์',
+              keywords: 'monitoring metrics latency health มอนิเตอร์ สถานะระบบ',
               icon: <BarChartIcon className="size-4 shrink-0" />,
               action: () => onSelectTab?.('monitoring'),
             },
@@ -130,67 +129,53 @@ export function CommandPalette({
     const actionItems = [
       {
         id: 'action-lock',
-        type: 'action',
-        group: 'Quick Actions',
-        label: isVaultUnlocked ? 'Lock Vault Now' : 'Vault is Locked',
-        description: 'Clear master key from browser memory',
-        keywords: 'lock vault secure logout me memory ล็อกคลัง',
-        icon: <LockIcon className="size-4 shrink-0 text-amber-500" />,
+        group: GROUP_ACTIONS,
+        label: isVaultUnlocked ? 'ล็อกคลัง' : 'คลังล็อกอยู่แล้ว',
+        description: 'ล้างกุญแจถอดรหัสออกจากหน่วยความจำของเบราว์เซอร์',
+        keywords: 'lock vault secure ล็อกคลัง ล็อก',
+        icon: <LockIcon className="size-4 shrink-0" />,
         action: () => onLockVault?.(),
       },
       {
         id: 'action-theme',
-        type: 'action',
-        group: 'Quick Actions',
-        label: 'Toggle Dark / Light Theme',
-        description: 'Switch between dark and light appearance',
-        keywords: 'theme appearance mode dark light color ธีม โหมดมืด โหมดสว่าง',
-        icon: <SunIcon className="size-4 shrink-0 text-amber-400" />,
+        group: GROUP_ACTIONS,
+        label: 'สลับธีมมืด / สว่าง',
+        description: 'เปลี่ยนรูปลักษณ์ของแอป',
+        keywords: 'theme appearance mode dark light ธีม โหมดมืด โหมดสว่าง',
+        icon: <SunIcon className="size-4 shrink-0" />,
         action: () => onToggleTheme?.(),
       },
       {
         id: 'action-mfa',
-        type: 'action',
-        group: 'Quick Actions',
-        label: 'Configure Multi-Factor Authentication (MFA)',
-        description: 'Manage 2-factor authenticator app (TOTP)',
-        keywords: 'mfa 2fa two factor totp authenticator security ตั้งค่า mfa',
-        icon: <ShieldIcon className="size-4 shrink-0 text-emerald-500" />,
+        group: GROUP_ACTIONS,
+        label: 'การยืนยันตัวตนสองขั้นตอน (2FA)',
+        description: 'ตั้งค่าแอปยืนยันตัวตนสำหรับบัญชีนี้',
+        keywords: 'mfa 2fa two factor totp authenticator security ยืนยันตัวตน',
+        icon: <ShieldIcon className="size-4 shrink-0" />,
         action: () => onOpenMfa?.(),
       },
       {
         id: 'action-notifications',
-        type: 'action',
-        group: 'Quick Actions',
-        label: 'Security Notifications',
-        description: 'View security alerts and failed attempts',
+        group: GROUP_ACTIONS,
+        label: 'การแจ้งเตือนความปลอดภัย',
+        description: 'ดูกิจกรรมผิดปกติที่ระบบตรวจพบ',
         keywords: 'notifications security alerts warning bell แจ้งเตือน',
-        icon: <BellIcon className="size-4 shrink-0 text-primary" />,
+        icon: <BellIcon className="size-4 shrink-0" />,
         action: () => onOpenNotifications?.(),
       },
       {
         id: 'action-logout',
-        type: 'action',
-        group: 'Quick Actions',
-        label: 'Sign Out (Logout)',
-        description: 'End current authenticated session',
+        group: GROUP_ACTIONS,
+        label: 'ออกจากระบบ',
+        description: 'จบเซสชันการใช้งานปัจจุบัน',
         keywords: 'logout sign out exit quit ออกจากระบบ',
-        icon: <LogOutIcon className="size-4 shrink-0 text-destructive" />,
+        icon: <LogOutIcon className="size-4 shrink-0" />,
         action: () => onLogout?.(),
       },
     ];
 
     return [...navItems, ...actionItems];
-  }, [
-    isAdmin,
-    isVaultUnlocked,
-    onSelectTab,
-    onLockVault,
-    onToggleTheme,
-    onOpenMfa,
-    onOpenNotifications,
-    onLogout,
-  ]);
+  }, [isAdmin, isVaultUnlocked, onSelectTab, onLockVault, onToggleTheme, onOpenMfa, onOpenNotifications, onLogout]);
 
   // Filter commands based on search query
   const filteredCommands = useMemo(() => {
@@ -216,14 +201,11 @@ export function CommandPalette({
     return groups;
   }, [filteredCommands]);
 
-  // Reset query and selected index when opened
+  // Reset query and selected index when opened (initial focus comes from data-autofocus)
   useEffect(() => {
     if (open) {
       setQuery('');
       setSelectedIndex(0);
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 50);
     }
   }, [open]);
 
@@ -231,40 +213,6 @@ export function CommandPalette({
   useEffect(() => {
     setSelectedIndex(0);
   }, [query]);
-
-  // Keyboard navigation listener
-  useEffect(() => {
-    if (!open) return;
-
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onOpenChange?.(false);
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSelectedIndex((prev) =>
-          filteredCommands.length > 0 ? (prev + 1) % filteredCommands.length : 0
-        );
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSelectedIndex((prev) =>
-          filteredCommands.length > 0
-            ? (prev - 1 + filteredCommands.length) % filteredCommands.length
-            : 0
-        );
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        if (filteredCommands.length > 0 && filteredCommands[selectedIndex]) {
-          const selected = filteredCommands[selectedIndex];
-          selected.action?.();
-          onOpenChange?.(false);
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, filteredCommands, selectedIndex, onOpenChange]);
 
   // Scroll active item into view
   useEffect(() => {
@@ -275,141 +223,186 @@ export function CommandPalette({
     }
   }, [selectedIndex]);
 
-  if (!open) return null;
+  const runCommand = (cmd) => {
+    cmd?.action?.();
+    onOpenChange?.(false);
+  };
 
+  // Combobox keyboard handling (Esc is handled by the Dialog primitive)
+  const handleInputKeyDown = (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedIndex((prev) => (filteredCommands.length > 0 ? (prev + 1) % filteredCommands.length : 0));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedIndex((prev) =>
+        filteredCommands.length > 0 ? (prev - 1 + filteredCommands.length) % filteredCommands.length : 0
+      );
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filteredCommands[selectedIndex]) runCommand(filteredCommands[selectedIndex]);
+    }
+  };
+
+  const activeCommand = filteredCommands[selectedIndex];
   let flatIndexCounter = 0;
 
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] sm:pt-[15vh] px-4 bg-background/80 backdrop-blur-sm animate-content-show"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
-          onOpenChange?.(false);
-        }
-      }}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Command Palette"
-    >
-      <div className="relative w-full max-w-lg rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl overflow-hidden flex flex-col max-h-[75vh] animate-content-show">
-        {/* Search Input Bar */}
-        <div className="flex items-center px-4 border-b border-border gap-3 h-12 shrink-0 bg-transparent">
-          <SearchIcon className="size-4 text-muted-foreground shrink-0" />
+    <Dialog open={open} onOpenChange={(v) => onOpenChange?.(v)}>
+      <DialogContent
+        hideCloseButton
+        className="max-w-xl gap-0 overflow-hidden p-0 sm:mb-auto sm:mt-[12vh] grid-rows-[auto_minmax(0,1fr)_auto]"
+      >
+        <DialogTitle className="sr-only">ค้นหาและคำสั่ง</DialogTitle>
+        <DialogDescription className="sr-only">
+          พิมพ์เพื่อค้นหา ใช้ปุ่มลูกศรขึ้นลงเพื่อเลือก กด Enter เพื่อเปิด และกด Esc เพื่อปิด
+        </DialogDescription>
+
+        {/* Search input */}
+        <div className="flex h-12 items-center gap-2.5 border-b border-border px-3 sm:px-4">
+          <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
           <input
             ref={inputRef}
+            data-autofocus
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search vault views or commands..."
-            className="flex-1 bg-transparent text-sm placeholder:text-muted-foreground outline-none border-none text-foreground"
-            aria-label="Type a command or search"
+            onKeyDown={handleInputKeyDown}
+            placeholder="ค้นหาหน้าหรือคำสั่ง…"
+            aria-label="ค้นหาหน้าหรือคำสั่ง"
+            role="combobox"
+            aria-expanded={filteredCommands.length > 0}
+            aria-controls={listboxId}
+            aria-autocomplete="list"
+            aria-activedescendant={activeCommand ? optionId(activeCommand.id) : undefined}
+            autoComplete="off"
+            spellCheck={false}
+            className="h-full min-w-0 flex-1 border-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
           />
           {query ? (
             <button
               type="button"
-              onClick={() => setQuery('')}
-              className="text-muted-foreground hover:text-foreground p-1 rounded-sm"
-              aria-label="Clear search query"
+              onClick={() => {
+                setQuery('');
+                inputRef.current?.focus();
+              }}
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-fast hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="ล้างคำค้นหา"
             >
-              <XIcon className="size-3.5" />
+              <XIcon className="size-4" />
             </button>
           ) : (
-            <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
-              ESC
-            </kbd>
+            <>
+              <kbd className="hidden shrink-0 rounded border border-border bg-secondary px-1.5 font-mono text-xs text-muted-foreground sm:inline-flex">
+                Esc
+              </kbd>
+              <button
+                type="button"
+                onClick={() => onOpenChange?.(false)}
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-fast hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:hidden"
+                aria-label="ปิดการค้นหา"
+              >
+                <XIcon className="size-4" />
+              </button>
+            </>
           )}
         </div>
 
-        {/* Results List */}
-        <div ref={listRef} className="overflow-y-auto p-2 space-y-3 flex-1">
+        {/* Results */}
+        <div ref={listRef} className="min-h-0 overflow-y-auto p-2">
+          <p className="sr-only" aria-live="polite">
+            {filteredCommands.length > 0 ? `พบ ${filteredCommands.length} รายการ` : 'ไม่พบผลลัพธ์'}
+          </p>
+
           {filteredCommands.length === 0 ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">
-              No results found for &ldquo;<span className="font-medium text-foreground">{query}</span>&rdquo;
+            <div className="px-4 py-10 text-center">
+              <p className="text-sm font-ui text-foreground">ไม่พบผลลัพธ์สำหรับ “{query}”</p>
+              <p className="mt-1 text-xs text-muted-foreground">ลองพิมพ์ชื่อหน้า เช่น “คอลเลกชัน” หรือ “ล็อกคลัง”</p>
             </div>
           ) : (
-            Object.entries(groupedCommands).map(([groupTitle, commands]) => (
-              <div key={groupTitle} className="space-y-1">
-                <div className="px-2 py-1 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
-                  {groupTitle}
-                </div>
+            <div id={listboxId} role="listbox" aria-label="ผลการค้นหา" className="space-y-3">
+              {Object.entries(groupedCommands).map(([groupTitle, commands]) => {
+                const groupLabelId = `${baseId}-group-${groupTitle === GROUP_NAV ? 'nav' : 'actions'}`;
+                return (
+                  <div key={groupTitle} role="group" aria-labelledby={groupLabelId}>
+                    <p id={groupLabelId} className="px-2 pb-1 text-xs font-ui text-muted-foreground">
+                      {groupTitle}
+                    </p>
+                    <div className="space-y-0.5">
+                      {commands.map((cmd) => {
+                        const currentIndex = flatIndexCounter++;
+                        const isSelected = currentIndex === selectedIndex;
 
-                <div className="space-y-0.5">
-                  {commands.map((cmd) => {
-                    const currentIndex = flatIndexCounter++;
-                    const isSelected = currentIndex === selectedIndex;
-
-                    return (
-                      <button
-                        key={cmd.id}
-                        type="button"
-                        data-selected={isSelected}
-                        onClick={() => {
-                          cmd.action?.();
-                          onOpenChange?.(false);
-                        }}
-                        onMouseEnter={() => setSelectedIndex(currentIndex)}
-                        className={cn(
-                          'w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg text-left text-sm transition-colors cursor-pointer',
-                          isSelected
-                            ? 'bg-accent text-accent-foreground font-medium'
-                            : 'text-foreground/80 hover:bg-accent/50 hover:text-foreground'
-                        )}
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <span
+                        return (
+                          <div
+                            key={cmd.id}
+                            id={optionId(cmd.id)}
+                            role="option"
+                            aria-selected={isSelected}
+                            data-selected={isSelected}
+                            onClick={() => runCommand(cmd)}
+                            onMouseMove={() => setSelectedIndex(currentIndex)}
                             className={cn(
-                              'p-1.5 rounded-md border',
-                              isSelected
-                                ? 'bg-background border-border shadow-2xs'
-                                : 'bg-muted/50 border-transparent text-muted-foreground'
+                              'flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-md px-2.5 py-2 text-left transition-colors duration-fast',
+                              isSelected ? 'bg-accent text-foreground' : 'text-secondary-foreground'
                             )}
                           >
-                            {cmd.icon}
-                          </span>
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium leading-snug">
-                              {cmd.label}
+                            <div className="flex min-w-0 items-center gap-3">
+                              <span
+                                className={cn(
+                                  'flex size-8 shrink-0 items-center justify-center rounded-md border border-border',
+                                  isSelected ? 'bg-background text-foreground' : 'bg-secondary text-muted-foreground'
+                                )}
+                              >
+                                {cmd.icon}
+                              </span>
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-ui">{cmd.label}</div>
+                                <div className="truncate text-xs text-muted-foreground">{cmd.description}</div>
+                              </div>
                             </div>
-                            <div className="truncate text-xs text-muted-foreground">
-                              {cmd.description}
-                            </div>
+                            {isSelected && (
+                              <kbd
+                                aria-hidden="true"
+                                className="hidden shrink-0 rounded border border-border bg-background px-1.5 font-mono text-xs text-muted-foreground sm:inline-flex"
+                              >
+                                ↵
+                              </kbd>
+                            )}
                           </div>
-                        </div>
-
-                        {isSelected && (
-                          <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-background border border-border text-muted-foreground shrink-0 shadow-2xs">
-                            ↵
-                          </kbd>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ))
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
 
-        {/* Footer Shortcut Instructions */}
-        <div className="px-4 py-2 border-t border-border bg-muted/30 text-[11px] text-muted-foreground flex items-center justify-between shrink-0 font-mono">
-          <div className="flex items-center gap-3">
-            <span>
-              <kbd className="border border-border bg-background px-1 rounded mr-1">↑</kbd>
-              <kbd className="border border-border bg-background px-1 rounded mr-1">↓</kbd>
-              to navigate
+        {/* Shortcut hints */}
+        <div
+          aria-hidden="true"
+          className="hidden items-center justify-between gap-3 border-t border-border bg-secondary px-4 py-2 text-xs text-muted-foreground sm:flex"
+        >
+          <span className="flex items-center gap-3">
+            <span className="flex items-center gap-1">
+              <kbd className="rounded border border-border bg-background px-1 font-mono">↑</kbd>
+              <kbd className="rounded border border-border bg-background px-1 font-mono">↓</kbd>
+              เลือก
             </span>
-            <span>
-              <kbd className="border border-border bg-background px-1 rounded mr-1">↵</kbd>
-              to select
+            <span className="flex items-center gap-1">
+              <kbd className="rounded border border-border bg-background px-1 font-mono">↵</kbd>
+              เปิด
             </span>
-          </div>
-          <span>
-            <kbd className="border border-border bg-background px-1 rounded mr-1">ESC</kbd>
-            to close
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="rounded border border-border bg-background px-1 font-mono">Esc</kbd>
+            ปิด
           </span>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

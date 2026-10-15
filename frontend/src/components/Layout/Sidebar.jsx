@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { Sheet, SheetContent } from '../ui/Sheet.jsx';
 import {
@@ -11,12 +11,49 @@ import {
   ActivityIcon,
   FileTextIcon,
   BarChartIcon,
-  ChevronRightIcon,
   PanelLeftIcon,
+  XIcon,
 } from './layoutIcons.jsx';
 
 function cn(...inputs) {
   return inputs.flat().filter(Boolean).join(' ');
+}
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Thai nav labels — shared with AppHeader's breadcrumb so both always match. */
+export const NAV_LABELS = {
+  vault: 'รายการรหัสผ่าน',
+  shared: 'แชร์กับฉัน',
+  collections: 'คอลเลกชัน',
+  groups: 'กลุ่ม',
+  generator: 'สร้างรหัสผ่าน',
+  activity: 'กิจกรรมของฉัน',
+  audit: 'บันทึกการตรวจสอบ',
+  monitoring: 'สถานะระบบ',
+};
+
+function BrandMark({ showText, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={showText ? undefined : 'SecureVault — ไปที่รายการรหัสผ่าน'}
+      title={showText ? undefined : 'SecureVault'}
+      className="flex min-w-0 items-center gap-2.5 rounded-md p-1 text-left transition-colors duration-fast hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border bg-secondary text-foreground">
+        <ShieldIcon className="size-4" />
+      </span>
+      {showText && (
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-strong leading-tight text-foreground">SecureVault</span>
+          <span className="block truncate text-xs text-muted-foreground">คลังรหัสผ่านแบบเข้ารหัส</span>
+        </span>
+      )}
+    </button>
+  );
 }
 
 export function Sidebar({
@@ -28,61 +65,22 @@ export function Sidebar({
   onMobileOpenChange,
 }) {
   const { isAdmin } = useAuth();
+  const drawerRef = useRef(null);
 
   const vaultNavItems = [
-    {
-      id: 'vault',
-      label: 'Vault Items',
-      description: 'Passwords, notes & credentials',
-      icon: <KeyIcon className="size-4 shrink-0" />,
-    },
-    {
-      id: 'shared',
-      label: 'Shared with Me',
-      description: 'Items shared by others',
-      icon: <ShareIcon className="size-4 shrink-0" />,
-    },
-    {
-      id: 'collections',
-      label: 'Collections',
-      description: 'Zero-knowledge shared folders',
-      icon: <FolderIcon className="size-4 shrink-0" />,
-    },
-    {
-      id: 'groups',
-      label: 'User Groups',
-      description: 'Access control & memberships',
-      icon: <UsersIcon className="size-4 shrink-0" />,
-    },
-    {
-      id: 'generator',
-      label: 'Password Generator',
-      description: 'CSPRNG & Diceware passphrases',
-      icon: <SparklesIcon className="size-4 shrink-0" />,
-    },
+    { id: 'vault', icon: <KeyIcon className="size-4 shrink-0" /> },
+    { id: 'shared', icon: <ShareIcon className="size-4 shrink-0" /> },
+    { id: 'collections', icon: <FolderIcon className="size-4 shrink-0" /> },
+    { id: 'groups', icon: <UsersIcon className="size-4 shrink-0" /> },
+    { id: 'generator', icon: <SparklesIcon className="size-4 shrink-0" /> },
   ];
 
   const observabilityNavItems = [
-    {
-      id: 'activity',
-      label: 'Activity Log',
-      description: 'Personal audit trail',
-      icon: <ActivityIcon className="size-4 shrink-0" />,
-    },
+    { id: 'activity', icon: <ActivityIcon className="size-4 shrink-0" /> },
     ...(isAdmin
       ? [
-          {
-            id: 'audit',
-            label: 'Audit Logs',
-            description: 'System-wide compliance logs',
-            icon: <FileTextIcon className="size-4 shrink-0" />,
-          },
-          {
-            id: 'monitoring',
-            label: 'System Monitoring',
-            description: 'Live performance & health',
-            icon: <BarChartIcon className="size-4 shrink-0" />,
-          },
+          { id: 'audit', icon: <FileTextIcon className="size-4 shrink-0" /> },
+          { id: 'monitoring', icon: <BarChartIcon className="size-4 shrink-0" /> },
         ]
       : []),
   ];
@@ -94,192 +92,186 @@ export function Sidebar({
     }
   };
 
-  const renderNavSection = (title, items, isMobile = false) => {
+  // Mobile drawer: move focus in on open, trap Tab inside, restore focus on close.
+  // (Esc-to-close is handled by the Sheet primitive.)
+  useEffect(() => {
+    if (!mobileOpen) return undefined;
+    const previouslyFocused = document.activeElement;
+    const frame = requestAnimationFrame(() => {
+      const node = drawerRef.current;
+      const initial = node?.querySelector('[aria-current="page"]') || node?.querySelector(FOCUSABLE) || node;
+      initial?.focus();
+    });
+
+    const handleKeyDown = (e) => {
+      const node = drawerRef.current;
+      if (e.key !== 'Tab' || !node) return;
+      const focusables = [...node.querySelectorAll(FOCUSABLE)].filter((el) => el.offsetParent !== null);
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      } else if (!node.contains(document.activeElement)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', handleKeyDown);
+      if (previouslyFocused && typeof previouslyFocused.focus === 'function') previouslyFocused.focus();
+    };
+  }, [mobileOpen]);
+
+  const renderNavSection = (key, title, items, isMobile = false) => {
     const isRail = !isMobile && collapsed;
+    const headingId = `sidebar-${isMobile ? 'mobile' : 'desktop'}-${key}`;
 
     return (
-      <div className="space-y-1">
-        {!isRail ? (
-          <div className="px-3 pb-1 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
-            {title}
-          </div>
+      <div role="group" aria-labelledby={isRail ? undefined : headingId} aria-label={isRail ? title : undefined}>
+        {isRail ? (
+          <div className="mx-2 my-2 h-px bg-border" aria-hidden="true" />
         ) : (
-          <div className="h-px bg-sidebar-border my-2 mx-2" />
+          <p id={headingId} className="px-2.5 pb-1.5 text-xs font-ui text-muted-foreground">
+            {title}
+          </p>
         )}
 
-        <div className="space-y-0.5">
+        <ul className="space-y-0.5">
           {items.map((item) => {
             const isActive = currentTab === item.id;
+            const label = NAV_LABELS[item.id];
 
             return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => handleItemClick(item.id)}
-                title={isRail ? item.label : undefined}
-                aria-label={item.label}
-                className={cn(
-                  'group relative flex items-center rounded-lg text-sm font-medium transition-all duration-150',
-                  isRail
-                    ? 'justify-center size-10 mx-auto'
-                    : 'w-full gap-3 px-3 py-2 text-left',
-                  isActive
-                    ? 'bg-sidebar-accent text-sidebar-accent-foreground font-semibold shadow-xs'
-                    : 'text-sidebar-foreground/75 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
-                )}
-              >
-                {isActive && (
-                  <span
-                    className={cn(
-                      'absolute bg-primary rounded-full transition-all duration-200',
-                      isRail
-                        ? 'left-0.5 top-2 bottom-2 w-1'
-                        : 'left-0 top-1.5 bottom-1.5 w-1 rounded-r-full'
-                    )}
-                  />
-                )}
-
-                <span
+              <li key={item.id}>
+                <button
+                  type="button"
+                  onClick={() => handleItemClick(item.id)}
+                  title={isRail ? label : undefined}
+                  aria-label={isRail ? label : undefined}
+                  aria-current={isActive ? 'page' : undefined}
                   className={cn(
-                    'transition-colors',
+                    'group relative flex items-center rounded-md text-sm font-ui transition-colors duration-fast',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    isRail ? 'mx-auto size-9 justify-center' : 'h-9 w-full gap-2.5 px-2.5 text-left',
                     isActive
-                      ? 'text-primary'
-                      : 'text-sidebar-foreground/70 group-hover:text-sidebar-foreground'
+                      ? 'bg-accent text-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground'
                   )}
                 >
-                  {item.icon}
-                </span>
-
-                {!isRail && (
-                  <span className="truncate flex-1 tracking-tight">{item.label}</span>
-                )}
-              </button>
+                  {isActive && (
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        'absolute rounded-full bg-primary',
+                        isRail ? '-left-1.5 top-2 bottom-2 w-0.5' : 'left-0 top-2 bottom-2 w-0.5'
+                      )}
+                    />
+                  )}
+                  <span className={cn(isActive ? 'text-foreground' : 'text-muted-foreground group-hover:text-foreground')}>
+                    {item.icon}
+                  </span>
+                  {!isRail && <span className="flex-1 truncate">{label}</span>}
+                </button>
+              </li>
             );
           })}
-        </div>
+        </ul>
       </div>
     );
   };
 
+  const sections = (isMobile) => (
+    <>
+      {renderNavSection('vault', 'คลังรหัสผ่าน', vaultNavItems, isMobile)}
+      {renderNavSection('security', 'ความปลอดภัยและการตรวจสอบ', observabilityNavItems, isMobile)}
+    </>
+  );
+
   return (
     <>
-      {/* Desktop Collapsible Rail / Sidebar */}
+      {/* Desktop: collapsible rail / sidebar */}
       <aside
         className={cn(
-          'hidden lg:flex flex-col shrink-0 h-screen border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-all duration-300 ease-in-out select-none relative z-30',
-          collapsed ? 'w-14' : 'w-64'
+          'relative z-30 hidden h-screen shrink-0 select-none flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-300 ease-standard lg:flex',
+          collapsed ? 'w-14' : 'w-60'
         )}
-        aria-label="Sidebar Navigation"
+        aria-label="แถบนำทางหลัก"
       >
-        {/* Brand / Logo Header */}
         <div
           className={cn(
-            'h-14 border-b border-sidebar-border flex items-center shrink-0 px-3 transition-all duration-300',
-            collapsed ? 'justify-center' : 'justify-between'
+            'flex h-14 shrink-0 items-center border-b border-sidebar-border',
+            collapsed ? 'justify-center px-2' : 'px-3'
           )}
         >
-          <div
-            className="flex items-center gap-2.5 cursor-pointer overflow-hidden"
-            onClick={() => handleItemClick('vault')}
-            title="SecureVault Cloud"
-          >
-            <div className="size-8 rounded-lg bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0 shadow-xs">
-              <ShieldIcon className="size-4" />
-            </div>
+          <BrandMark showText={!collapsed} onClick={() => handleItemClick('vault')} />
+        </div>
 
-            {!collapsed && (
-              <div className="min-w-0 flex-1 animate-content-show">
-                <div className="font-bold text-sm tracking-tight text-foreground flex items-center gap-1.5 leading-none">
-                  <span>SecureVault</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 font-mono font-normal">
-                    Cloud
-                  </span>
-                </div>
-                <div className="text-[10px] text-muted-foreground truncate mt-0.5">
-                  Zero-Knowledge Architecture
-                </div>
-              </div>
+        <nav aria-label="เมนูหลัก" className={cn('flex-1 space-y-5 overflow-y-auto py-4', collapsed ? 'px-2' : 'px-3')}>
+          {sections(false)}
+        </nav>
+
+        <div className="shrink-0 border-t border-sidebar-border p-2">
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title={collapsed ? 'ขยายแถบด้านข้าง (⌘B / Ctrl+B)' : 'ย่อแถบด้านข้าง (⌘B / Ctrl+B)'}
+            aria-label={collapsed ? 'ขยายแถบด้านข้าง' : 'ย่อแถบด้านข้าง'}
+            aria-expanded={!collapsed}
+            aria-keyshortcuts="Control+B Meta+B"
+            className={cn(
+              'flex items-center rounded-md text-sm font-ui text-muted-foreground transition-colors duration-fast hover:bg-accent hover:text-foreground',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              collapsed ? 'mx-auto size-9 justify-center' : 'h-9 w-full justify-between gap-2 px-2.5'
             )}
-          </div>
-        </div>
-
-        {/* Scrollable Navigation Items */}
-        <div className="flex-1 overflow-y-auto px-2 py-3 space-y-4">
-          {renderNavSection('Vault', vaultNavItems)}
-          {renderNavSection('Security & Observability', observabilityNavItems)}
-        </div>
-
-        {/* Bottom Toggle Rail / Keyboard Shortcut */}
-        <div className="p-2 border-t border-sidebar-border shrink-0">
-          {!collapsed ? (
-            <button
-              type="button"
-              onClick={onToggleCollapse}
-              className="flex items-center justify-between w-full px-3 py-2 text-xs font-medium text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground rounded-lg transition-colors"
-              title="Collapse sidebar (⌘B / Ctrl+B)"
-              aria-label="Collapse sidebar"
-            >
-              <span className="flex items-center gap-2">
-                <PanelLeftIcon className="size-4" />
-                <span>Collapse Rail</span>
-              </span>
-              <kbd className="text-[10px] bg-muted/80 text-muted-foreground px-1.5 py-0.5 rounded font-mono border border-border shadow-2xs">
+          >
+            <span className="flex items-center gap-2.5">
+              <PanelLeftIcon className="size-4 shrink-0" />
+              {!collapsed && <span>ย่อแถบด้านข้าง</span>}
+            </span>
+            {!collapsed && (
+              <kbd className="rounded border border-border bg-secondary px-1.5 font-mono text-xs text-muted-foreground">
                 ⌘B
               </kbd>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onToggleCollapse}
-              className="flex items-center justify-center size-10 mx-auto text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground rounded-lg transition-colors"
-              title="Expand sidebar (⌘B / Ctrl+B)"
-              aria-label="Expand sidebar"
-            >
-              <ChevronRightIcon className="size-4" />
-            </button>
-          )}
+            )}
+          </button>
         </div>
       </aside>
 
-      {/* Mobile Responsive Navigation Drawer */}
+      {/* Mobile: navigation drawer */}
       <Sheet open={mobileOpen} onOpenChange={onMobileOpenChange}>
         <SheetContent
+          ref={drawerRef}
           side="left"
-          className="p-0 w-72 bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex flex-col z-[60]"
+          hideCloseButton
+          aria-label="เมนูนำทาง"
+          tabIndex={-1}
+          className="z-[60] flex w-72 max-w-[85vw] flex-col gap-0 border-r border-sidebar-border bg-sidebar p-0 text-sidebar-foreground shadow-dialog focus:outline-none"
         >
-          {/* Brand Header */}
-          <div className="h-14 border-b border-sidebar-border px-4 flex items-center justify-between shrink-0">
-            <div
-              className="flex items-center gap-2.5 cursor-pointer"
-              onClick={() => handleItemClick('vault')}
+          <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-sidebar-border px-3">
+            <BrandMark showText onClick={() => handleItemClick('vault')} />
+            <button
+              type="button"
+              onClick={() => onMobileOpenChange?.(false)}
+              aria-label="ปิดเมนูนำทาง"
+              className="inline-flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-fast hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <div className="size-8 rounded-lg bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
-                <ShieldIcon className="size-4" />
-              </div>
-              <div>
-                <div className="font-bold text-sm tracking-tight text-foreground flex items-center gap-1.5 leading-none">
-                  <span>SecureVault</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 font-mono">
-                    Cloud
-                  </span>
-                </div>
-                <div className="text-[10px] text-muted-foreground text-xs mt-0.5">
-                  Zero-Knowledge Architecture
-                </div>
-              </div>
-            </div>
+              <XIcon className="size-4" />
+            </button>
           </div>
 
-          {/* Navigation Section List */}
-          <div className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
-            {renderNavSection('Vault', vaultNavItems, true)}
-            {renderNavSection('Security & Observability', observabilityNavItems, true)}
-          </div>
+          <nav aria-label="เมนูหลัก" className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
+            {sections(true)}
+          </nav>
 
-          {/* Mobile Footer with info */}
-          <div className="p-4 border-t border-sidebar-border shrink-0 text-xs text-muted-foreground">
-            <p className="font-mono text-[11px]">SecureVault Cloud v1.0.0</p>
-            <p className="text-[10px] mt-0.5">Argon2id &bull; AES-256-GCM &bull; RSA-OAEP</p>
+          <div className="shrink-0 border-t border-sidebar-border px-4 py-3 text-xs text-muted-foreground">
+            ข้อมูลถูกเข้ารหัสบนอุปกรณ์ของคุณก่อนส่งขึ้นระบบ
           </div>
         </SheetContent>
       </Sheet>
