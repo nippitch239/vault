@@ -934,3 +934,35 @@ test('Local Simulation HTTP Server: End-to-End Live HTTP Network Parity', async 
     await sim.close();
   }
 });
+
+test('UC-9: audit log end date includes that whole day; CSV export is not capped at one page', async () => {
+  await resetDatabase();
+  const admin = await registerProfile('auditadmin', { admin: true });
+  const db = getDatabase();
+  for (let i = 0; i < 60; i++) {
+    await db.query(
+      `INSERT INTO audit_logs (actor_user_id, actor_role, event_action, target_resource, ip_address, created_at)
+       VALUES ($1, 'admin', 'TEST_EVENT', 'test', '10.0.0.1', $2)`,
+      [admin.sub, '2026-03-15T15:30:00.000Z']
+    );
+  }
+  const sameDay = await callRouter({
+    method: 'GET',
+    path: '/api/v1/admin/audit-logs',
+    claims: admin,
+    queryStringParameters: { action: 'TEST_EVENT', start_date: '2026-03-15', end_date: '2026-03-15' },
+  });
+  assert.equal(sameDay.statusCode, 200);
+  assert.equal(sameDay.data.pagination.total, 60);
+
+  const csv = await callRouter({
+    method: 'GET',
+    path: '/api/v1/admin/audit-logs',
+    claims: admin,
+    queryStringParameters: { action: 'TEST_EVENT', format: 'csv' },
+  });
+  assert.equal(csv.data.trim().split('\n').length, 61); // header + 60 rows
+
+  const badOffset = await callRouter({ method: 'GET', path: '/api/v1/admin/audit-logs', claims: admin, queryStringParameters: { offset: 'abc' } });
+  assert.equal(badOffset.statusCode, 200);
+});

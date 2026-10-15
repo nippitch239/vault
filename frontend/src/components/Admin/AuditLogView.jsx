@@ -83,8 +83,6 @@ export function AuditLogView() {
         severity: severity || undefined,
         userId: searchActor.trim() || undefined,
         startDate: startDate || undefined,
-        // TODO(review): the backend compares created_at <= 'YYYY-MM-DD', so rows from the
-        // end date itself are excluded. Left as is (behaviour unchanged).
         endDate: endDate || undefined,
         limit: PAGE_SIZE,
         offset: page > 0 ? page * PAGE_SIZE : undefined,
@@ -129,8 +127,7 @@ export function AuditLogView() {
         endDate: endDate || undefined,
       };
 
-      // TODO(review): no limit is sent, so the backend's default page size (50) applies and the
-      // CSV holds only the newest 50 matching rows, not the full filtered set.
+      // The backend returns every matching row for CSV (up to 10,000).
       const csvData = await api.logs.exportAuditLogsCsv(filters);
       const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);

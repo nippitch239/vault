@@ -181,8 +181,12 @@ export async function getAdminAuditLogsHandler(event) {
   const endDate = query.end_date || query.endDate;
   const format = (query.format || 'json').toLowerCase();
 
-  const limit = Math.min(Math.max(parseInt(query.limit || '50', 10), 1), 500);
-  const offset = Math.max(parseInt(query.offset || '0', 10), 0);
+  // CSV exports return every matching row (up to 10,000); JSON pages default to 50.
+  const requestedLimit = parseInt(query.limit, 10);
+  const maxLimit = format === 'csv' ? 10000 : 500;
+  const defaultLimit = format === 'csv' ? 10000 : 50;
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), maxLimit) : defaultLimit;
+  const offset = Math.max(parseInt(query.offset, 10) || 0, 0);
 
   const whereConditions = [];
   const params = [];
@@ -208,8 +212,11 @@ export async function getAdminAuditLogsHandler(event) {
   }
 
   if (endDate) {
-    params.push(endDate);
-    whereConditions.push(`created_at <= $${params.length}`);
+    // A date-only end (YYYY-MM-DD) includes that whole day.
+    const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(endDate);
+    const end = dateOnly ? new Date(Date.parse(`${endDate}T00:00:00Z`) + 24 * 60 * 60 * 1000).toISOString() : endDate;
+    params.push(end);
+    whereConditions.push(dateOnly ? `created_at < $${params.length}` : `created_at <= $${params.length}`);
   }
 
   const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
@@ -272,7 +279,7 @@ export async function getUserActivityLogsHandler(event) {
   const db = getDatabase();
   const query = event.queryStringParameters || {};
   const limit = Math.min(Math.max(parseInt(query.limit || '20', 10), 1), 100);
-  const offset = Math.max(parseInt(query.offset || '0', 10), 0);
+  const offset = Math.max(parseInt(query.offset, 10) || 0, 0);
   const actionType = query.action_type || query.action;
 
   const whereConditions = ['user_id = $1'];
