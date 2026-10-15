@@ -17,8 +17,6 @@ import {
   confirmSignIn as amplifyConfirmSignIn,
   signOut as amplifySignOut,
   fetchAuthSession,
-  resetPassword,
-  confirmResetPassword,
   setUpTOTP,
   verifyTOTPSetup,
   updateMFAPreference,
@@ -107,17 +105,6 @@ export const cognitoAuth = {
   async signOut() {
     ensureConfigured();
     await amplifySignOut();
-  },
-
-  async forgotPassword({ username }) {
-    ensureConfigured();
-    await resetPassword({ username });
-    return {};
-  },
-
-  async confirmForgotPassword({ username, code, newPassword }) {
-    ensureConfigured();
-    await confirmResetPassword({ username, confirmationCode: code, newPassword });
   },
 
   async changePassword({ oldPassword, newPassword }) {

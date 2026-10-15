@@ -99,15 +99,6 @@ export const localAuth = {
     saveToken(null);
   },
 
-  async forgotPassword({ username }) {
-    const data = await post('forgot-password', { username });
-    return { devCode: data.devCode };
-  },
-
-  async confirmForgotPassword({ username, code, newPassword }) {
-    await post('confirm-forgot-password', { username, code, newPassword });
-  },
-
   async changePassword({ oldPassword, newPassword }) {
     await post('change-password', { oldPassword, newPassword }, true);
   },

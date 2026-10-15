@@ -251,6 +251,8 @@ cat /tmp/migrate.json   # {"ok":true,"task":"migrate"}
 
 แอปใช้ **ชื่อผู้ใช้** เข้าสู่ระบบ (อีเมลใช้แทนได้), ยืนยันอีเมลด้วยรหัส, 2FA แบบ TOTP (ไม่บังคับ)
 รหัสผ่านที่ส่งให้ Cognito คือ Authentication Key ที่ derive จาก master password (`Sv1!` + 64 hex) จึงผ่าน policy เสมอ
+ตอนนี้ยังไม่มีระบบลืมรหัสผ่าน จึงตั้ง account recovery เป็น `admin_only` เพื่อปิดการรีเซ็ตรหัสผ่านด้วยตัวเองผ่าน Cognito
+(ลืม master password = เปิดคลังเดิมไม่ได้อยู่แล้วตามหลัก zero-knowledge)
 
 ```bash
 USER_POOL_ID=$(aws cognito-idp create-user-pool --pool-name $APP-users \
@@ -260,7 +262,7 @@ USER_POOL_ID=$(aws cognito-idp create-user-pool --pool-name $APP-users \
   --policies 'PasswordPolicy={MinimumLength=12,RequireUppercase=true,RequireLowercase=true,RequireNumbers=true,RequireSymbols=true,TemporaryPasswordValidityDays=3}' \
   --mfa-configuration OPTIONAL \
   --software-token-mfa-configuration Enabled=true \
-  --account-recovery-setting 'RecoveryMechanisms=[{Priority=1,Name=verified_email}]' \
+  --account-recovery-setting 'RecoveryMechanisms=[{Priority=1,Name=admin_only}]' \
   --schema Name=email,Required=true,Mutable=true Name=name,Required=false,Mutable=true \
   --deletion-protection ACTIVE \
   --user-pool-tags Project=$APP \

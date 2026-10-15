@@ -284,47 +284,6 @@ export function AuthProvider({ children }) {
     [user]
   );
 
-  // UC-7: forgotten master password (Cognito code by e-mail)
-  const requestPasswordReset = useCallback(async ({ identifier }) => {
-    const auth = await getAuth();
-    return auth.forgotPassword({ username: identifier });
-  }, []);
-
-  /**
-   * Sets a new master password. The old Vault Key cannot be recovered without the old
-   * master password (zero knowledge), so fresh key material is generated: items encrypted
-   * with the old Vault Key become unreadable.
-   */
-  const confirmPasswordReset = useCallback(async ({ identifier, code, newMasterPassword }) => {
-    const salt = (await api.auth.getSalt(identifier)).data.salt;
-    const { kek, authHash } = await ClientCrypto.deriveKeys(newMasterPassword, salt);
-    const password = ClientCrypto.toCognitoPassword(authHash);
-    const auth = await getAuth();
-    await auth.confirmForgotPassword({ username: identifier, code, newPassword: password });
-
-    const signIn = await auth.signIn({ username: identifier, password });
-    if (signIn.status !== 'DONE') {
-      // TOTP users finish the key reset on their next sign-in (see openVault errors).
-      await auth.signOut().catch(() => {});
-      return { keysReset: false };
-    }
-    const vaultKeyBytes = ClientCrypto.createVaultKey();
-    const keyPair = await ClientCrypto.createKeyPair();
-    const keyMaterial = {
-      kdf_salt: salt,
-      public_key: keyPair.publicKey,
-      encrypted_private_key: await ClientCrypto.protectPrivateKey(keyPair.privateKey, vaultKeyBytes),
-      encrypted_vault_key: await ClientCrypto.wrapVaultKey(vaultKeyBytes, kek),
-    };
-    try {
-      await api.users.updateKeys({ ...keyMaterial, reason: 'reset' });
-    } catch (err) {
-      if (err?.code !== 'PROFILE_NOT_FOUND') throw err;
-    }
-    await auth.signOut().catch(() => {});
-    return { keysReset: true };
-  }, []);
-
   // UC-3: TOTP enrolment
   const setupTotp = useCallback(async () => {
     const auth = await getAuth();
@@ -363,8 +322,6 @@ export function AuthProvider({ children }) {
     logout,
     lockVault,
     unlockVault,
-    requestPasswordReset,
-    confirmPasswordReset,
     setupTotp,
     verifyTotp,
   };

@@ -11,7 +11,6 @@ import { CommandPalette } from './components/Layout/CommandPalette.jsx';
 import { LoginView, AuthNavProvider } from './components/Auth/LoginView.jsx';
 import { LandingView } from './components/Landing/LandingView.jsx';
 import { RegisterView } from './components/Auth/RegisterView.jsx';
-import { ResetPasswordView } from './components/Auth/ResetPasswordView.jsx';
 import { ConfirmSignUpView } from './components/Auth/ConfirmSignUpView.jsx';
 import { MfaModal } from './components/Auth/MfaModal.jsx';
 
@@ -30,7 +29,7 @@ function MainApp() {
   const { isAuthenticated, isAdmin, lockVault, logout } = useAuth();
 
   // Auth navigation state when logged out
-  const [authView, setAuthView] = useState('landing'); // 'landing' | 'login' | 'register' | 'confirm' | 'reset'
+  const [authView, setAuthView] = useState('landing'); // 'landing' | 'login' | 'register' | 'confirm'
   const [pendingConfirmation, setPendingConfirmation] = useState({ username: '', devCode: null });
 
   const goToConfirm = useCallback((username, devCode = null) => {
@@ -113,7 +112,6 @@ function MainApp() {
         {authView === 'login' && (
           <LoginView
             onNavigateRegister={() => setAuthView('register')}
-            onNavigateReset={() => setAuthView('reset')}
             onNavigateConfirm={(identifier) => goToConfirm(identifier)}
             onSuccess={() => setCurrentTab('vault')}
           />
@@ -130,10 +128,6 @@ function MainApp() {
             devCode={pendingConfirmation.devCode}
             onNavigateLogin={() => setAuthView('login')}
           />
-        )}
-
-        {authView === 'reset' && (
-          <ResetPasswordView onNavigateLogin={() => setAuthView('login')} />
         )}
       </main>
       </AuthNavProvider>

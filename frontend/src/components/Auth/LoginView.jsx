@@ -7,7 +7,7 @@ import { MfaModal } from './MfaModal.jsx';
 import { PublicNav } from '../Landing/PublicNav.jsx';
 
 /* ------------------------------------------------------------------------------------------
- * Shared building blocks for the signed-out screens (Login / Register / Confirm / Reset).
+ * Shared building blocks for the signed-out screens (Login / Register / Confirm).
  * ---------------------------------------------------------------------------------------- */
 
 /**
@@ -120,7 +120,7 @@ export function DerivingStatus({ active, message = 'กำลังเตรี�
 
 /* ------------------------------------------------------------------------------------------ */
 
-export function LoginView({ onNavigateRegister, onNavigateReset, onNavigateConfirm, onSuccess }) {
+export function LoginView({ onNavigateRegister, onNavigateConfirm, onSuccess }) {
   const { login, loading, error: authError, setError } = useAuth();
   const { addToast } = useToast();
 
@@ -228,11 +228,6 @@ export function LoginView({ onNavigateRegister, onNavigateReset, onNavigateConfi
               />
             )}
           </Field>
-          <div className="flex justify-end">
-            <Button variant="link" size="sm" className="h-auto p-0" onClick={onNavigateReset}>
-              ลืมรหัสผ่านหลัก?
-            </Button>
-          </div>
         </div>
 
         <Button type="submit" className="mt-1 w-full" loading={busy}>
