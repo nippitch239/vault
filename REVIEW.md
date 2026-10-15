@@ -9,7 +9,7 @@
 | 3. ปรับ UI/UX | เสร็จ — เริ่มจาก Open Design (Linear) แล้วเปลี่ยนเป็นธีม "Vault" ตามที่เจ้าของงานเลือก + เมนูด้านบน + หน้า landing |
 | 4. ขั้นตอน deploy | เสร็จ — `docs/DEPLOY.md` (AWS CLI/Console ตามที่เลือก) + GitHub Actions สำหรับ backend |
 
-ผลสุดท้าย: **test 72/72 ผ่าน, ESLint 0 problems, build ทั้งสองฝั่งผ่าน** (รายละเอียดหัวข้อ 5)
+ผลสุดท้าย: **test 74/74 ผ่าน, ESLint 0 problems, build ทั้งสองฝั่งผ่าน** (รายละเอียดหัวข้อ 5)
 
 ---
 
@@ -51,7 +51,7 @@ vault/
 
 - frontend ไม่ต่อ database, ไม่มี secret, ไม่มี AWS SDK ฝั่ง server — เรียก API Gateway (`VITE_API_URL`) และ Cognito เท่านั้น; ตัด `node:crypto` ออกจาก bundle
 - backend ไม่ verify JWT เอง (ลบ HS256 + secret สำรองที่ hard-code) — เชื่อ claims จาก API Gateway Cognito authorizer; role admin = กลุ่ม `admin` ใน Cognito
-- login/สมัคร/ยืนยันอีเมล/2FA/ลืมรหัสผ่าน ย้ายไป Amazon Cognito; ตาราง `users` เก็บแค่ key material (`kdf_salt`, `encrypted_vault_key`, `encrypted_private_key`, `public_key`) โดย `user_id` = Cognito `sub`
+- login/สมัคร/ยืนยันอีเมล/2FA ย้ายไป Amazon Cognito (ระบบลืมรหัสผ่านถูกเอาออกตามการตัดสินใจ D7); ตาราง `users` เก็บแค่ key material (`kdf_salt`, `encrypted_vault_key`, `encrypted_private_key`, `public_key`) โดย `user_id` = Cognito `sub`
 - เพิ่มชั้น **Vault Key** ตามแผนภาพที่ให้มา: master password → Argon2id → HKDF → KEK + Authentication Key; KEK ห่อ Vault Key แบบสุ่ม
 - API Gateway แบบ **REST** (เพื่อผูก WAF ได้ตามรูป)
 
@@ -83,7 +83,7 @@ vault/
 | `src/client/src/components/Auth/LoginView.jsx` | `frontend/src/components/Auth/LoginView.jsx` |
 | `src/client/src/components/Auth/MfaModal.jsx` | `frontend/src/components/Auth/MfaModal.jsx` |
 | `src/client/src/components/Auth/RegisterView.jsx` | `frontend/src/components/Auth/RegisterView.jsx` |
-| `src/client/src/components/Auth/ResetPasswordView.jsx` | `frontend/src/components/Auth/ResetPasswordView.jsx` |
+| `src/client/src/components/Auth/ResetPasswordView.jsx` | ลบแล้ว (D7: ยังไม่มีระบบลืมรหัสผ่าน) |
 | `src/client/src/components/Collections/CollectionsView.jsx` | `frontend/src/components/Collections/CollectionsView.jsx` |
 | `src/client/src/components/Common/Icons.jsx` | `frontend/src/components/Common/Icons.jsx` |
 | `src/client/src/components/Common/PasswordGenerator.jsx` | `frontend/src/components/Common/PasswordGenerator.jsx` |
@@ -175,12 +175,14 @@ vault/
 | 26 | `frontend/src/services/crypto.js` | มี branch `node:crypto` ใน bundle ของ browser (Vite เตือน) | Low | แก้แล้ว (ย้ายไป shared แบบ WebCrypto) | c02ccc6 |
 | 27 | `ui/Sheet.jsx`, `ui/DropdownMenu.jsx` | ใช้คีย์บอร์ดไม่ได้, ไม่มี focus trap, ป้าย "Close" ภาษาอังกฤษ | Low | แก้แล้ว | ba22cf6 |
 | 28 | `ui/Button.jsx` | ปุ่มหลักกลืนกับพื้นหลัง, ลิงก์สี primary อ่านยากบนพื้นมืด (~2.5:1) | Low | แก้แล้ว | 399337a |
-| 29 | `backend/src/handlers/share.js`, `Sharing/ShareModal.jsx` | **แชร์รายการ (UC-10) ใช้ไม่ได้มาตั้งแต่ก่อน review**: ห่อ key แบบสุ่มที่ไม่ใช่ key ที่ใช้เข้ารหัส item → ผู้รับถอดรหัสไม่ได้ | High | **ยังไม่แก้** (ต้องเปลี่ยนโครงสร้างข้อมูล — ดูหัวข้อ 4, 7) | — |
+| 29 | `backend/src/handlers/share.js`, `Sharing/ShareModal.jsx` | **แชร์รายการ (UC-10) ใช้ไม่ได้มาตั้งแต่ก่อน review**: ห่อ key แบบสุ่มที่ไม่ใช่ key ที่ใช้เข้ารหัส item → ผู้รับถอดรหัสไม่ได้ | High | แก้แล้ว (D5: key ต่อรายการ, คอลัมน์ใหม่ `vault_items.encrypted_item_key`) | 120e6c3 |
 | 30 | `collection` (ทั้งระบบ) | เพิกถอนสิทธิ์แล้วไม่หมุน collection key — คนที่เคยถอด key ไว้ยังถอด ciphertext เดิมได้ถ้าได้มาอีกทาง | Medium | ยอมรับความเสี่ยงตามการตัดสินใจ D2 | — |
 | 31 | `backend/src/handlers/{vault,share,history,logs,group}.js` | handler นอก collection ยังใช้ `parseBody` (JSON เสีย → `{}`), `item_type`/`severity` ผิด → 500, `vaultId` ใน path ไม่ถูกใช้ตรวจ | Medium | ยังไม่แก้ (นอกขอบเขต collection) | — |
-| 32 | `frontend/src/context/AuthContext.jsx` (`confirmPasswordReset`) | ผู้ใช้ที่เปิด 2FA รีเซ็ตรหัสแล้ว key ใหม่ยังไม่ถูกสร้างจนกว่าจะ login + สร้างเอง → ครั้งต่อไปเห็นข้อความถอดรหัสไม่ได้ | Medium | ยังไม่แก้ | — |
+| 32 | `frontend/src/context/AuthContext.jsx` (`confirmPasswordReset`) | ผู้ใช้ที่เปิด 2FA รีเซ็ตรหัสแล้ว key ใหม่ยังไม่ถูกสร้างจนกว่าจะ login + สร้างเอง → ครั้งต่อไปเห็นข้อความถอดรหัสไม่ได้ | Medium | ปิดไป — เอาระบบลืมรหัสผ่านออก (D7), Cognito account recovery = `admin_only` | e3cc0b4 |
 | 33 | `backend/src/handlers/monitoring.js` | `/health` (public) ส่งข้อความ error ของ DB; ตัวนับ request อยู่ในหน่วยความจำของแต่ละ container (ตัวเลขไม่ตรงกัน) | Low | ยังไม่แก้ | — |
-| 34 | `backend/src/handlers/share.js` (`/users/lookup`) | ผู้ใช้ทุกคนค้นอีเมล → ได้ public key/ชื่อของผู้ใช้อื่น (enumeration) | Low | ยังไม่แก้ (ต้องตัดสินใจเชิงนโยบาย) | — |
+| 34 | `backend/src/handlers/share.js` (`/users/lookup`) | ผู้ใช้ทุกคนค้นอีเมล → ได้ public key/ชื่อของผู้ใช้อื่น (enumeration) | Low | แก้แล้ว (D6: ค้นด้วย username เฉพาะคนในกลุ่มเดียวกัน, ไม่คืนอีเมล; แชร์ได้เฉพาะคนในกลุ่มเดียวกัน) | 120e6c3 |
+| 35 | `backend/src/handlers/collection.js` (รายการในคอลเลกชัน) | ไม่ส่ง `user_id` ของเจ้าของ → หน้าแก้ไขถือว่าผู้มีสิทธิ์ write เป็นเจ้าของ (เปิดให้ย้ายคอลเลกชันได้) | Low | แก้แล้ว | 120e6c3 |
+| 36 | `Sharing/SharedItemsView.jsx` | ผู้รับที่ได้สิทธิ์ "แก้ไขได้" ไม่มีปุ่มแก้ไข (App ไม่ส่ง `onEditItem`) | Low | แก้แล้ว | 120e6c3 |
 
 ---
 
@@ -214,11 +216,13 @@ Accessibility: label ทุก input, `aria-label` ไทยบนปุ่ม�
 
 | เรื่อง | เหตุผล |
 |---|---|
-| แชร์รายการรายตัว (UC-10) ถอดรหัสฝั่งผู้รับไม่ได้ (#29) | ต้องเปลี่ยนเป็น **key ต่อรายการ** (item key ห่อด้วย Vault Key ของเจ้าของ และด้วย public key ของผู้รับ) = เปลี่ยนโครงสร้างข้อมูล ต้องให้ตัดสินใจก่อน; ระหว่างนี้แนะนำให้แชร์ผ่าน **คอลเลกชัน** ซึ่งทำงานถูกต้อง |
+| เพิกถอนการแชร์รายการแล้วไม่เปลี่ยน Item Key | แนวเดียวกับ D2 — ผู้รับที่เคยถอด Item Key ไว้ยังอ่าน ciphertext เดิมได้ถ้าได้มาอีกทาง; server ลบสิทธิ์และ key ที่ห่อให้ทันที |
+| รายการเก่า (ก่อนมี Item Key) | ยังอ่านได้ด้วย Vault Key / Collection Key; ได้ Item Key เมื่อเจ้าของบันทึกครั้งถัดไปหรือกดแชร์ (อัตโนมัติ) — เวอร์ชันในประวัติก่อนหน้านั้นผู้รับแชร์อ่านไม่ได้ |
+| ลบคอลเลกชันที่ยังมีรายการ | Item Key ของรายการในคอลเลกชันห่อด้วย Collection Key → ลบคอลเลกชันแล้วเจ้าของเปิดรายการนั้นไม่ได้ (ปัญหาเดิมก่อน review เช่นกัน) — ควรย้ายรายการออกก่อนลบ หรือเพิ่มขั้นตอนห่อ Item Key ด้วย Vault Key ของเจ้าของไว้อีกชุด (เปลี่ยนโครงสร้างข้อมูล ต้องตัดสินใจ) |
 | ไม่หมุน collection key เมื่อเพิกถอนสิทธิ์ (#30) | ตัดสินใจแล้ว (D2) — ตัด API และลบ key ฝั่ง server ทันที |
 | ยังไม่ได้รันกับ PostgreSQL จริง | Docker Desktop ไม่ได้เปิด; test ทั้งหมดรันบน SQLite (SQL ส่วนใหญ่เหมือนกัน แต่ CTE/`ON CONFLICT`/uuid ควรยืนยันบน PG) — แนะนำ `docker run postgres:16` + `DATABASE_URL=... npm test --workspace backend` หรือทดสอบหลัง deploy ตามขั้นที่ 12 |
-| handler นอก collection (#31, #33, #34) | นอกขอบเขต "collection" ของงานนี้ — บันทึกไว้ใน `docs/API.md` หัวข้อ Known inconsistencies |
-| reset รหัสของผู้ใช้ที่เปิด 2FA (#32) | ต้องออกแบบ flow (ขอรหัส 2FA ในหน้ารีเซ็ต) |
+| handler นอก collection (#31, #33) | นอกขอบเขต "collection" ของงานนี้ — บันทึกไว้ใน `docs/API.md` หัวข้อ Known inconsistencies |
+| ระบบลืมรหัสผ่าน | เอาออกตาม D7 — ถ้าจะเพิ่มกลับ ต้องออกแบบ flow สำหรับผู้ใช้ที่เปิด 2FA (#32) และเปลี่ยน account recovery ของ Cognito |
 | `Layout/Sidebar.jsx`, `Layout/AppHeader.jsx` ไม่ได้ใช้แล้ว | เก็บไว้ไม่ลบ (กติกาไม่ลบไฟล์โดยไม่ถาม) — ลบได้ถ้าต้องการ |
 | ยังไม่มี test ของ React component | โปรเจกต์ไม่มี test infra สำหรับ UI (ใช้ `node:test`); UI ตรวจด้วย headless browser + screenshot แทน |
 | `tests/`, `terraform/`, `ORIGINAL_REQUEST.md` ที่ PR.md/TEST_READY.md อ้างถึง | ไม่มีใน repo (`tests/` ถูก .gitignore) — ใส่หมายเหตุไว้ที่หัวเอกสารเหล่านั้นแล้ว; ตัวเลข "193 tests" ในเอกสารจึงตรวจซ้ำไม่ได้ |
@@ -229,14 +233,14 @@ Accessibility: label ทุก input, `aria-label` ไทยบนปุ่ม�
 
 | | ก่อน (`main@bc80b25`) | หลัง (`fix/review`) |
 |---|---|---|
-| **Backend test** | `src/server/server.test.js` 12/12 (ไม่มี test ของ collection handler) | `backend/test/*` **27/27** (server 13 + collection 12 + local-auth 2) |
+| **Backend test** | `src/server/server.test.js` 12/12 (ไม่มี test ของ collection handler) | `backend/test/*` **29/29** (server 15 + collection 12 + local-auth 2) |
 | **Frontend test** | `src/client/client.test.js` 5/5 | `frontend/test/client.test.js` **6/6** |
-| **Shared test** | 27/27 | **28/28** (+ Vault Key) |
-| **Integration (frontend ↔ backend)** | `src/client/e2e.test.js` 10/10 (เรียก handler โดยตรง) | `integration/e2e.test.js` **11/11** (ผ่าน auth adapter + API Gateway/Cognito จำลอง) |
+| **Shared test** | 27/27 | **29/29** (+ Vault Key, + Item Key) |
+| **Integration (frontend ↔ backend)** | `src/client/e2e.test.js` 10/10 (เรียก handler โดยตรง) | `integration/e2e.test.js` **10/10** (ผ่าน auth adapter + API Gateway/Cognito จำลอง; ตัด UC-7 ลืมรหัสผ่านออกตาม D7) |
 | `npm run test:e2e` | **พัง** (ไม่มีโฟลเดอร์ `tests/`) | ลบสคริปต์ที่อ้างถึงสิ่งที่ไม่มี; ใช้ `npm run test:integration` |
 | **Lint** | ไม่มี lint | ESLint flat config — **0 errors, 0 warnings** ทุก workspace |
 | **Frontend build** | ผ่าน (มีคำเตือน `node:crypto` externalized) | ผ่าน ไม่มีคำเตือน |
-| **Backend build** | ไม่มี (ไม่มี Lambda package) | `backend/dist/lambda.zip` (~64 KiB) ผ่าน |
+| **Backend build** | ไม่มี (ไม่มี Lambda package) | `backend/dist/lambda.zip` (~65 KiB) ผ่าน |
 
 คำสั่ง: `npm test` (ทั้งหมด), `npm run lint`, `npm run build`, หรือ `npm run verify` (สรุปเป็นตาราง)
 
@@ -507,7 +511,7 @@ USER_POOL_ID=$(aws cognito-idp create-user-pool --pool-name $APP-users \
   --policies 'PasswordPolicy={MinimumLength=12,RequireUppercase=true,RequireLowercase=true,RequireNumbers=true,RequireSymbols=true,TemporaryPasswordValidityDays=3}' \
   --mfa-configuration OPTIONAL \
   --software-token-mfa-configuration Enabled=true \
-  --account-recovery-setting 'RecoveryMechanisms=[{Priority=1,Name=verified_email}]' \
+  --account-recovery-setting 'RecoveryMechanisms=[{Priority=1,Name=admin_only}]' \
   --schema Name=email,Required=true,Mutable=true Name=name,Required=false,Mutable=true \
   --deletion-protection ACTIVE \
   --user-pool-tags Project=$APP \
@@ -1083,15 +1087,15 @@ aws cloudtrail delete-trail --name $APP-trail
 
 **ต้องตัดสินใจ**
 
-1. **UC-10 แชร์รายการรายตัว** — เปลี่ยนเป็น key ต่อรายการ (แนะนำ, ต้องปรับ schema `vault_items`/`share_permissions` และ flow ใน `ShareModal`), หรือปิดฟีเจอร์นี้แล้วให้แชร์ผ่านคอลเลกชันอย่างเดียว
-2. `/users/lookup` ให้ทุกคนค้นอีเมลได้ — จำกัดให้ค้นเฉพาะคนในกลุ่มเดียวกัน หรือยอมรับ
-3. Flow รีเซ็ตรหัสสำหรับผู้ใช้ที่เปิด 2FA (#32)
-4. Region (`ap-southeast-1` หรือ `ap-southeast-7`) และจะเปิด RDS Proxy / Multi-AZ ตั้งแต่ช่วงทดสอบหรือไม่ (ค่าใช้จ่ายหัวข้อ 15)
-5. Merge `fix/review` เข้า `main` (ยังไม่ได้ทำตามกติกา)
+ตัดสินใจแล้ว: **D5** key ต่อรายการ, **D6** ค้นผู้ใช้ด้วย username เฉพาะคนในกลุ่มเดียวกัน, **D7** ยังไม่มีระบบลืมรหัสผ่าน
+
+1. จะเก็บ Item Key อีกชุดที่ห่อด้วย Vault Key ของเจ้าของสำหรับรายการในคอลเลกชันหรือไม่ (กันกรณีลบคอลเลกชันแล้วเปิดรายการไม่ได้ — หัวข้อ 4)
+2. Region (`ap-southeast-1` หรือ `ap-southeast-7`) และจะเปิด RDS Proxy / Multi-AZ ตั้งแต่ช่วงทดสอบหรือไม่ (ค่าใช้จ่ายหัวข้อ 15)
+3. Merge `fix/review` เข้า `main` (ยังไม่ได้ทำตามกติกา)
 
 **ต้องทำเอง**
 
-1. รีวิวและ push branch (`git push -u origin fix/review`) แล้วเปิด PR
+1. เปิด PR จาก fork `bemalykuma/vault:fix/review` เข้า `nippitch239/vault:main` (branch push ขึ้น fork แล้ว)
 2. ทำตาม `docs/DEPLOY.md` ด้วยบัญชี AWS ของคุณ (ผมไม่ได้แตะ AWS) — ตั้ง GitHub Variables 3 ตัว และ Environment `production` สำหรับ workflow
 3. เชื่อม GitHub กับ Amplify ใน Console (ต้องให้สิทธิ์ GitHub App)
 4. ใส่อีเมลรับ alarm และกดยืนยันการสมัคร SNS; ตั้ง AWS Budgets
