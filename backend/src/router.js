@@ -10,6 +10,7 @@
 
 import { normalizeEvent } from './http/event.js';
 import { corsHeaders, fail } from './http/response.js';
+import { ServiceError } from './services/errors.js';
 
 import {
   getSaltHandler,
@@ -441,8 +442,12 @@ export async function router(rawEvent, context) {
   try {
     response = await withTimeout(Promise.resolve(route.handler({ ...event, pathParameters }, context)), context);
   } catch (err) {
-    logError(event, err);
-    response = fail(500, 'INTERNAL_SERVER_ERROR', 'An unexpected error occurred. Please try again later.');
+    if (err instanceof ServiceError) {
+      response = fail(err.status, err.code, err.message, err.details);
+    } else {
+      logError(event, err);
+      response = fail(500, 'INTERNAL_SERVER_ERROR', 'An unexpected error occurred. Please try again later.');
+    }
   }
 
   recordRequestMetric(Date.now() - startTime, response.statusCode >= 400);

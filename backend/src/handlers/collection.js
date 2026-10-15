@@ -1,34 +1,19 @@
 /**
- * Secure Vault Cloud — Collections Handlers (M3: R1, R2, R3)
+ * Secure Vault Cloud — Collections HTTP handlers (R1, R2, R3)
  *
- * Implements:
- * 1. Collection CRUD: createCollection, listCollections, getCollection, updateCollection, deleteCollection
- * 2. Collection Access RBAC: grantCollectionAccess, listCollectionAccess, revokeCollectionAccess
- * 3. Collection Keys Distribution: storeCollectionKey, getCollectionKey
- * 4. Collection Items Association: addCollectionItem, listCollectionItems, removeCollectionItem
- *
- * Ponytail minimalism: Parameterized SQL, atomic RBAC evaluation, dual naming convention.
+ * Layers: handler (this file: auth, input validation, response shape)
+ *   -> services/collection-service.js (permissions, business rules)
+ *   -> db/collection-repo.js (parameterized SQL).
  */
 
-import crypto from 'node:crypto';
 import { getDatabase } from '../db/adapter.js';
-import { authenticate, getEffectiveCollectionPermission } from '../middleware/auth-guard.js';
-import { readJsonBody, badRequest } from '../http/response.js';
+import { authenticate } from '../middleware/auth-guard.js';
+import { ok, readJsonBody, badRequest } from '../http/response.js';
 import { requireUuids, requireEnum, checkText, isWrappedKey } from '../http/validate.js';
+import * as service from '../services/collection-service.js';
 
 const NAME_MAX = 255;
 const DESCRIPTION_MAX = 2000;
-
-function jsonResponse(statusCode, data) {
-  return {
-    statusCode,
-    headers: {
-      'content-type': 'application/json',
-      'access-control-allow-origin': '*',
-    },
-    body: JSON.stringify(data),
-  };
-}
 
 /**
  * Normalizes collection row with effective permission
@@ -194,49 +179,24 @@ export function formatVaultItem(row) {
   };
 }
 
-async function recordAuditLog(db, { actorUserId, actorRole = 'user', eventAction, severity = 'INFO', targetResource = 'collection', targetResourceId = null, details = {} }) {
-  try {
-    await db.query(
-      `INSERT INTO audit_logs (actor_user_id, actor_role, event_action, event_severity, target_resource, target_resource_id, ip_address, status, details)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [actorUserId || null, actorRole || 'user', eventAction, severity, targetResource, targetResourceId, '127.0.0.1', 'SUCCESS', details]
-    );
-  } catch {
-    // Non-blocking
-  }
+// ============================================================================
+// HTTP handlers: authenticate -> validate -> service -> format
+// ============================================================================
+
+function withValidatedCollection(event) {
+  const collectionId = event.pathParameters?.collectionId;
+  return { collectionId, error: requireUuids({ collectionId }) };
 }
 
 /**
- * Deletes wrapped keys of users who no longer have any access to the collection
- * (after a direct grant, a group grant or a group membership is removed).
- * Their API access is already gone; this removes the key material as well.
- */
-export async function pruneOrphanedCollectionKeys(db, collectionId) {
-  const keys = await db.query('SELECT user_id FROM collection_keys WHERE collection_id = $1', [collectionId]);
-  let removed = 0;
-  for (const row of keys.rows || []) {
-    const perm = await getEffectiveCollectionPermission(db, collectionId, row.user_id);
-    if (!perm) {
-      await db.query('DELETE FROM collection_keys WHERE collection_id = $1 AND user_id = $2', [collectionId, row.user_id]);
-      removed += 1;
-    }
-  }
-  return removed;
-}
-
-// ============================================================================
-// Collection CRUD Handlers
-// ============================================================================
-
-/**
- * POST /api/v1/collections - Create collection with optional wrapped key
+ * POST /collections
  */
 export async function createCollectionHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
   const { body, errorResponse: bodyError } = readJsonBody(event);
   if (bodyError) return bodyError;
+
   const nameCheck = checkText('name', body.name, { min: 1, max: NAME_MAX });
   const descCheck = checkText('description', body.description ?? null, { max: DESCRIPTION_MAX, allowNull: true });
   const errors = [nameCheck.error, descCheck.error].filter(Boolean);
@@ -245,257 +205,82 @@ export async function createCollectionHandler(event) {
   }
   if (errors.length) return badRequest('Invalid collection', 'VALIDATION_FAILED', errors);
 
-  const db = getDatabase();
-  const collectionId = crypto.randomUUID();
-  const now = new Date().toISOString();
-  const trimmedName = nameCheck.value;
-  const description = descCheck.value || null;
-
-  await db.query(
-    'INSERT INTO collections (collection_id, name, description, created_by, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)',
-    [collectionId, trimmedName, description, user.user_id, now, now]
-  );
-
-  // Creator direct admin access
-  const accessId = crypto.randomUUID();
-  await db.query(
-    "INSERT INTO collection_access (access_id, collection_id, target_type, target_id, permission, created_at, updated_at) VALUES ($1, $2, 'user', $3, 'admin', $4, $5)",
-    [accessId, collectionId, user.user_id, now, now]
-  );
-
-  // Store wrapped key if provided
-  if (body.encryptedKeyForRecipient) {
-    const keyId = crypto.randomUUID();
-    await db.query(
-      'INSERT INTO collection_keys (key_id, collection_id, user_id, encrypted_key_for_recipient, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [keyId, collectionId, user.user_id, body.encryptedKeyForRecipient, now, now]
-    );
-  }
-
-  await recordAuditLog(db, {
-    actorUserId: user.user_id,
-    actorRole: user.role,
-    eventAction: 'COLLECTION_CREATED',
-    targetResourceId: collectionId,
-    details: { name: trimmedName },
+  const collection = await service.createCollection(getDatabase(), user, {
+    name: nameCheck.value,
+    description: descCheck.value || null,
+    wrappedKey: body.encryptedKeyForRecipient,
   });
-
-  return jsonResponse(201, {
-    status: 'success',
-    success: true,
-    collection: formatCollection(
-      {
-        collection_id: collectionId,
-        name: trimmedName,
-        description,
-        created_by: user.user_id,
-        created_at: now,
-        updated_at: now,
-      },
-      'admin'
-    ),
-  });
+  return ok({ collection: formatCollection(collection, 'admin') }, 201);
 }
 
 /**
- * GET /api/v1/collections - List accessible collections for caller
+ * GET /collections
  */
 export async function listCollectionsHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const db = getDatabase();
-  const allCollections = await db.query(
-    'SELECT * FROM collections ORDER BY created_at DESC'
-  );
-
-  const accessible = [];
-  for (const c of allCollections.rows || []) {
-    const perm = await getEffectiveCollectionPermission(db, c.collection_id, user);
-    if (perm) {
-      accessible.push(formatCollection(c, perm));
-    }
-  }
-
-  return jsonResponse(200, {
-    status: 'success',
-    success: true,
-    collections: accessible,
-  });
+  const accessible = await service.listCollections(getDatabase(), user);
+  return ok({ collections: accessible.map(({ collection, permission }) => formatCollection(collection, permission)) });
 }
 
 /**
- * GET /api/v1/collections/:collectionId - Get collection details
+ * GET /collections/:collectionId
  */
 export async function getCollectionHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
-  const db = getDatabase();
-
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (!perm) {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Insufficient permissions to view collection',
-    });
-  }
-
-  return jsonResponse(200, {
-    status: 'success',
-    success: true,
-    collection: formatCollection(res.rows[0], perm),
-  });
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
+  const { collection, permission } = await service.getCollection(getDatabase(), user, collectionId);
+  return ok({ collection: formatCollection(collection, permission) });
 }
 
 /**
- * PUT /api/v1/collections/:collectionId - Update collection metadata
+ * PUT /collections/:collectionId
  */
 export async function updateCollectionHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
-  const db = getDatabase();
-
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (perm !== 'admin') {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Admin permission required to update collection',
-    });
-  }
-
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
   const { body, errorResponse: bodyError } = readJsonBody(event);
   if (bodyError) return bodyError;
-  const nameCheck = body.name !== undefined ? checkText('name', body.name, { min: 1, max: NAME_MAX }) : { value: res.rows[0].name };
-  const descCheck =
-    body.description !== undefined
-      ? checkText('description', body.description, { max: DESCRIPTION_MAX, allowNull: true })
-      : { value: res.rows[0].description };
+
+  const nameCheck = body.name !== undefined ? checkText('name', body.name, { min: 1, max: NAME_MAX }) : {};
+  const descCheck = body.description !== undefined ? checkText('description', body.description, { max: DESCRIPTION_MAX, allowNull: true }) : {};
   const errors = [nameCheck.error, descCheck.error].filter(Boolean);
   if (errors.length) return badRequest('Invalid collection', 'VALIDATION_FAILED', errors);
 
-  const updatedName = nameCheck.value;
-  const updatedDesc = descCheck.value || null;
-  const now = new Date().toISOString();
-
-  await db.query(
-    'UPDATE collections SET name = $1, description = $2, updated_at = $3 WHERE collection_id = $4',
-    [updatedName, updatedDesc, now, collectionId]
-  );
-
-  const updated = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  return jsonResponse(200, {
-    status: 'success',
-    success: true,
-    collection: formatCollection(updated.rows[0], 'admin'),
+  const updated = await service.updateCollection(getDatabase(), user, collectionId, {
+    name: nameCheck.value,
+    description: body.description === undefined ? undefined : descCheck.value || null,
   });
+  return ok({ collection: formatCollection(updated, 'admin') });
 }
 
 /**
- * DELETE /api/v1/collections/:collectionId - Delete collection and associations
+ * DELETE /collections/:collectionId
  */
 export async function deleteCollectionHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
-  const db = getDatabase();
-
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (perm !== 'admin') {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Admin permission required to delete collection',
-    });
-  }
-
-  await db.query('DELETE FROM collection_keys WHERE collection_id = $1', [collectionId]);
-  await db.query('DELETE FROM collection_items WHERE collection_id = $1', [collectionId]);
-  await db.query('DELETE FROM collection_access WHERE collection_id = $1', [collectionId]);
-  await db.query('DELETE FROM collections WHERE collection_id = $1', [collectionId]);
-
-  return jsonResponse(200, {
-    status: 'success',
-    success: true,
-    message: 'Collection deleted successfully',
-  });
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
+  await service.deleteCollection(getDatabase(), user, collectionId);
+  return ok({ message: 'Collection deleted successfully' });
 }
 
-// ============================================================================
-// Collection Access RBAC Handlers
-// ============================================================================
-
 /**
- * POST /api/v1/collections/:collectionId/access - Grant access to user or group
+ * POST /collections/:collectionId/access
  */
 export async function grantCollectionAccessHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
-  const db = getDatabase();
-
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (perm !== 'admin') {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Admin permission required to manage access',
-    });
-  }
-
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
   const { body, errorResponse: bodyError } = readJsonBody(event);
   if (bodyError) return bodyError;
+
   const { targetId, permission = 'read' } = body;
   const targetType = typeof body.targetType === 'string' ? body.targetType.toLowerCase() : body.targetType;
   const inputError =
@@ -504,496 +289,131 @@ export async function grantCollectionAccessHandler(event) {
     requireUuids({ targetId });
   if (inputError) return inputError;
 
-  if (targetType === 'user') {
-    const u = await db.query('SELECT user_id FROM users WHERE user_id = $1', [targetId]);
-    if (!u.rows || u.rows.length === 0) {
-      return jsonResponse(404, {
-        status: 'fail',
-        error: 'NOT_FOUND',
-        message: 'Target user not found',
-      });
-    }
-  } else if (targetType === 'group') {
-    const g = await db.query('SELECT group_id FROM groups WHERE group_id = $1', [targetId]);
-    if (!g.rows || g.rows.length === 0) {
-      return jsonResponse(404, {
-        status: 'fail',
-        error: 'NOT_FOUND',
-        message: 'Target group not found',
-      });
-    }
-  }
-
   const normPerm = permission.toLowerCase();
-  const accessId = crypto.randomUUID();
-  const now = new Date().toISOString();
-
-  await db.query(
-    `INSERT INTO collection_access (access_id, collection_id, target_type, target_id, permission, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT(collection_id, target_type, target_id)
-     DO UPDATE SET permission = excluded.permission, updated_at = excluded.updated_at`,
-    [accessId, collectionId, targetType, targetId, normPerm, now, now]
-  );
-
-  return jsonResponse(201, {
-    status: 'success',
-    success: true,
-    access: {
-      collectionId,
-      collection_id: collectionId,
-      targetType,
-      target_type: targetType,
-      targetId,
-      target_id: targetId,
-      permission: normPerm,
+  await service.grantAccess(getDatabase(), user, collectionId, { targetType, targetId, permission: normPerm });
+  return ok(
+    {
+      access: {
+        collectionId,
+        collection_id: collectionId,
+        targetType,
+        target_type: targetType,
+        targetId,
+        target_id: targetId,
+        permission: normPerm,
+      },
     },
-  });
+    201
+  );
 }
 
 /**
- * GET /api/v1/collections/:collectionId/access - List access grants
+ * GET /collections/:collectionId/access
  */
 export async function listCollectionAccessHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
-  const db = getDatabase();
-
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (perm !== 'admin') {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Admin permission required to list access entries',
-    });
-  }
-
-  const accessList = await db.query(
-    'SELECT * FROM collection_access WHERE collection_id = $1 ORDER BY created_at ASC',
-    [collectionId]
-  );
-
-  return jsonResponse(200, {
-    status: 'success',
-    success: true,
-    access: (accessList.rows || []).map(formatCollectionAccess),
-  });
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
+  const access = await service.listAccess(getDatabase(), user, collectionId);
+  return ok({ access: access.map(formatCollectionAccess) });
 }
 
 /**
- * DELETE /api/v1/collections/:collectionId/access/:targetType/:targetId - Revoke access grant
+ * DELETE /collections/:collectionId/access/:targetType/:targetId
  */
 export async function revokeCollectionAccessHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
   const targetType = String(event.pathParameters?.targetType || '').toLowerCase();
   const targetId = event.pathParameters?.targetId;
   const targetError = requireEnum('targetType', targetType, ['user', 'group']) || requireUuids({ targetId });
   if (targetError) return targetError;
-  const db = getDatabase();
 
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (perm !== 'admin') {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Admin permission required to revoke access',
-    });
-  }
-
-  const existing = await db.query(
-    'SELECT access_id FROM collection_access WHERE collection_id = $1 AND target_type = $2 AND target_id = $3',
-    [collectionId, targetType, targetId]
-  );
-  if (!existing.rows || existing.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Access entry not found',
-    });
-  }
-
-  await db.query(
-    'DELETE FROM collection_access WHERE collection_id = $1 AND target_type = $2 AND target_id = $3',
-    [collectionId, targetType, targetId]
-  );
-  const keysRemoved = await pruneOrphanedCollectionKeys(db, collectionId);
-
-  return jsonResponse(200, {
-    status: 'success',
-    success: true,
-    message: 'Collection access revoked successfully',
-    keysRemoved,
-  });
+  const keysRemoved = await service.revokeAccess(getDatabase(), user, collectionId, { targetType, targetId });
+  return ok({ message: 'Collection access revoked successfully', keysRemoved });
 }
 
-// ============================================================================
-// Collection Keys Distribution Handlers
-// ============================================================================
-
 /**
- * POST /api/v1/collections/:collectionId/keys - Store wrapped collection key
+ * POST /collections/:collectionId/keys
  */
 export async function storeCollectionKeyHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
-  const db = getDatabase();
-
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  // Distributing (or replacing) a wrapped key is an admin action: otherwise any member
-  // could overwrite another member's key with one they control (key substitution).
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (perm !== 'admin') {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Admin permission required to distribute collection keys',
-    });
-  }
-
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
   const { body, errorResponse: bodyError } = readJsonBody(event);
   if (bodyError) return bodyError;
-  const targetUserId = body.userId || body.user_id;
-  const encryptedKey = body.encryptedKeyForRecipient || body.encrypted_key_for_recipient;
 
-  if (!targetUserId) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'BAD_REQUEST',
-      message: 'userId is required',
-    });
-  }
-  const userIdError = requireUuids({ userId: targetUserId });
+  const userId = body.userId || body.user_id;
+  const wrappedKey = body.encryptedKeyForRecipient || body.encrypted_key_for_recipient;
+  if (!userId) return badRequest('userId is required');
+  const userIdError = requireUuids({ userId });
   if (userIdError) return userIdError;
+  if (!isWrappedKey(wrappedKey)) return badRequest('Valid encryptedKeyForRecipient object with ciphertext is required');
 
-  if (!isWrappedKey(encryptedKey)) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'BAD_REQUEST',
-      message: 'Valid encryptedKeyForRecipient object with ciphertext is required',
-    });
-  }
-
-  const targetUser = await db.query('SELECT user_id FROM users WHERE user_id = $1', [targetUserId]);
-  if (!targetUser.rows || targetUser.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Target user not found',
-    });
-  }
-
-  // Grant access first, then distribute the key: never store keys for non-members.
-  const targetPerm = await getEffectiveCollectionPermission(db, collectionId, targetUserId);
-  if (!targetPerm) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'TARGET_HAS_NO_ACCESS',
-      message: 'Grant the user access to the collection before storing their key',
-    });
-  }
-
-  const keyId = crypto.randomUUID();
-  const now = new Date().toISOString();
-
-  await db.query(
-    `INSERT INTO collection_keys (key_id, collection_id, user_id, encrypted_key_for_recipient, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT(collection_id, user_id)
-     DO UPDATE SET encrypted_key_for_recipient = excluded.encrypted_key_for_recipient, updated_at = excluded.updated_at`,
-    [keyId, collectionId, targetUserId, encryptedKey, now, now]
-  );
-
-  return jsonResponse(201, {
-    status: 'success',
-    success: true,
-    message: 'Collection key stored successfully',
-  });
+  await service.storeKey(getDatabase(), user, collectionId, { userId, wrappedKey });
+  return ok({ message: 'Collection key stored successfully' }, 201);
 }
 
 /**
- * GET /api/v1/collections/:collectionId/keys - Retrieve wrapped key for authenticated user
+ * GET /collections/:collectionId/keys — the caller's own wrapped key
  */
 export async function getCollectionKeyHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
-  const db = getDatabase();
-
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (!perm) {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Insufficient permissions to retrieve collection keys',
-    });
-  }
-
-  const keyRow = await db.query(
-    'SELECT * FROM collection_keys WHERE collection_id = $1 AND user_id = $2',
-    [collectionId, user.user_id]
-  );
-
-  if (!keyRow.rows || keyRow.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'KEY_NOT_FOUND',
-      message: 'Collection key not found for current user',
-    });
-  }
-
-  return jsonResponse(200, {
-    status: 'success',
-    success: true,
-    key: formatCollectionKey(keyRow.rows[0]),
-  });
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
+  const key = await service.getMyKey(getDatabase(), user, collectionId);
+  return ok({ key: formatCollectionKey(key) });
 }
 
-// ============================================================================
-// Collection Items Association Handlers
-// ============================================================================
-
 /**
- * POST /api/v1/collections/:collectionId/items - Associate item with collection
+ * POST /collections/:collectionId/items
  */
 export async function addCollectionItemHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
-  const db = getDatabase();
-
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (perm !== 'write' && perm !== 'admin') {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Write permission required to add items to collection',
-    });
-  }
-
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
   const { body, errorResponse: bodyError } = readJsonBody(event);
   if (bodyError) return bodyError;
+
   const itemId = body.itemId || body.item_id;
-  if (!itemId) {
-    return jsonResponse(400, {
-      status: 'fail',
-      error: 'BAD_REQUEST',
-      message: 'itemId is required',
-    });
-  }
+  if (!itemId) return badRequest('itemId is required');
   const itemIdError = requireUuids({ itemId });
   if (itemIdError) return itemIdError;
 
-  const item = await db.query('SELECT item_id, user_id FROM vault_items WHERE item_id = $1', [itemId]);
-  if (!item.rows || item.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Vault item not found',
-    });
-  }
-  // Only the owner may put an item into a collection; otherwise any collection writer
-  // could pull someone else's item in and read it through GET /collections/:id/items.
-  if (item.rows[0].user_id !== user.user_id) {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'ITEM_NOT_OWNED',
-      message: 'Only the owner of a vault item can add it to a collection',
-    });
-  }
-
-  const existing = await db.query(
-    'SELECT collection_item_id FROM collection_items WHERE collection_id = $1 AND item_id = $2',
-    [collectionId, itemId]
-  );
-  if (existing.rows && existing.rows.length > 0) {
-    return jsonResponse(409, {
-      status: 'fail',
-      error: 'CONFLICT',
-      message: 'Item is already associated with this collection',
-    });
-  }
-
-  const mapId = crypto.randomUUID();
-  const now = new Date().toISOString();
-
-  await db.query(
-    'INSERT INTO collection_items (collection_item_id, collection_id, item_id, created_at) VALUES ($1, $2, $3, $4)',
-    [mapId, collectionId, itemId, now]
-  );
-
-  return jsonResponse(201, {
-    status: 'success',
-    success: true,
-    collectionItem: formatCollectionItem({
-      collection_item_id: mapId,
-      collection_id: collectionId,
-      item_id: itemId,
-      created_at: now,
-    }),
-  });
+  const link = await service.addItem(getDatabase(), user, collectionId, itemId);
+  return ok({ collectionItem: formatCollectionItem(link) }, 201);
 }
 
 /**
- * GET /api/v1/collections/:collectionId/items - List associated items
+ * GET /collections/:collectionId/items
  */
 export async function listCollectionItemsHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
-  const db = getDatabase();
-
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (!perm) {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Insufficient permissions to view collection items',
-    });
-  }
-
-  const items = await db.query(
-    `SELECT vi.* FROM vault_items vi
-     JOIN collection_items ci ON vi.item_id = ci.item_id
-     WHERE ci.collection_id = $1
-     ORDER BY vi.created_at DESC`,
-    [collectionId]
-  );
-
-  return jsonResponse(200, {
-    status: 'success',
-    success: true,
-    items: (items.rows || []).map(formatVaultItem),
-  });
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
+  const items = await service.listItems(getDatabase(), user, collectionId);
+  return ok({ items: items.map(formatVaultItem) });
 }
 
 /**
- * DELETE /api/v1/collections/:collectionId/items/:itemId - Disassociate item from collection
+ * DELETE /collections/:collectionId/items/:itemId
  */
 export async function removeCollectionItemHandler(event) {
   const { user, errorResponse } = authenticate(event, 'user');
   if (errorResponse) return errorResponse;
-
-  const collectionId = event.pathParameters?.collectionId;
-  const idError = requireUuids({ collectionId });
-  if (idError) return idError;
+  const { collectionId, error } = withValidatedCollection(event);
+  if (error) return error;
   const itemId = event.pathParameters?.itemId;
   const itemIdError = requireUuids({ itemId });
   if (itemIdError) return itemIdError;
-  const db = getDatabase();
 
-  const res = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
-  if (!res.rows || res.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Collection not found',
-    });
-  }
-
-  const perm = await getEffectiveCollectionPermission(db, collectionId, user);
-  if (perm !== 'write' && perm !== 'admin') {
-    return jsonResponse(403, {
-      status: 'fail',
-      error: 'FORBIDDEN',
-      message: 'Forbidden: Write permission required to remove items from collection',
-    });
-  }
-
-  const existing = await db.query(
-    'SELECT collection_item_id FROM collection_items WHERE collection_id = $1 AND item_id = $2',
-    [collectionId, itemId]
-  );
-  if (!existing.rows || existing.rows.length === 0) {
-    return jsonResponse(404, {
-      status: 'fail',
-      error: 'NOT_FOUND',
-      message: 'Item association not found in collection',
-    });
-  }
-
-  await db.query(
-    'DELETE FROM collection_items WHERE collection_id = $1 AND item_id = $2',
-    [collectionId, itemId]
-  );
-
-  return jsonResponse(200, {
-    status: 'success',
-    success: true,
-    message: 'Item disassociated from collection',
-  });
+  await service.removeItem(getDatabase(), user, collectionId, itemId);
+  return ok({ message: 'Item disassociated from collection' });
 }
