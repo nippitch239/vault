@@ -9,11 +9,6 @@ import { Button } from '../ui/Button.jsx';
 import { Input } from '../ui/Input.jsx';
 import { Badge } from '../ui/Badge.jsx';
 
-// Ensure getMyKey alias
-if (api.collections && !api.collections.getMyKey) {
-  api.collections.getMyKey = api.collections.getKeys;
-}
-
 export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
   const { mek, privateKey } = useAuth();
   const { addToast } = useToast();
@@ -40,14 +35,19 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    let cancelled = false;
     if (isOpen) {
-      // Load accessible collections
+      // Load collections the user can write to (only those can receive the item)
       api.collections
         .list()
         .then((res) => {
-          setCollections(res?.collections || []);
+          if (!cancelled) {
+            setCollections((res?.collections || []).filter((c) => ['write', 'admin'].includes(c.effectivePermission)));
+          }
         })
-        .catch(() => {});
+        .catch(() => {
+          if (!cancelled) setCollections([]);
+        });
 
       if (item) {
         // If editing existing item, load its decrypted fields if available
@@ -88,6 +88,9 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
       setShowGenerator(false);
       setError(null);
     }
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, item]);
 
   if (!isOpen) return null;
@@ -142,8 +145,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         if (!privateKey) {
           throw new Error('คีย์ส่วนตัวถูกล็อกอยู่ กรุณาปลดล็อกคลังรหัสผ่านก่อนบันทึกรายการในคอลเลกชัน');
         }
-        const getKeyFn = api.collections.getMyKey || api.collections.getKeys;
-        const keyRes = await getKeyFn(selectedCollectionId);
+        const keyRes = await api.collections.getKeys(selectedCollectionId);
         const wrappedPayload =
           keyRes?.key?.encrypted_key_for_recipient ||
           keyRes?.key?.encryptedKeyForRecipient ||

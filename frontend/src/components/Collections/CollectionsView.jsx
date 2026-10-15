@@ -14,11 +14,6 @@ import {
 } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
 
-// Guarantee getMyKey alias
-if (api.collections && !api.collections.getMyKey) {
-  api.collections.getMyKey = api.collections.getKeys;
-}
-
 function CollectionIcon({ className = 'w-5 h-5' }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -168,8 +163,7 @@ export function CollectionsView() {
     if (!privateKey) {
       throw new Error('คีย์ส่วนตัวถูกล็อกอยู่ กรุณาปลดล็อกคลังรหัสผ่านก่อนดำเนินการ');
     }
-    const getKeyFn = api.collections.getMyKey || api.collections.getKeys;
-    const keyRes = await getKeyFn(collectionId);
+    const keyRes = await api.collections.getKeys(collectionId);
     const wrappedObj =
       keyRes?.key?.encrypted_key_for_recipient ||
       keyRes?.key?.encryptedKeyForRecipient ||
