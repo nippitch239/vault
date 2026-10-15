@@ -1,0 +1,25 @@
+{
+  "name": "securevault",
+  "version": "1.0.0",
+  "description": "Secure Vault Cloud - Zero-Knowledge Cloud-Native Password Manager",
+  "type": "module",
+  "main": "src/shared/crypto.js",
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "test": "node --test src/shared/*.test.js src/server/server.test.js src/client/client.test.js src/client/e2e.test.js",
+    "test:shared": "node --test src/shared/*.test.js",
+    "test:server": "node --test src/server/server.test.js",
+    "test:client": "node --test src/client/client.test.js src/client/e2e.test.js",
+    "test:e2e": "node tests/test-runner.js",
+    "verify": "node scripts/verify.js",
+    "server": "node src/server/local-runner.js",
+    "client": "npm --prefix src/client run dev"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.12.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}
