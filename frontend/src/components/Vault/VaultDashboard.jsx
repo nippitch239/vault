@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../services/api.js';
 import ClientCrypto from '../../services/crypto.js';
@@ -20,11 +20,6 @@ import {
 import { useToast } from '../Common/Toast.jsx';
 import { VaultGridView } from './VaultGridView.jsx';
 import { VaultTableView } from './VaultTableView.jsx';
-
-// Guarantee getMyKey alias
-if (api.collections && !api.collections.getMyKey) {
-  api.collections.getMyKey = api.collections.getKeys;
-}
 
 function LayoutGridIcon({ className = 'w-4 h-4' }) {
   return (
@@ -87,7 +82,16 @@ export function VaultDashboard() {
   const [revealedIds, setRevealedIds] = useState(new Set());
   const [copiedId, setCopiedId] = useState(null);
 
+  // Each load gets an id; results of an older (or unmounted) load are discarded so a slow
+  // response can never overwrite newer state.
+  const loadSeqRef = useRef(0);
+  useEffect(() => () => {
+    loadSeqRef.current += 1;
+  }, []);
+
   const loadItems = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
+    const isStale = () => seq !== loadSeqRef.current;
     if (!mek) {
       setLoading(false);
       return;
@@ -104,7 +108,7 @@ export function VaultDashboard() {
       try {
         const colRes = await api.collections.list();
         loadedCollections = colRes?.collections || [];
-        setCollections(loadedCollections);
+        if (!isStale()) setCollections(loadedCollections);
       } catch (e) {
         console.warn('Could not load collections:', e);
       }
@@ -113,63 +117,47 @@ export function VaultDashboard() {
       const collectionItemsMap = new Map();
       const collectionKeyCache = new Map();
 
-      for (const col of loadedCollections) {
-        const cid = col.collection_id || col.id;
-        try {
-          // Retrieve wrapped key and unwrap if privateKey available
-          let colKey = collectionKeyCache.get(cid);
-          if (!colKey && privateKey) {
-            try {
-              const getKeyFn = api.collections.getMyKey || api.collections.getKeys;
-              const keyRes = await getKeyFn(cid);
-              const wrappedPayload =
-                keyRes?.key?.encrypted_key_for_recipient ||
-                keyRes?.key?.encryptedKeyForRecipient ||
-                keyRes?.encrypted_key_for_recipient ||
-                keyRes?.encryptedKeyForRecipient ||
-                keyRes?.key ||
-                keyRes;
-
-              colKey = await ClientCrypto.unwrapCollectionKey(wrappedPayload, privateKey);
-              collectionKeyCache.set(cid, colKey);
-            } catch {
-              // could not unwrap key
+      const failedCollections = [];
+      await Promise.all(
+        loadedCollections.map(async (col) => {
+          const cid = col.collection_id || col.id;
+          try {
+            let colKey = null;
+            if (privateKey) {
+              try {
+                const keyRes = await api.collections.getKeys(cid);
+                colKey = await ClientCrypto.unwrapCollectionKey(keyRes?.key?.encryptedKeyForRecipient, privateKey);
+                collectionKeyCache.set(cid, colKey);
+              } catch {
+                // No key for this collection yet: its items are listed but stay locked.
+              }
             }
-          }
 
-          // Fetch items in this collection
-          const itemsRes = await api.collections.listItems(cid);
-          const cItems = itemsRes?.items || [];
-
-          for (const it of cItems) {
-            const iid = it.item_id || it.id;
-            let decryptedPayload = it._decrypted || null;
-            if (!decryptedPayload && it.encrypted_data) {
-              if (colKey) {
+            const itemsRes = await api.collections.listItems(cid);
+            for (const it of itemsRes?.items || []) {
+              const iid = it.item_id || it.id;
+              let decryptedPayload = null;
+              if (it.encrypted_data && colKey) {
                 try {
                   decryptedPayload = await ClientCrypto.decryptCollectionItem(it.encrypted_data, colKey);
                 } catch {
-                  // fallback
+                  decryptedPayload = null;
                 }
               }
-              if (!decryptedPayload && mek) {
-                try {
-                  decryptedPayload = await ClientCrypto.decryptItem(it.encrypted_data, mek);
-                } catch {
-                  // fallback
-                }
+              if (!decryptedPayload && it.encrypted_data) {
+                // The owner's own item may still be encrypted with their Vault Key.
+                decryptedPayload = await ClientCrypto.decryptItem(it.encrypted_data, mek).catch(() => null);
               }
+              collectionItemsMap.set(iid, { ...it, _decrypted: decryptedPayload, _collection: col, _collectionId: cid });
             }
-            collectionItemsMap.set(iid, {
-              ...it,
-              _decrypted: decryptedPayload,
-              _collection: col,
-              _collectionId: cid,
-            });
+          } catch (colErr) {
+            failedCollections.push(col.name || cid);
+            console.warn(`Could not load items for collection ${cid}:`, colErr);
           }
-        } catch (colErr) {
-          console.warn(`Could not load items for collection ${cid}:`, colErr);
-        }
+        })
+      );
+      if (failedCollections.length && !isStale()) {
+        addToast(`โหลดรายการจากคอลเลกชันไม่สำเร็จ: ${failedCollections.join(', ')}`, 'error', 6000);
       }
 
       // 4. Decrypt personal items with MEK or collection key
@@ -226,13 +214,13 @@ export function VaultDashboard() {
         }
       }
 
-      setItems(allCombined);
+      if (!isStale()) setItems(allCombined);
     } catch (err) {
-      setError(err.message || 'ไม่สามารถโหลดรายการรหัสผ่านได้');
+      if (!isStale()) setError(err.message || 'ไม่สามารถโหลดรายการรหัสผ่านได้');
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
-  }, [mek, privateKey]);
+  }, [mek, privateKey, addToast]);
 
   useEffect(() => {
     loadItems();
