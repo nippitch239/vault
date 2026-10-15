@@ -1,0 +1,36 @@
+# AWS Amplify Hosting build spec (monorepo).
+# In the Amplify Console set the environment variable AMPLIFY_MONOREPO_APP_ROOT=frontend
+# plus the VITE_* variables listed in frontend/.env.example.
+version: 1
+applications:
+  - appRoot: frontend
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - nvm install 22 && nvm use 22
+            # npm workspaces: install from the repo root so @vault/shared resolves.
+            - cd .. && npm ci --workspace frontend --workspace shared --include-workspace-root && cd frontend
+        build:
+          commands:
+            - npm run lint
+            - npm test
+            - npm run build
+      artifacts:
+        baseDirectory: dist
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - ../node_modules/**/*
+      customHeaders:
+        - pattern: '**/*'
+          headers:
+            - key: Strict-Transport-Security
+              value: max-age=31536000; includeSubDomains
+            - key: X-Content-Type-Options
+              value: nosniff
+            - key: X-Frame-Options
+              value: DENY
+            - key: Referrer-Policy
+              value: no-referrer
