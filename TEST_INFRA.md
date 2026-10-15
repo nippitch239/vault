@@ -1,5 +1,10 @@
 # E2E Test Infra: Secure Vault Cloud - Collections & Groups
 
+> **หมายเหตุ (ปรับปรุง 2026-10, branch `fix/review`):** โครงสร้างโปรเจกต์ถูกแยกเป็น `frontend/` (AWS Amplify), `backend/` (AWS Lambda) และ `shared/` แล้ว
+> การยืนยันตัวตนย้ายไปใช้ Amazon Cognito (ไม่มี custom JWT/login/MFA/reset ใน backend แล้ว) และเพิ่มชั้น Vault Key — ดู `README.md`, `docs/API.md`, `docs/DEPLOY.md` และ `REVIEW.md`
+> โฟลเดอร์ `tests/` (5-tier E2E, `e2e-collections.test.js`) และ `terraform/` ที่เอกสารนี้อ้างถึง **ไม่มีอยู่ใน repository** (`tests/` ถูก .gitignore) ตัวเลขผลทดสอบในเอกสารนี้จึงตรวจสอบซ้ำไม่ได้
+
+
 ## Test Philosophy
 - Opaque-box, requirement-driven. Derived strictly from `ORIGINAL_REQUEST.md` and user-facing specifications, not internal implementation quirks.
 - Methodology: Category-Partition + Boundary Value Analysis (BVA) + Pairwise Combinatorial Testing + Real-World Workload Testing.
@@ -23,7 +28,7 @@
 
 ## Test Architecture
 - Test runner invocation: `node tests/e2e-collections.test.js` or `npm test`
-- Environment: Standalone Node.js native test runner (`node:test`, `node:assert/strict`) using in-memory SQLite database via `src/server/db/adapter.js` and `src/server/local-runner.js` simulation.
+- Environment: Standalone Node.js native test runner (`node:test`, `node:assert/strict`) using in-memory SQLite database via `backend/src/db/adapter.js` and `backend/local/local-runner.js` simulation.
 - Pass/Fail Semantics: Exit code 0 on all tests passing; nonzero on failure.
 
 ## Real-World Application Scenarios (Tier 4)
