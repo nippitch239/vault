@@ -4,12 +4,12 @@ import { ToastProvider } from './components/Common/Toast.jsx';
 import api from './services/api.js';
 
 // Layout & Navigation Primitives
-import { Sidebar } from './components/Layout/Sidebar.jsx';
-import { AppHeader } from './components/Layout/AppHeader.jsx';
+import { TopNav } from './components/Layout/TopNav.jsx';
 import { CommandPalette } from './components/Layout/CommandPalette.jsx';
 
 // Auth Views
-import { LoginView } from './components/Auth/LoginView.jsx';
+import { LoginView, AuthNavProvider } from './components/Auth/LoginView.jsx';
+import { LandingView } from './components/Landing/LandingView.jsx';
 import { RegisterView } from './components/Auth/RegisterView.jsx';
 import { ResetPasswordView } from './components/Auth/ResetPasswordView.jsx';
 import { ConfirmSignUpView } from './components/Auth/ConfirmSignUpView.jsx';
@@ -30,7 +30,7 @@ function MainApp() {
   const { isAuthenticated, isAdmin, lockVault, logout } = useAuth();
 
   // Auth navigation state when logged out
-  const [authView, setAuthView] = useState('login'); // 'login' | 'register' | 'confirm' | 'reset'
+  const [authView, setAuthView] = useState('landing'); // 'landing' | 'login' | 'register' | 'confirm' | 'reset'
   const [pendingConfirmation, setPendingConfirmation] = useState({ username: '', devCode: null });
 
   const goToConfirm = useCallback((username, devCode = null) => {
@@ -44,28 +44,12 @@ function MainApp() {
   const [vaultCollectionFilter, setVaultCollectionFilter] = useState(null); // 'vault' | 'generator' | 'shared' | 'collections' | 'groups' | 'activity' | 'audit' | 'monitoring'
 
   // Layout & UI Shell state
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('securevault_sidebar_collapsed') === 'true';
-    }
-    return false;
-  });
-  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
 
   // Security notifications & MFA modals
   const [notificationCount, setNotificationCount] = useState(0);
   const [showNotificationModal, setShowNotificationModal] = useState(false);
   const [showMfaModal, setShowMfaModal] = useState(false);
-
-  // Toggle sidebar collapse and persist
-  const handleToggleSidebar = useCallback(() => {
-    setIsSidebarCollapsed((prev) => {
-      const next = !prev;
-      localStorage.setItem('securevault_sidebar_collapsed', String(next));
-      return next;
-    });
-  }, []);
 
   // Theme toggle helper
   const handleToggleTheme = useCallback(() => {
@@ -100,7 +84,7 @@ function MainApp() {
     }
   }, [isAdmin, fetchNotifications]);
 
-  // Global Keyboard Shortcuts (Cmd+K / Ctrl+K and Cmd+B / Ctrl+B)
+  // Global Keyboard Shortcut (Cmd+K / Ctrl+K)
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Cmd+K or Ctrl+K -> Command Palette
@@ -108,21 +92,24 @@ function MainApp() {
         e.preventDefault();
         setIsCommandPaletteOpen((prev) => !prev);
       }
-      // Cmd+B or Ctrl+B -> Toggle Sidebar
-      if ((e.metaKey || e.ctrlKey) && (e.key === 'b' || e.key === 'B')) {
-        e.preventDefault();
-        handleToggleSidebar();
-      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleToggleSidebar]);
+  }, []);
 
   // Logged-out authentication screens
   if (!isAuthenticated) {
+    const goTo = (view) => () => {
+      setAuthView(view);
+      window.scrollTo(0, 0);
+    };
+    if (authView === 'landing') {
+      return <LandingView onSignIn={goTo('login')} onSignUp={goTo('register')} />;
+    }
     return (
-      <main className="flex min-h-screen w-full items-center justify-center bg-background px-4 py-8 text-foreground sm:p-6">
+      <AuthNavProvider value={{ onHome: goTo('landing'), onSignIn: goTo('login'), onSignUp: goTo('register') }}>
+      <main className="min-h-screen w-full text-foreground">
         {authView === 'login' && (
           <LoginView
             onNavigateRegister={() => setAuthView('register')}
@@ -149,6 +136,7 @@ function MainApp() {
           <ResetPasswordView onNavigateLogin={() => setAuthView('login')} />
         )}
       </main>
+      </AuthNavProvider>
     );
   }
 
@@ -188,7 +176,7 @@ function MainApp() {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background font-sans text-foreground">
+    <div className="min-h-screen font-sans text-foreground">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-3 focus:z-[70] focus:rounded-md focus:border focus:border-border focus:bg-popover focus:px-3 focus:py-2 focus:text-sm focus:font-ui focus:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
@@ -196,37 +184,20 @@ function MainApp() {
         ข้ามไปยังเนื้อหาหลัก
       </a>
 
-      {/* Left Collapsible Rail / Sidebar Navigation */}
-      <Sidebar
+      {/* Sticky top navigation bar (links collapse into a drawer below lg) */}
+      <TopNav
         currentTab={currentTab}
         onSelectTab={setCurrentTab}
-        collapsed={isSidebarCollapsed}
-        onToggleCollapse={handleToggleSidebar}
-        mobileOpen={isMobileNavOpen}
-        onMobileOpenChange={setIsMobileNavOpen}
+        onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+        onOpenSecurityNotifications={() => setShowNotificationModal(true)}
+        onOpenMfaModal={() => setShowMfaModal(true)}
+        notificationCount={notificationCount}
       />
 
-      {/* Main Viewport Container */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Top Sticky Header */}
-        <AppHeader
-          currentTab={currentTab}
-          onToggleSidebar={handleToggleSidebar}
-          isSidebarCollapsed={isSidebarCollapsed}
-          onOpenMobileNav={() => setIsMobileNavOpen(true)}
-          onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-          onOpenSecurityNotifications={() => setShowNotificationModal(true)}
-          onOpenMfaModal={() => setShowMfaModal(true)}
-          notificationCount={notificationCount}
-        />
-
-        {/* Scrollable Main Application Content Area */}
-        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-6 focus:outline-none sm:px-6 lg:px-8">
-          <div className="mx-auto w-full max-w-7xl">
-            {renderCurrentTab()}
-          </div>
-        </main>
-      </div>
+      {/* Main Application Content Area */}
+      <main id="main-content" tabIndex={-1} className="mx-auto w-full max-w-6xl overflow-x-clip px-4 py-8 focus:outline-none sm:px-6">
+        {renderCurrentTab()}
+      </main>
 
       {/* Quick Search & Command Palette Overlay (Cmd+K / Ctrl+K) */}
       <CommandPalette

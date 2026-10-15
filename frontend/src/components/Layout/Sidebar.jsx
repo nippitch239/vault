@@ -14,6 +14,9 @@ import {
   PanelLeftIcon,
   XIcon,
 } from './layoutIcons.jsx';
+import { NAV_LABELS } from './navConfig.js';
+
+// NOTE: the app shell now uses TopNav.jsx; this sidebar is kept but no longer rendered.
 
 function cn(...inputs) {
   return inputs.flat().filter(Boolean).join(' ');
@@ -21,18 +24,6 @@ function cn(...inputs) {
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-/** Thai nav labels — shared with AppHeader's breadcrumb so both always match. */
-export const NAV_LABELS = {
-  vault: 'รายการรหัสผ่าน',
-  shared: 'แชร์กับฉัน',
-  collections: 'คอลเลกชัน',
-  groups: 'กลุ่ม',
-  generator: 'สร้างรหัสผ่าน',
-  activity: 'กิจกรรมของฉัน',
-  audit: 'บันทึกการตรวจสอบ',
-  monitoring: 'สถานะระบบ',
-};
 
 function BrandMark({ showText, onClick }) {
   return (
