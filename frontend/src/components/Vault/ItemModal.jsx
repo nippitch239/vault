@@ -205,13 +205,27 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         addToast('เพิ่มรายการรหัสผ่านใหม่สำเร็จ (Added successfully)', 'success');
       }
 
-      // 4. Associate item with collection if selected
-      if (selectedCollectionId && savedItemId) {
+      // 4. Keep the collection link in sync with the key the item is now encrypted with.
+      const previousCollectionId = isEditing
+        ? item._collectionId || item.collection_id || item.metadata?.collection_id || ''
+        : '';
+      let linkError = null;
+      if (savedItemId && previousCollectionId && previousCollectionId !== selectedCollectionId) {
+        try {
+          await api.collections.removeItem(previousCollectionId, savedItemId);
+        } catch (err) {
+          if (err?.status !== 404) linkError = err;
+        }
+      }
+      if (savedItemId && selectedCollectionId && selectedCollectionId !== previousCollectionId) {
         try {
           await api.collections.addItem(selectedCollectionId, { itemId: savedItemId });
-        } catch {
-          // Ignore conflict if already associated
+        } catch (err) {
+          if (err?.status !== 409) linkError = err;
         }
+      }
+      if (linkError) {
+        addToast(`บันทึกรายการแล้ว แต่ปรับคอลเลกชันไม่สำเร็จ: ${linkError.message}`, 'error', 8000);
       }
 
       if (onSuccess) onSuccess();
