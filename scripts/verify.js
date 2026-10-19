@@ -2,20 +2,14 @@
 /**
  * Secure Vault Cloud — Master Unified Verification Runner
  *
- * Executes all 5 project verification gates in sequence:
- * Step 1: Shared Crypto Engine & Primitives (node --test src/shared/*.test.js)
- * Step 2: Serverless Backend & Database Handlers (node --test src/server/server.test.js)
- * Step 3: React Frontend Unit & Integration Tests (node --test src/client/client.test.js src/client/e2e.test.js)
- * Step 4: Full Comprehensive 5-Tier E2E Test Suite (node tests/test-runner.js)
- * Step 5: Frontend Production Bundle Build (npm --prefix src/client run build)
+ * Executes every verification gate (tests, lint, builds) of the npm workspaces in sequence.
  *
  * Ponytail minimalism: Pure native Node.js (child_process, fs, path), zero external npm packages.
  */
 
 import { spawn } from 'node:child_process';
-import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -38,48 +32,16 @@ const C = {
   bgBlue: '\x1b[44m\x1b[37m'
 };
 
-// Dynamically discover all shared test files
-const sharedDir = join(ROOT_DIR, 'src', 'shared');
-const sharedTestFiles = readdirSync(sharedDir)
-  .filter((f) => f.endsWith('.test.js'))
-  .map((f) => join('src', 'shared', f));
+const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 const STEPS = [
-  {
-    id: 1,
-    name: 'Shared Crypto Engine & Primitives',
-    cmd: 'node',
-    args: ['--test', ...sharedTestFiles],
-    desc: 'Argon2id KDF, AES-256-GCM, RSA-OAEP, CSPRNG Diceware & Validators'
-  },
-  {
-    id: 2,
-    name: 'Serverless Backend & DB Handlers',
-    cmd: 'node',
-    args: ['--test', 'src/server/server.test.js'],
-    desc: 'Dual DB Adapter (SQLite/PostgreSQL JSONB), JWT RBAC, Handlers UC-1..13'
-  },
-  {
-    id: 3,
-    name: 'React Frontend Unit & E2E Tests',
-    cmd: 'node',
-    args: ['--test', 'src/client/client.test.js', 'src/client/e2e.test.js'],
-    desc: 'Client-Side WebCrypto, Contexts, UI Views UC-1..13, History & Sharing'
-  },
-  {
-    id: 4,
-    name: 'Comprehensive 5-Tier E2E Test Suite',
-    cmd: 'node',
-    args: ['tests/test-runner.js'],
-    desc: '193 Test Cases across Tiers 1-5 + Zero-Knowledge Leakage Scanners'
-  },
-  {
-    id: 5,
-    name: 'Frontend Production Bundle Build',
-    cmd: process.platform === 'win32' ? 'npm.cmd' : 'npm',
-    args: ['--prefix', 'src/client', 'run', 'build'],
-    desc: 'Vite Production Bundler, Tailwind CSS, Tree-Shaking, 0 Build Errors'
-  }
+  { id: 1, name: 'Shared Crypto Engine & Primitives', cmd: NPM, args: ['test', '--workspace', 'shared'], desc: 'Argon2id KDF, AES-256-GCM, RSA-OAEP, CSPRNG Diceware & Validators' },
+  { id: 2, name: 'Backend (Lambda) Handlers & DB', cmd: NPM, args: ['test', '--workspace', 'backend'], desc: 'Router, handlers, Cognito claims guard, SQLite/PostgreSQL adapter' },
+  { id: 3, name: 'Frontend Unit Tests', cmd: NPM, args: ['test', '--workspace', 'frontend'], desc: 'Client-side WebCrypto & API service' },
+  { id: 4, name: 'Frontend <-> Backend Integration', cmd: NPM, args: ['run', 'test:integration'], desc: 'Frontend services against the local API Gateway simulator' },
+  { id: 5, name: 'Lint (all workspaces)', cmd: NPM, args: ['run', 'lint'], desc: 'ESLint flat config' },
+  { id: 6, name: 'Backend Lambda Bundle', cmd: NPM, args: ['run', 'build', '--workspace', 'backend'], desc: 'esbuild -> backend/dist/lambda.zip' },
+  { id: 7, name: 'Frontend Production Build', cmd: NPM, args: ['run', 'build', '--workspace', 'frontend'], desc: 'Vite production bundle for Amplify' }
 ];
 
 function runStep(step) {

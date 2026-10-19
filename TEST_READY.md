@@ -1,5 +1,10 @@
 # SecureVault Cloud — Collections & Groups Comprehensive E2E Test Suite (TEST_READY)
 
+> **หมายเหตุ (ปรับปรุง 2026-10, branch `fix/review`):** โครงสร้างโปรเจกต์ถูกแยกเป็น `frontend/` (AWS Amplify), `backend/` (AWS Lambda) และ `shared/` แล้ว
+> การยืนยันตัวตนย้ายไปใช้ Amazon Cognito (ไม่มี custom JWT/login/MFA/reset ใน backend แล้ว) และเพิ่มชั้น Vault Key — ดู `README.md`, `docs/API.md`, `docs/DEPLOY.md` และ `REVIEW.md`
+> โฟลเดอร์ `tests/` (5-tier E2E, `e2e-collections.test.js`) และ `terraform/` ที่เอกสารนี้อ้างถึง **ไม่มีอยู่ใน repository** (`tests/` ถูก .gitignore) ตัวเลขผลทดสอบในเอกสารนี้จึงตรวจสอบซ้ำไม่ได้
+
+
 **Document Version:** 2.0.0  
 **Status:** COMPLETE & VERIFIED  
 **Architecture:** Zero-Knowledge Cloud-Native Password Manager (AWS Lambda, RDS PostgreSQL JSONB, React WebCrypto)  

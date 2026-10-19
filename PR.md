@@ -1,5 +1,10 @@
 # SecureVault Cloud — Production Pull Request & Architecture Report (PR.md)
 
+> **หมายเหตุ (ปรับปรุง 2026-10, branch `fix/review`):** โครงสร้างโปรเจกต์ถูกแยกเป็น `frontend/` (AWS Amplify), `backend/` (AWS Lambda) และ `shared/` แล้ว
+> การยืนยันตัวตนย้ายไปใช้ Amazon Cognito (ไม่มี custom JWT/login/MFA/reset ใน backend แล้ว) และเพิ่มชั้น Vault Key — ดู `README.md`, `docs/API.md`, `docs/DEPLOY.md` และ `REVIEW.md`
+> โฟลเดอร์ `tests/` (5-tier E2E, `e2e-collections.test.js`) และ `terraform/` ที่เอกสารนี้อ้างถึง **ไม่มีอยู่ใน repository** (`tests/` ถูก .gitignore) ตัวเลขผลทดสอบในเอกสารนี้จึงตรวจสอบซ้ำไม่ได้
+
+
 **Pull Request Reference:** PR #1 — Zero-Knowledge Cloud-Native Password Manager  
 **Target Milestone:** Full Production Readiness (Milestones M1–M5 & Verification Gates)  
 **Verification Status:** **100% GREEN (ALL 6 GATES PASSED • 193/193 E2E TESTS PASSED • 0 LEAKS)**  
@@ -269,7 +274,7 @@ For granular credential sharing (UC-10), SecureVault Cloud implements hybrid pub
 
 ### 4.4 CSPRNG Password Generator & Shannon Entropy
 
-The built-in password generator (`src/shared/generator.js`) employs native WebCrypto / Node CSPRNG (`getRandomValues` / `randomFillSync`) with mathematical guarantees:
+The built-in password generator (`shared/generator.js`) employs native WebCrypto / Node CSPRNG (`getRandomValues` / `randomFillSync`) with mathematical guarantees:
 1. **Zero Modulo Bias**: Uses rejection sampling:
    $$\text{limit} = 2^{32} - (2^{32} \pmod{\text{range}})$$
    Random 32-bit words $\ge \text{limit}$ are rejected, eliminating statistical distribution skew across character pools.
@@ -285,7 +290,7 @@ The built-in password generator (`src/shared/generator.js`) employs native WebCr
 
 ### 5.1 Relational Schema with PostgreSQL JSONB
 
-The relational schema (`src/server/db/schema.sql`) utilizes PostgreSQL 15+ features including JSONB datatypes, GIN indexes, and cascading referential integrity:
+The relational schema (`backend/src/db/schema.sql`) utilizes PostgreSQL 15+ features including JSONB datatypes, GIN indexes, and cascading referential integrity:
 
 ```sql
 -- PostgreSQL 15+ Relational DDL for SecureVault Cloud
@@ -380,11 +385,11 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 
 ### 5.2 Dual-Engine Database Abstraction Layer
 
-To enable both **production AWS RDS PostgreSQL** execution and **offline, credential-free local simulation**, `src/server/db/adapter.js` provides an isomorphic `IDatabase` abstraction:
+To enable both **production AWS RDS PostgreSQL** execution and **offline, credential-free local simulation**, `backend/src/db/adapter.js` provides an isomorphic `IDatabase` abstraction:
 - **Production Mode (RDS PostgreSQL)**: Uses native connection pooling (`pg.Pool`), parameterized `$1, $2` SQL queries, and native JSONB operators (`->>`, `->`, `@>`).
 - **Simulation Mode (Local SQLite)**: Uses Node.js 22 LTS native `node:sqlite` (`DatabaseSync`). The adapter automatically translates PostgreSQL JSONB operators to SQLite `json_extract()` and rewrites parameterized placeholders, guaranteeing 100% query parity with zero external database containers or credentials required.
 
-### 5.3 Local Simulation Runner (`src/server/local-runner.js`)
+### 5.3 Local Simulation Runner (`backend/local/local-runner.js`)
 
 The standalone HTTP simulation server:
 1. Listens on a local port (e.g. `http://localhost:3000`).
@@ -400,7 +405,7 @@ The standalone HTTP simulation server:
      "body": "{...}"
    }
    ```
-3. Dispatches the event directly to the Lambda router (`src/server/router.js`).
+3. Dispatches the event directly to the Lambda router (`backend/src/router.js`).
 4. Converts the Lambda response `{ statusCode, headers, body }` back to standard HTTP responses.
 
 ---
@@ -488,7 +493,7 @@ In accordance with **Ponytail Principles** (simplest solution that works, YAGNI,
 ### Dependency Audit Quantified:
 - **Root `package.json`**: Only **1 production dependency** (`hash-wasm` for W3C browser Argon2id execution).
 - **Zero test dependencies**: All 193 unit, boundary, combination, real-world, and adversarial test cases run directly on native Node.js without `npm install` for test harnesses.
-- **Frontend `src/client/package.json`**: Standard minimal React + Vite + Tailwind setup. Clean production build: **325 KB JS / 32 KB CSS** (gzipped: **94.8 KB JS / 6.16 KB CSS**).
+- **Frontend `frontend/package.json`**: Standard minimal React + Vite + Tailwind setup. Clean production build: **325 KB JS / 32 KB CSS** (gzipped: **94.8 KB JS / 6.16 KB CSS**).
 
 ---
 
@@ -553,26 +558,26 @@ node scripts/verify.js
 npm run verify
 
 # 2. Run Individual Verification Commands:
-npm test                              # Shared crypto tests
-npm run test:server                   # Serverless backend & DB tests
-npm run test:client                   # React frontend unit & integration tests
-npm run test:terraform                # Terraform 193-check validator
-npm run test:e2e                      # 5-Tier E2E test suite (193 tests)
+npm test                              # All workspaces + integration
+npm test --workspace backend          # Lambda handlers & DB tests
+npm test --workspace frontend         # React client unit tests
+npm run test:integration              # Frontend services vs local backend
 
 # 3. Start Local HTTP Simulation Server:
-node src/server/local-runner.js
+npm run dev --workspace backend
 # Server starts at http://localhost:3000 with in-memory SQLite JSONB adapter
 
 # 4. Start React Frontend in Development Mode:
-cd src/client
-npm install
-npm run dev
+npm ci
+npm run dev --workspace frontend
 # Vite development server starts at http://localhost:5173
 ```
 
 ---
 
 ## 10. Production AWS Cloud Deployment Guide
+
+> ส่วนนี้เป็นแผนเดิม (Terraform + CloudFront/S3) ซึ่งไม่ตรงกับ docs/architecture.png — ขั้นตอนที่ใช้จริงอยู่ใน `docs/DEPLOY.md`
 
 To deploy SecureVault Cloud to an active AWS account using Terraform:
 
@@ -584,13 +589,13 @@ To deploy SecureVault Cloud to an active AWS account using Terraform:
 
 ```bash
 # 1. Build the React Frontend Static Bundle
-cd src/client
+cd frontend
 npm install
 npm run build
 cd ../..
 
 # 2. Package Lambda Function Artifact
-cd src/server
+cd backend
 zip -r ../../terraform/lambda.zip . -x "*.test.js"
 cd ../..
 
@@ -612,7 +617,7 @@ terraform apply tfplan
 S3_BUCKET=$(terraform output -raw s3_bucket_name)
 CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id)
 
-aws s3 sync ../src/client/dist s3://$S3_BUCKET/ --delete
+aws s3 sync ../frontend/dist s3://$S3_BUCKET/ --delete
 
 # 6. Invalidate CloudFront CDN Cache
 aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_ID --paths "/*"
@@ -627,14 +632,14 @@ terraform output cloudfront_url
 
 | Requirement | Description | Status | Evidence / Verification |
 |---|---|---|---|
-| **R1. Frontend Web Application** | React SPA, Vite, Tailwind, client-side zero-knowledge crypto, UI for UC-1 through UC-13, generator | **COMPLETE** | `src/client/`, clean production build (2.26s), 15/15 unit/E2E tests passed. |
-| **R2. Serverless Backend & Database** | AWS Lambda handlers, API Gateway routing, RDS PostgreSQL schema with JSONB, local simulation runner | **COMPLETE** | `src/server/`, 10/10 backend tests passed, dual SQLite/PG adapter active. |
+| **R1. Frontend Web Application** | React SPA, Vite, Tailwind, client-side zero-knowledge crypto, UI for UC-1 through UC-13, generator | **COMPLETE** | `frontend/`, clean production build (2.26s), 15/15 unit/E2E tests passed. |
+| **R2. Serverless Backend & Database** | AWS Lambda handlers, API Gateway routing, RDS PostgreSQL schema with JSONB, local simulation runner | **COMPLETE** | `backend/src/`, 10/10 backend tests passed, dual SQLite/PG adapter active. |
 | **R3. Infrastructure as Code** | Modular Terraform provisioning (VPC, RDS, Lambda, API GW, CloudFront, S3, IAM, Monitoring) | **COMPLETE** | `terraform/`, 7 modules, 193/193 validation checks passed green. |
 | **R4. Ponytail Minimalism & Docs** | Minimal code footprint, stdlib-first, 0 test dependencies, comprehensive documentation | **COMPLETE** | Root PR.md, scripts/verify.js, 1 single production dependency. |
 | **AC: Client-Side Encryption** | Vault payloads sent over wire and stored in DB are strictly AES-256-GCM ciphertext | **VERIFIED** | Tier 4 & Tier 5 scanners: 0 plaintext occurrences detected across all tests. |
-| **AC: Master Password KDF** | Argon2id KDF with CSPRNG salt generation and dual-key separation | **VERIFIED** | `src/shared/crypto.js`, 27/27 shared primitive tests passed. |
+| **AC: Master Password KDF** | Argon2id KDF with CSPRNG salt generation and dual-key separation | **VERIFIED** | `shared/crypto.js`, 27/27 shared primitive tests passed. |
 | **AC: Functional Completeness** | End-to-end verification of UC-1 through UC-13 | **VERIFIED** | 193/193 tests passed across Tiers 1–5 in unified test suite. |
-| **AC: Password Generator** | Configurable length, symbols, numbers, charsets, Diceware, entropy | **VERIFIED** | `src/shared/generator.js` with 1,024-word Diceware list and Chi-Squared test. |
+| **AC: Password Generator** | Configurable length, symbols, numbers, charsets, Diceware, entropy | **VERIFIED** | `shared/generator.js` with 1,024-word Diceware list and Chi-Squared test. |
 | **AC: Production Build & Validation** | Clean frontend build, Terraform validation, self-contained verification runner | **VERIFIED** | `node scripts/verify.js` executes all 6 gates with 100% pass rate. |
 
 ---

@@ -1,13 +1,18 @@
 # Project: SecureVault - Modern shadcn/solid-ui UI/UX Overhaul
 
+> **หมายเหตุ (ปรับปรุง 2026-10, branch `fix/review`):** โครงสร้างโปรเจกต์ถูกแยกเป็น `frontend/` (AWS Amplify), `backend/` (AWS Lambda) และ `shared/` แล้ว
+> การยืนยันตัวตนย้ายไปใช้ Amazon Cognito (ไม่มี custom JWT/login/MFA/reset ใน backend แล้ว) และเพิ่มชั้น Vault Key — ดู `README.md`, `docs/API.md`, `docs/DEPLOY.md` และ `REVIEW.md`
+> โฟลเดอร์ `tests/` (5-tier E2E, `e2e-collections.test.js`) และ `terraform/` ที่เอกสารนี้อ้างถึง **ไม่มีอยู่ใน repository** (`tests/` ถูก .gitignore) ตัวเลขผลทดสอบในเอกสารนี้จึงตรวจสอบซ้ำไม่ได้
+
+
 ## Architecture & System Overview
 SecureVault is an enterprise-grade Zero-Knowledge password and secrets manager built on React 18, Vite, and Tailwind CSS on the client, backed by Node.js serverless REST API handlers with SQLite/PostgreSQL.
 This project refactors and upgrades SecureVault's UI/UX to match the modern `shadcn/solid-ui` design system:
-- **Design Tokens & Theme Foundation**: Neutral dark/light theme HSL CSS variables (`--background`, `--card`, `--popover`, `--primary`, `--muted`, `--border`, `--ring`, `--destructive`, `--radius: 0.5rem`, and sidebar tokens) in `src/client/src/index.css`, mapped into `src/client/tailwind.config.js` with full opacity modifier support (`bg-primary/90`, `bg-background/80`).
-- **Modern UI Component Primitives (`src/client/src/components/ui/`)**: Reusable React 18 components matching `solid-ui` specifications: `Button`, `Card`, `Badge`, `Table`, `DropdownMenu`, `Dialog`, `Sheet`, `Input`, `Slider`, `Command`, `Avatar`, `Tooltip`.
-- **Navigation & App Shell (`src/client/src/components/Layout/`)**: Left collapsible sidebar / rail navigation (`Sidebar.jsx` with expanded `16rem` and icon-only `3rem` rail, keyboard shortcut `Cmd+B`, mobile drawer) and sticky top header (`AppHeader.jsx`, `z-40`) featuring `Cmd+K` command search, interactive vault lock indicator, security notification bell, and user avatar dropdown.
-- **Vault Dashboard & Data Display (`src/client/src/components/Vault/`)**: Modern `VaultDashboard.jsx` featuring Card grid and Table views, category badges, favorite stars, contextual dropdown actions (`DropdownMenu`), and auto-clearing clipboard toast.
-- **Accessible Modals & Embedded Generator (`src/client/src/components/Vault/`, `src/client/src/components/Security/`)**: Bounded viewport height (`max-h-[85vh]` with internal scroll), `z-[60]` layer hierarchy for `ItemModal`, `ShareModal`, `HistoryDrawer`, `SecurityNotificationModal`. Embedded password generator with compact slider and Diceware passphrase selector.
+- **Design Tokens & Theme Foundation**: Neutral dark/light theme HSL CSS variables (`--background`, `--card`, `--popover`, `--primary`, `--muted`, `--border`, `--ring`, `--destructive`, `--radius: 0.5rem`, and sidebar tokens) in `frontend/src/index.css`, mapped into `frontend/tailwind.config.js` with full opacity modifier support (`bg-primary/90`, `bg-background/80`).
+- **Modern UI Component Primitives (`frontend/src/components/ui/`)**: Reusable React 18 components matching `solid-ui` specifications: `Button`, `Card`, `Badge`, `Table`, `DropdownMenu`, `Dialog`, `Sheet`, `Input`, `Slider`, `Command`, `Avatar`, `Tooltip`.
+- **Navigation & App Shell (`frontend/src/components/Layout/`)**: Left collapsible sidebar / rail navigation (`Sidebar.jsx` with expanded `16rem` and icon-only `3rem` rail, keyboard shortcut `Cmd+B`, mobile drawer) and sticky top header (`AppHeader.jsx`, `z-40`) featuring `Cmd+K` command search, interactive vault lock indicator, security notification bell, and user avatar dropdown.
+- **Vault Dashboard & Data Display (`frontend/src/components/Vault/`)**: Modern `VaultDashboard.jsx` featuring Card grid and Table views, category badges, favorite stars, contextual dropdown actions (`DropdownMenu`), and auto-clearing clipboard toast.
+- **Accessible Modals & Embedded Generator (`frontend/src/components/Vault/`, `frontend/src/components/Security/`)**: Bounded viewport height (`max-h-[85vh]` with internal scroll), `z-[60]` layer hierarchy for `ItemModal`, `ShareModal`, `HistoryDrawer`, `SecurityNotificationModal`. Embedded password generator with compact slider and Diceware passphrase selector.
 - **Zero-Knowledge Cryptographic Preservation**: Dual-key derivation (Argon2id + HKDF), AES-256-GCM authenticated vault payload encryption, RSA-OAEP-SHA256 key wrapping, and CSPRNG Diceware generator remain 100% genuine, unaltered, and functional.
 
 ---
@@ -15,8 +20,8 @@ This project refactors and upgrades SecureVault's UI/UX to match the modern `sha
 ## Feature Inventory
 | # | Feature | Description | Milestone | Source |
 |---|---------|-------------|-----------|--------|
-| 1 | HSL Theme Tokens & CSS Properties | Define neutral dark/light theme CSS custom properties in `src/client/src/index.css` | M1 | ORIGINAL_REQUEST §R1 |
-| 2 | Tailwind CSS Token Configuration | Map HSL CSS variables into `src/client/tailwind.config.js` with color opacity, radii, and keyframes | M1 | ORIGINAL_REQUEST §R1 |
+| 1 | HSL Theme Tokens & CSS Properties | Define neutral dark/light theme CSS custom properties in `frontend/src/index.css` | M1 | ORIGINAL_REQUEST §R1 |
+| 2 | Tailwind CSS Token Configuration | Map HSL CSS variables into `frontend/tailwind.config.js` with color opacity, radii, and keyframes | M1 | ORIGINAL_REQUEST §R1 |
 | 3 | Core UI Primitives: Button, Card, Badge, Input | Implement `Button`, `Card`, `Badge`, and `Input` React components matching `solid-ui` styles | M1 | ORIGINAL_REQUEST §R1, §R3 |
 | 4 | Core UI Primitives: Dialog, Sheet, DropdownMenu | Implement `Dialog`, `Sheet`, and `DropdownMenu` with backdrop blur, animations, and portal semantics | M1 | ORIGINAL_REQUEST §R1, §R4 |
 | 5 | Collapsible Left Sidebar & Rail Navigation | Implement `Sidebar.jsx` with expanded (16rem), icon-only (3rem) rail, and mobile sheet modes | M2 | ORIGINAL_REQUEST §R2 |
@@ -33,7 +38,7 @@ This project refactors and upgrades SecureVault's UI/UX to match the modern `sha
 | 16 | SecurityNotificationModal & Z-Index Layering | Upgrade `SecurityNotificationModal.jsx` with `z-[60]` layer hierarchy correctly overlaying backdrops | M4 | ORIGINAL_REQUEST §R4 |
 | 17 | Zero-Knowledge Cryptographic Verification | Verify Argon2id KDF, AES-256-GCM encryption, and RSA-OAEP key wrapping remain 100% functional | M5 | ORIGINAL_REQUEST Acceptance Criteria |
 | 18 | Regression Test Suite Verification | Verify all 54 existing tests in `npm test` pass with 0 failures | M5 | ORIGINAL_REQUEST Acceptance Criteria |
-| 19 | Client Build Verification | Verify `npm --prefix src/client run build` produces 0 build errors | M5 | ORIGINAL_REQUEST Acceptance Criteria |
+| 19 | Client Build Verification | Verify `npm run build --workspace frontend` produces 0 build errors | M5 | ORIGINAL_REQUEST Acceptance Criteria |
 | 20 | Adversarial & Visual Acceptance Audit | Forensic audit verifying zero cheating, zero mock fallbacks, and complete UI/UX fidelity | M5 | ORIGINAL_REQUEST Acceptance Criteria |
 
 *Cross-Check*: Every feature (1 through 20) is assigned to a specific milestone. No feature is left unassigned.
@@ -47,7 +52,7 @@ This project refactors and upgrades SecureVault's UI/UX to match the modern `sha
 | M2 | Navigation & App Shell Overhaul | `Sidebar.jsx`, `AppHeader.jsx`, `CommandPalette.jsx`, `App.jsx` integration, keyboard shortcuts (`Cmd+K`, `Cmd+B`), lock indicator, notification bell, user dropdown | M1 | DONE |
 | M3 | Vault Dashboard & Item Interactions | Modern `VaultDashboard.jsx`, Table & Card Grid views, category badges, favorite stars, contextual dropdown actions, auto-clearing clipboard toast | M1, M2 | DONE |
 | M4 | Accessible Modals & Embedded Generator | Viewport-bounded `ItemModal.jsx`, `ShareModal.jsx`, `HistoryDrawer.jsx`, `SecurityNotificationModal.jsx`, embedded compact slider & Diceware generator, `z-[60]` hierarchy | M1, M2, M3 | DONE |
-| M5 | Final Acceptance, Zero-Knowledge Verification & Audit | All 54 tests pass (`npm test`), Vite client build passes (`npm --prefix src/client run build`), ZK crypto integrity verified, Forensic Audit CLEAN | M1, M2, M3, M4 | IN_PROGRESS |
+| M5 | Final Acceptance, Zero-Knowledge Verification & Audit | All 54 tests pass (`npm test`), Vite client build passes (`npm run build --workspace frontend`), ZK crypto integrity verified, Forensic Audit CLEAN | M1, M2, M3, M4 | IN_PROGRESS |
 
 ---
 
@@ -61,7 +66,7 @@ This project refactors and upgrades SecureVault's UI/UX to match the modern `sha
 - `z-[70]`: Modal-internal popovers, date pickers, or nested confirmation dialogs.
 - `z-[100]`: Toast notification container (`Toast.jsx` / Sonner).
 
-### 2. Design Tokens (`src/client/src/index.css`)
+### 2. Design Tokens (`frontend/src/index.css`)
 ```css
 :root {
   --background: 0 0% 100%;
@@ -136,20 +141,20 @@ Every modal dialog (`ItemModal`, `ShareModal`, `SecurityNotificationModal`) must
 ---
 
 ## Code Layout
-- `src/client/tailwind.config.js`: Tailwind configuration with solid-ui tokens, border radii, animations.
-- `src/client/src/index.css`: HSL CSS variable definitions, base styling, scrollbar utilities.
-- `src/client/src/components/ui/`: Modern UI primitives (`Button.jsx`, `Card.jsx`, `Badge.jsx`, `Input.jsx`, `Dialog.jsx`, `Sheet.jsx`, `DropdownMenu.jsx`, `Table.jsx`, `Slider.jsx`, `Avatar.jsx`, `Tooltip.jsx`).
-- `src/client/src/components/Layout/`:
+- `frontend/tailwind.config.js`: Tailwind configuration with solid-ui tokens, border radii, animations.
+- `frontend/src/index.css`: HSL CSS variable definitions, base styling, scrollbar utilities.
+- `frontend/src/components/ui/`: Modern UI primitives (`Button.jsx`, `Card.jsx`, `Badge.jsx`, `Input.jsx`, `Dialog.jsx`, `Sheet.jsx`, `DropdownMenu.jsx`, `Table.jsx`, `Slider.jsx`, `Avatar.jsx`, `Tooltip.jsx`).
+- `frontend/src/components/Layout/`:
   - `Sidebar.jsx`: Collapsible left rail/sidebar navigation with keyboard shortcut `Cmd+B`.
   - `AppHeader.jsx`: Sticky top bar (`z-40`) with `Cmd+K` search button, lock status, notification bell, user avatar dropdown.
   - `CommandPalette.jsx`: Quick search modal overlay (`Cmd+K`).
-- `src/client/src/components/Vault/`:
+- `frontend/src/components/Vault/`:
   - `VaultDashboard.jsx`: Modern card and table view, category badges, favorite stars, contextual dropdown actions, auto-clearing toast.
   - `ItemModal.jsx`: Bounded viewport `max-h-[85vh]`, collection selector, embedded password generator.
   - `ShareModal.jsx`: Bounded viewport `max-h-[85vh]`, RSA-OAEP key wrapping.
   - `HistoryDrawer.jsx`: Slide-over `Sheet`, version history with client decryption.
-- `src/client/src/components/Common/`:
+- `frontend/src/components/Common/`:
   - `PasswordGenerator.jsx`: Upgraded slider, Diceware selector, CSPRNG rejection sampling.
   - `Toast.jsx`: Upgraded toast container at `z-[100]`.
-- `src/client/src/components/SecurityNotificationModal.jsx`: Upgraded Dialog at `z-[60]`.
-- `src/client/src/services/crypto.js` & `api.js`: Unaltered cryptographic and API service contracts.
+- `frontend/src/components/SecurityNotificationModal.jsx`: Upgraded Dialog at `z-[60]`.
+- `frontend/src/services/crypto.js` & `api.js`: Unaltered cryptographic and API service contracts.

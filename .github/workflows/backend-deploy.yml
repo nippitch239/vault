@@ -1,0 +1,97 @@
+# Backend CI/CD: test + lint on every PR; on push to main build the Lambda package and
+# deploy it to the "live" alias (see docs/DEPLOY.md §13–14).
+#
+# No secrets are stored here or in GitHub: AWS access uses GitHub OIDC -> IAM role.
+# Repository variables (Settings -> Secrets and variables -> Actions -> Variables):
+#   AWS_REGION            e.g. ap-southeast-1
+#   AWS_DEPLOY_ROLE_ARN   arn:aws:iam::<account-id>:role/securevault-github-deploy
+#   LAMBDA_FUNCTION       securevault-api
+# The frontend is built and deployed by AWS Amplify (amplify.yml), not by this workflow.
+
+name: backend
+
+on:
+  pull_request:
+    paths: ['backend/**', 'shared/**', 'integration/**', 'package-lock.json', '.github/workflows/backend-deploy.yml']
+  push:
+    branches: [main]
+    paths: ['backend/**', 'shared/**', 'package-lock.json', '.github/workflows/backend-deploy.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint --workspace backend --workspace shared
+      - run: npm test --workspace shared
+      - run: npm test --workspace backend
+      - run: npm run test:integration
+      - run: npm run build --workspace backend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zip
+          path: backend/dist/lambda.zip
+          retention-days: 14
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write   # OIDC token for aws-actions/configure-aws-credentials
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lambda-zip
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload code and publish a version
+        id: publish
+        run: |
+          set -euo pipefail
+          FN="${{ vars.LAMBDA_FUNCTION }}"
+          PREVIOUS=$(aws lambda get-alias --function-name "$FN" --name live --query FunctionVersion --output text)
+          echo "previous=$PREVIOUS" >> "$GITHUB_OUTPUT"
+          aws lambda update-function-code --function-name "$FN" --zip-file fileb://lambda.zip >/dev/null
+          aws lambda wait function-updated-v2 --function-name "$FN"
+          VERSION=$(aws lambda publish-version --function-name "$FN" \
+            --description "${GITHUB_SHA::7} ${{ github.run_id }}" --query Version --output text)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Published version $VERSION (live was $PREVIOUS)"
+
+      - name: Apply schema (idempotent) with the new version
+        run: |
+          set -euo pipefail
+          aws lambda invoke --function-name "${{ vars.LAMBDA_FUNCTION }}:${{ steps.publish.outputs.version }}" \
+            --cli-binary-format raw-in-base64-out --payload '{"vaultTask":"migrate"}' migrate.json
+          cat migrate.json
+          grep -q '"ok":true' migrate.json
+
+      - name: Point the live alias at the new version
+        run: |
+          aws lambda update-alias --function-name "${{ vars.LAMBDA_FUNCTION }}" --name live \
+            --function-version "${{ steps.publish.outputs.version }}"
+
+      - name: Rollback hint
+        if: always()
+        run: |
+          echo "Rollback: aws lambda update-alias --function-name ${{ vars.LAMBDA_FUNCTION }} --name live --function-version ${{ steps.publish.outputs.previous }}"
