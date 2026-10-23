@@ -34,7 +34,7 @@ export function HistoryDrawer({ isOpen, item, onClose, onRestoreSuccess }) {
               let decryptedPayload = null;
               if (h.encrypted_data && mek) {
                 try {
-                  decryptedPayload = await ClientCrypto.decryptItem(h.encrypted_data, mek);
+                  decryptedPayload = await ClientCrypto.decryptVaultItem(h.encrypted_data, { mek, itemKey: item._itemKey });
                 } catch (e) {
                   console.warn(`Could not decrypt version ${h.version}:`, e);
                 }
@@ -175,14 +175,14 @@ export function HistoryDrawer({ isOpen, item, onClose, onRestoreSuccess }) {
                   {decrypted.password ? (
                     <div className="p-3 bg-muted/40 rounded-lg border border-border space-y-2 text-xs">
                       {decrypted.username && (
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Username:</span>
-                          <span className="text-foreground font-mono select-all">{decrypted.username}</span>
+                        <div className="flex justify-between gap-3">
+                          <span className="text-muted-foreground shrink-0">Username:</span>
+                          <span className="text-foreground font-mono select-all break-all text-right min-w-0">{decrypted.username}</span>
                         </div>
                       )}
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Password:</span>
-                        <span className="font-mono text-primary font-medium">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-muted-foreground shrink-0">Password:</span>
+                        <span className="font-mono text-primary font-medium break-all text-right min-w-0">
                           {isRevealed ? decrypted.password : '••••••••••••'}
                         </span>
                       </div>

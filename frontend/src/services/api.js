@@ -134,7 +134,7 @@ export const api = {
     resetPasswordRequest: (email) =>
       request('/auth/reset-password/request', { method: 'POST', body: { email } }),
 
-    resetPasswordConfirm: ({ email, otpCode, newAuthHash, newAuthSalt }) =>
+    resetPasswordConfirm: ({ email, otpCode, newAuthHash, newAuthSalt, publicKey, encryptedPrivateKey }) =>
       request('/auth/reset-password/confirm', {
         method: 'POST',
         body: {
@@ -142,6 +142,8 @@ export const api = {
           otp_code: otpCode,
           new_auth_hash: newAuthHash,
           new_auth_salt: newAuthSalt,
+          public_key: publicKey,
+          encrypted_private_key: encryptedPrivateKey,
         },
       }),
   },

@@ -12,6 +12,7 @@
  */
 
 import { getDatabase } from '../db/adapter.js';
+import { getClientIp } from '../request-context.js';
 import { authenticate } from '../middleware/auth-guard.js';
 
 function jsonResponse(statusCode, data) {
@@ -207,8 +208,8 @@ export async function shareItemHandler(event) {
   // Log activity
   await db.query(
     `INSERT INTO activity_logs (user_id, action_type, target_item_id, ip_address, details)
-     VALUES ($1, 'PASSWORD_SHARE', $2, '127.0.0.1', $3)`,
-    [user.user_id, itemId, { recipient_email: recipientUser.email, permission_level: permissionLevel }]
+     VALUES ($1, 'PASSWORD_SHARE', $2, $4, $3)`,
+    [user.user_id, itemId, { recipient_email: recipientUser.email, permission_level: permissionLevel }, getClientIp()]
   );
 
   return jsonResponse(201, {
@@ -314,8 +315,8 @@ export async function revokeShareHandler(event) {
 
   await db.query(
     `INSERT INTO activity_logs (user_id, action_type, ip_address, details)
-     VALUES ($1, 'PASSWORD_SHARE_REVOKED', '127.0.0.1', $2)`,
-    [user.user_id, { share_id: deleteResult.rows[0].share_id, item_id: deleteResult.rows[0].item_id }]
+     VALUES ($1, 'PASSWORD_SHARE_REVOKED', $3, $2)`,
+    [user.user_id, { share_id: deleteResult.rows[0].share_id, item_id: deleteResult.rows[0].item_id }, getClientIp()]
   );
 
   return jsonResponse(200, {

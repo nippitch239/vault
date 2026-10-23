@@ -10,6 +10,8 @@
  * Ponytail minimalism: Pure regex path matching, zero external router dependencies.
  */
 
+import { requestContext, getEventSourceIp } from './request-context.js';
+
 import {
   registerHandler,
   getSaltHandler,
@@ -408,7 +410,9 @@ export async function router(event, context) {
       };
 
       try {
-        const response = await route.handler(enhancedEvent, context);
+        const response = await requestContext.run({ ip: getEventSourceIp(event) }, () =>
+          route.handler(enhancedEvent, context)
+        );
         const latency = Date.now() - startTime;
         recordRequestMetric(latency, response.statusCode >= 400);
 

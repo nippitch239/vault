@@ -10,6 +10,7 @@
  */
 
 import { getDatabase } from '../db/adapter.js';
+import { getClientIp } from '../request-context.js';
 import { authenticate } from '../middleware/auth-guard.js';
 
 function jsonResponse(statusCode, data) {
@@ -196,8 +197,8 @@ export async function rollbackHistoryHandler(event) {
   // 3. Log restore activity
   await db.query(
     `INSERT INTO activity_logs (user_id, action_type, target_item_id, ip_address, details)
-     VALUES ($1, 'PASSWORD_RESTORE', $2, '127.0.0.1', $3)`,
-    [user.user_id, itemId, { restored_from_version: targetVersion, new_version: newVersion }]
+     VALUES ($1, 'PASSWORD_RESTORE', $2, $4, $3)`,
+    [user.user_id, itemId, { restored_from_version: targetVersion, new_version: newVersion }, getClientIp()]
   );
 
   return jsonResponse(200, {

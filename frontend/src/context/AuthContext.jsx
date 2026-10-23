@@ -59,17 +59,24 @@ export function AuthProvider({ children }) {
     setLoading(true);
     setError(null);
     try {
-      const { mek: derivedMek } = await ClientCrypto.deriveKeys(masterPassword, user.auth_salt);
-      setMek(derivedMek);
+      const { mek: derivedMek, authHash } = await ClientCrypto.deriveKeys(masterPassword, user.auth_salt);
 
+      // Verify the master password before unlocking: a wrong password derives a wrong MEK,
+      // which fails AES-GCM authentication on the stored private key.
+      let privKey = null;
       if (user.encrypted_private_key) {
         try {
-          const privKey = await ClientCrypto.unprotectPrivateKey(user.encrypted_private_key, derivedMek);
-          setPrivateKey(privKey);
-        } catch (e) {
-          console.warn('Could not decrypt private key with derived MEK:', e);
+          privKey = await ClientCrypto.unprotectPrivateKey(user.encrypted_private_key, derivedMek);
+        } catch {
+          throw new Error('รหัสผ่านหลักไม่ถูกต้อง (Incorrect master password)');
         }
+      } else {
+        // No private key to check against: verify with the server instead
+        await api.auth.login({ identifier: user.email || user.username, authHash });
       }
+
+      setMek(derivedMek);
+      setPrivateKey(privKey);
       return true;
     } catch (err) {
       setError(err.message || 'Failed to unlock vault');

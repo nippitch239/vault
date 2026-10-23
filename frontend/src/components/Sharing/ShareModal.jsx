@@ -49,14 +49,35 @@ export function ShareModal({ isOpen, item, onClose, onSuccess }) {
         throw new Error('ไม่พบคีย์สาธารณะของผู้รับ หรือผู้รับยังไม่ได้ลงทะเบียนในระบบ');
       }
 
-      // 2. Generate a fresh 32-byte symmetric Item Key
-      const itemKey = ClientCrypto.generateItemKey();
+      const itemId = item.item_id || item.id;
+
+      // 2. Get the item's own Item Key. The first time an item is shared, re-encrypt it
+      //    with a fresh Item Key (kept for the owner as `owner_key`) so the recipient can read it.
+      let itemKey = await ClientCrypto.getOwnerItemKey(item.encrypted_data, mek);
+      if (!itemKey) {
+        if (item._collectionId || item.metadata?.collection_id) {
+          throw new Error('รายการนี้อยู่ในคอลเลกชัน กรุณาแชร์ผ่านคอลเลกชันแทน');
+        }
+        const plainPayload =
+          item._decrypted || (await ClientCrypto.decryptItem(item.encrypted_data, mek));
+        const envelope = await ClientCrypto.createSharedEnvelope(plainPayload, mek);
+        await api.vault.updateItem(
+          itemId,
+          {
+            item_type: item.item_type,
+            encrypted_data: envelope.encryptedData,
+            metadata: item.metadata,
+            version: item.version,
+          },
+          item.vault_id
+        );
+        itemKey = envelope.itemKey;
+      }
 
       // 3. Wrap (encrypt) the Item Key using recipient's RSA-OAEP public key
       const wrappedKeyPayload = await ClientCrypto.wrapItemKey(itemKey, recipient.public_key);
 
       // 4. Send share request to server
-      const itemId = item.item_id || item.id;
       await api.sharing.shareItem(
         itemId,
         {

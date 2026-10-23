@@ -14,6 +14,7 @@
 
 import crypto from 'node:crypto';
 import { getDatabase } from '../db/adapter.js';
+import { getClientIp } from '../request-context.js';
 import { signJwt, verifyJwt, authenticate } from '../middleware/auth-guard.js';
 import { hashAuthHash } from '../../shared/crypto.js';
 import {
@@ -24,7 +25,49 @@ import {
 } from '../../shared/validator.js';
 
 // In-memory store for pending password reset OTPs: email -> { code, expiresAt }
-const resetOtpStore = new Map();
+// Password reset OTPs live in the database: Lambda instances don't share memory
+async function ensureResetOtpTable(db) {
+  await db.query(`CREATE TABLE IF NOT EXISTS password_reset_otps (
+    email VARCHAR(255) PRIMARY KEY,
+    code_hash VARCHAR(128) NOT NULL,
+    expires_at BIGINT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0
+  )`);
+}
+
+function hashOtp(code) {
+  return crypto.createHash('sha256').update(code).digest('hex');
+}
+
+/**
+ * Sends the OTP by email through Amazon SES when SES_FROM_EMAIL is set.
+ * Without SES the code is only written to the Lambda's CloudWatch log (lab/demo use).
+ */
+async function deliverResetOtp(email, otpCode) {
+  const from = process.env.SES_FROM_EMAIL;
+  if (!from) {
+    console.log(`[PASSWORD_RESET_OTP] ${email}: ${otpCode} (set SES_FROM_EMAIL to send by email)`);
+    return;
+  }
+  const { SESv2Client, SendEmailCommand } = await import('@aws-sdk/client-sesv2');
+  const ses = new SESv2Client({});
+  await ses.send(
+    new SendEmailCommand({
+      FromEmailAddress: from,
+      Destination: { ToAddresses: [email] },
+      Content: {
+        Simple: {
+          Subject: { Data: 'SecureVault password reset code' },
+          Body: {
+            Text: {
+              Data: `Your SecureVault verification code is ${otpCode}. It expires in 15 minutes.`,
+            },
+          },
+        },
+      },
+    })
+  );
+}
 
 // In-memory tracking for failed login attempts to feed UC-8 anomaly alerts: ip/email -> [{ timestamp }]
 export const loginFailureLog = [];
@@ -133,7 +176,12 @@ export async function registerHandler(event) {
   const authSalt = body.auth_salt || body.authSalt;
   const publicKey = body.public_key || body.publicKey || null;
   const encryptedPrivateKey = body.encrypted_private_key || body.encryptedPrivateKey || null;
-  const role = body.role === 'admin' ? 'admin' : 'user';
+  // Never trust a role from the client: admins are only the emails listed in ADMIN_EMAILS
+  const adminEmails = (process.env.ADMIN_EMAILS || '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  const role = adminEmails.includes(email) ? 'admin' : 'user';
 
   // Input validation
   if (!email || !username || !fullName || !authHash || !authSalt) {
@@ -222,7 +270,7 @@ export async function registerHandler(event) {
   const defaultVault = vaultResult.rows[0];
 
   // Record activity and audit logs
-  const clientIp = event.requestContext?.http?.sourceIp || '127.0.0.1';
+  const clientIp = getClientIp();
   const userAgent = event.headers?.['user-agent'] || 'client';
 
   await db.query(
@@ -297,7 +345,7 @@ export async function loginHandler(event) {
   const body = parseBody(event);
   const identifier = (body.email || body.username || '').trim().toLowerCase();
   const authHash = body.auth_hash || body.authHash;
-  const clientIp = event.requestContext?.http?.sourceIp || '127.0.0.1';
+  const clientIp = getClientIp();
   const userAgent = event.headers?.['user-agent'] || 'client';
 
   if (!identifier || !authHash) {
@@ -500,8 +548,8 @@ export async function mfaVerifyHandler(event) {
 
   await db.query(
     `INSERT INTO activity_logs (user_id, action_type, ip_address, details)
-     VALUES ($1, 'MFA_ENABLED', '127.0.0.1', $2)`,
-    [user.user_id, { mfa_type: 'totp' }]
+     VALUES ($1, 'MFA_ENABLED', $3, $2)`,
+    [user.user_id, { mfa_type: 'totp' }, getClientIp()]
   );
 
   return jsonResponse(200, {
@@ -518,7 +566,7 @@ export async function mfaValidateHandler(event) {
   const body = parseBody(event);
   const mfaSessionToken = body.mfa_session_token || body.mfaSessionToken;
   const token = body.token || body.code;
-  const clientIp = event.requestContext?.http?.sourceIp || '127.0.0.1';
+  const clientIp = getClientIp();
   const userAgent = event.headers?.['user-agent'] || 'client';
 
   if (!mfaSessionToken || !token) {
@@ -631,27 +679,34 @@ export async function resetPasswordRequestHandler(event) {
   );
 
   // Generate 6-digit OTP
-  const otpCode = crypto.randomInt(100000, 999999).toString();
+  const otpCode = crypto.randomInt(100000, 1000000).toString();
   const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins
 
-  resetOtpStore.set(email, { code: otpCode, expiresAt });
-
   if (userResult.rows.length > 0) {
+    await ensureResetOtpTable(db);
+    await db.query(
+      `INSERT INTO password_reset_otps (email, code_hash, expires_at, attempts)
+       VALUES ($1, $2, $3, 0)
+       ON CONFLICT (email) DO UPDATE SET code_hash = $2, expires_at = $3, attempts = 0`,
+      [email, hashOtp(otpCode), expiresAt]
+    );
+    try {
+      await deliverResetOtp(email, otpCode);
+    } catch (err) {
+      console.error('[PASSWORD_RESET_OTP] Failed to send email:', err);
+    }
+
     await db.query(
       `INSERT INTO audit_logs (actor_user_id, actor_role, event_action, event_severity, target_resource, ip_address, details)
-       VALUES ($1, 'user', 'PASSWORD_RESET_REQUESTED', 'INFO', 'users', '127.0.0.1', $2)`,
-      [userResult.rows[0].user_id, { email }]
+       VALUES ($1, 'user', 'PASSWORD_RESET_REQUESTED', 'INFO', 'users', $3, $2)`,
+      [userResult.rows[0].user_id, { email }, getClientIp()]
     );
   }
 
-  // In test / simulation environment, include preview of otp_code to facilitate automated tests
+  // Same response whether or not the email exists, and the code is never returned to the browser
   return jsonResponse(200, {
     status: 'success',
-    message: 'Verification code sent to registered email',
-    data: {
-      // In dev simulation, we provide debug_otp for headless automated testing
-      debug_otp: otpCode,
-    },
+    message: 'If this email is registered, a verification code has been sent to it',
   });
 }
 
@@ -674,7 +729,12 @@ export async function resetPasswordConfirmHandler(event) {
     });
   }
 
-  const storedOtp = resetOtpStore.get(email);
+  await ensureResetOtpTable(db);
+  const otpResult = await db.query(
+    'SELECT code_hash, expires_at, attempts FROM password_reset_otps WHERE email = $1',
+    [email]
+  );
+  const storedOtp = otpResult.rows[0];
   if (!storedOtp) {
     return jsonResponse(400, {
       status: 'fail',
@@ -683,8 +743,8 @@ export async function resetPasswordConfirmHandler(event) {
     });
   }
 
-  if (Date.now() > storedOtp.expiresAt) {
-    resetOtpStore.delete(email);
+  if (Date.now() > Number(storedOtp.expires_at) || storedOtp.attempts >= 5) {
+    await db.query('DELETE FROM password_reset_otps WHERE email = $1', [email]);
     return jsonResponse(410, {
       status: 'fail',
       error: 'EXPIRED_OTP',
@@ -692,7 +752,8 @@ export async function resetPasswordConfirmHandler(event) {
     });
   }
 
-  if (storedOtp.code !== otpCode) {
+  if (storedOtp.code_hash !== hashOtp(otpCode)) {
+    await db.query('UPDATE password_reset_otps SET attempts = attempts + 1 WHERE email = $1', [email]);
     return jsonResponse(400, {
       status: 'fail',
       error: 'INVALID_OTP',
@@ -701,7 +762,7 @@ export async function resetPasswordConfirmHandler(event) {
   }
 
   // OTP verified, consume it
-  resetOtpStore.delete(email);
+  await db.query('DELETE FROM password_reset_otps WHERE email = $1', [email]);
 
   const userResult = await db.query(
     'SELECT user_id FROM users WHERE LOWER(email) = $1',
@@ -718,24 +779,29 @@ export async function resetPasswordConfirmHandler(event) {
   const userId = userResult.rows[0].user_id;
   const serverAuthHash = await hashAuthHash(newAuthHash);
 
-  // Update credentials
+  // Update credentials. A new MEK can't open the old private key, so the client sends a new key pair.
+  const newPublicKey = body.public_key || body.publicKey || null;
+  const newEncryptedPrivateKey = body.encrypted_private_key || body.encryptedPrivateKey || null;
   await db.query(
     `UPDATE users
-     SET auth_hash = $1, auth_salt = $2, updated_at = CURRENT_TIMESTAMP
+     SET auth_hash = $1, auth_salt = $2,
+         public_key = COALESCE($4, public_key),
+         encrypted_private_key = COALESCE($5, encrypted_private_key),
+         updated_at = CURRENT_TIMESTAMP
      WHERE user_id = $3`,
-    [serverAuthHash, newAuthSalt, userId]
+    [serverAuthHash, newAuthSalt, userId, newPublicKey, newEncryptedPrivateKey]
   );
 
   await db.query(
     `INSERT INTO activity_logs (user_id, action_type, ip_address, details)
-     VALUES ($1, 'PASSWORD_RESET', '127.0.0.1', $2)`,
-    [userId, { email }]
+     VALUES ($1, 'PASSWORD_RESET', $3, $2)`,
+    [userId, { email }, getClientIp()]
   );
 
   await db.query(
     `INSERT INTO audit_logs (actor_user_id, actor_role, event_action, event_severity, target_resource, ip_address, details)
-     VALUES ($1, 'user', 'PASSWORD_RESET_CONFIRMED', 'WARNING', 'users', '127.0.0.1', $2)`,
-    [userId, { email }]
+     VALUES ($1, 'user', 'PASSWORD_RESET_CONFIRMED', 'WARNING', 'users', $3, $2)`,
+    [userId, { email }, getClientIp()]
   );
 
   return jsonResponse(200, {

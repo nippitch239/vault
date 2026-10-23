@@ -34,11 +34,6 @@ export function ResetPasswordView({ onNavigateLogin }) {
     try {
       const res = await api.auth.resetPasswordRequest(email.trim().toLowerCase());
       addToast(res.message || 'ส่งรหัสยืนยัน OTP ไปยังอีเมลเรียบร้อยแล้ว', 'info');
-
-      // In local dev/testing, the backend provides debug_otp for easy verification
-      if (res?.data?.debug_otp) {
-        setOtpCode(res.data.debug_otp);
-      }
       setStep(2);
     } catch (err) {
       setError(err.message || 'ไม่พบอีเมลนี้ในระบบ หรือเกิดข้อผิดพลาด');
@@ -69,15 +64,21 @@ export function ResetPasswordView({ onNavigateLogin }) {
       // 1. Generate fresh salt
       const newAuthSalt = ClientCrypto.createSalt(16);
 
-      // 2. Derive new Auth Hash via Argon2id
-      const { authHash: newAuthHash } = await ClientCrypto.deriveKeys(newPassword, newAuthSalt);
+      // 2. Derive new Auth Hash and MEK via Argon2id
+      const { authHash: newAuthHash, mek: newMek } = await ClientCrypto.deriveKeys(newPassword, newAuthSalt);
 
-      // 3. Submit reset to server
+      // 3. New sharing key pair: the old private key was encrypted with the old MEK and can't be recovered
+      const keyPair = await ClientCrypto.createKeyPair();
+      const encryptedPrivateKey = await ClientCrypto.protectPrivateKey(keyPair.privateKey, newMek);
+
+      // 4. Submit reset to server
       await api.auth.resetPasswordConfirm({
         email: email.trim().toLowerCase(),
         otpCode: otpCode.trim(),
         newAuthHash,
         newAuthSalt,
+        publicKey: keyPair.publicKey,
+        encryptedPrivateKey,
       });
 
       addToast('รีเซ็ตรหัสผ่านสำเร็จ! กรุณาเข้าสู่ระบบด้วยรหัสผ่านหลักใหม่', 'success', 6000);

@@ -230,35 +230,6 @@ export function RegisterView({ onNavigateLogin }) {
           )}
         </div>
 
-        {/* Role Toggle for testing / admin */}
-        <div className="flex items-center justify-between text-xs pt-1 px-1 text-slate-400">
-          <span>ประเภทบัญชี:</span>
-          <div className="flex space-x-2">
-            <button
-              type="button"
-              onClick={() => setFormData((p) => ({ ...p, role: 'user' }))}
-              className={`px-2.5 py-1 rounded-md border text-xs font-medium transition-all ${
-                formData.role === 'user'
-                  ? 'bg-emerald-600/30 border-emerald-500 text-emerald-300'
-                  : 'bg-slate-900 border-slate-700 text-slate-400'
-              }`}
-            >
-              User
-            </button>
-            <button
-              type="button"
-              onClick={() => setFormData((p) => ({ ...p, role: 'admin' }))}
-              className={`px-2.5 py-1 rounded-md border text-xs font-medium transition-all ${
-                formData.role === 'admin'
-                  ? 'bg-purple-600/30 border-purple-500 text-purple-300'
-                  : 'bg-slate-900 border-slate-700 text-slate-400'
-              }`}
-            >
-              Admin
-            </button>
-          </div>
-        </div>
-
         {/* Zero-Knowledge Privacy Notice */}
         <div className="p-3 bg-emerald-950/30 border border-emerald-500/20 rounded-xl text-emerald-300 text-xs flex items-start space-x-2.5">
           <KeyIcon className="w-5 h-5 flex-shrink-0 text-emerald-400 mt-0.5" />

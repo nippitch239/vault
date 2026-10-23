@@ -572,7 +572,6 @@ export function GroupsView() {
                       className="px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 text-xs focus:outline-none"
                     >
                       <option value="member">Member (สมาชิก)</option>
-                      <option value="manager">Manager (ผู้จัดการ)</option>
                       <option value="admin">Admin (ผู้ดูแล)</option>
                     </select>
 

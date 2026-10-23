@@ -8,6 +8,7 @@
  */
 
 import { getDatabase } from '../db/adapter.js';
+import { getClientIp } from '../request-context.js';
 import { authenticate } from '../middleware/auth-guard.js';
 
 function jsonResponse(statusCode, data) {
@@ -117,8 +118,8 @@ export async function simulateSecurityEventHandler(event) {
   await db.query(
     `INSERT INTO audit_logs (
       actor_user_id, actor_role, event_action, event_severity, target_resource, ip_address, status, details
-    ) VALUES ($1, 'system', $2, $3, 'security_alarms', '127.0.0.1', 'SUCCESS', $4)`,
-    [user.user_id, type, severity, { description, source }]
+    ) VALUES ($1, 'system', $2, $3, 'security_alarms', $5, 'SUCCESS', $4)`,
+    [user.user_id, type, severity, { description, source }, getClientIp()]
   );
 
   return jsonResponse(201, {

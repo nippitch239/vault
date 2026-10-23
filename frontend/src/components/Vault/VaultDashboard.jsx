@@ -154,7 +154,7 @@ export function VaultDashboard() {
               }
               if (!decryptedPayload && mek) {
                 try {
-                  decryptedPayload = await ClientCrypto.decryptItem(it.encrypted_data, mek);
+                  decryptedPayload = await ClientCrypto.decryptVaultItem(it.encrypted_data, { mek });
                 } catch {
                   // fallback
                 }
@@ -196,7 +196,7 @@ export function VaultDashboard() {
 
             if (!decryptedPayload) {
               try {
-                decryptedPayload = await ClientCrypto.decryptItem(it.encrypted_data, mek);
+                decryptedPayload = await ClientCrypto.decryptVaultItem(it.encrypted_data, { mek });
               } catch (e) {
                 console.warn(`Failed to decrypt item ${it.item_id}:`, e);
               }

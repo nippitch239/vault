@@ -4,10 +4,12 @@ import api from '../../services/api.js';
 import ClientCrypto from '../../services/crypto.js';
 import { ShareIcon, KeyIcon, EyeIcon, EyeOffIcon, CopyIcon, CheckIcon, RefreshIcon, EditIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
+import { ItemModal } from '../Vault/ItemModal.jsx';
 
-export function SharedItemsView({ onEditItem }) {
+export function SharedItemsView() {
   const { mek, privateKey } = useAuth();
   const { addToast } = useToast();
+  const [editingItem, setEditingItem] = useState(null);
 
   const [sharedItems, setSharedItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -26,29 +28,21 @@ export function SharedItemsView({ onEditItem }) {
       const decryptedList = await Promise.all(
         rawItems.map(async (item) => {
           try {
-            // If item has encrypted_data and MEK or unwrapped key
+            // Unwrap the shared Item Key with our RSA private key, then decrypt the item
             let decryptedData = null;
-            if (item.encrypted_data && mek) {
+            let itemKey = null;
+            if (item.encrypted_data && item.encrypted_key_for_recipient && privateKey) {
               try {
-                decryptedData = await ClientCrypto.decryptItem(item.encrypted_data, mek);
-              } catch (e) {
-                // If encrypted with itemKey instead of MEK, unwrap key first
-                if (item.encrypted_key_for_recipient && privateKey) {
-                  try {
-                    const unwrappedKey = await ClientCrypto.unwrapItemKey(
-                      item.encrypted_key_for_recipient,
-                      privateKey
-                    );
-                    decryptedData = await ClientCrypto.decryptItem(item.encrypted_data, unwrappedKey);
-                  } catch (err) {
-                    console.warn('Could not unwrap item key:', err);
-                  }
-                }
+                itemKey = await ClientCrypto.unwrapItemKey(item.encrypted_key_for_recipient, privateKey);
+                decryptedData = await ClientCrypto.decryptVaultItem(item.encrypted_data, { itemKey });
+              } catch (err) {
+                console.warn('Could not decrypt shared item:', err);
               }
             }
             return {
               ...item,
               _decrypted: decryptedData,
+              _itemKey: itemKey,
             };
           } catch {
             return item;
@@ -151,7 +145,7 @@ export function SharedItemsView({ onEditItem }) {
                         {meta.title || item.title || 'Untitled'}
                       </h3>
                       <span className="text-xs text-slate-400">
-                        แชร์โดย: <strong className="text-slate-300">{item.shared_by || item.shared_by_email || 'Owner'}</strong>
+                        แชร์โดย: <strong className="text-slate-300">{item.shared_by_username || item.shared_by_email || 'Owner'}</strong>
                       </span>
                     </div>
                     <span
@@ -166,15 +160,22 @@ export function SharedItemsView({ onEditItem }) {
                   </div>
 
                   <div className="space-y-2 text-xs text-slate-300 bg-slate-900/60 p-3 rounded-xl border border-slate-800 mb-4">
-                    {decrypted.username && (
-                      <div className="flex justify-between items-center">
-                        <span className="text-slate-500">Username:</span>
-                        <span className="font-mono text-slate-200 select-all">{decrypted.username}</span>
+                    {!item._decrypted && (
+                      <div className="text-amber-400">
+                        ถอดรหัสไม่ได้ — ให้เจ้าของแชร์รายการนี้ใหม่อีกครั้ง
                       </div>
                     )}
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500">Password:</span>
-                      <span className="font-mono text-emerald-400">
+                    {(decrypted.username || meta.username_preview) && (
+                      <div className="flex justify-between items-center gap-3">
+                        <span className="text-slate-500 shrink-0">Username:</span>
+                        <span className="font-mono text-slate-200 select-all truncate">
+                          {decrypted.username || meta.username_preview}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex justify-between items-center gap-3">
+                      <span className="text-slate-500 shrink-0">Password:</span>
+                      <span className="font-mono text-emerald-400 break-all text-right min-w-0">
                         {isRevealed
                           ? decrypted.password || '••••••••'
                           : '••••••••••••'}
@@ -217,10 +218,10 @@ export function SharedItemsView({ onEditItem }) {
                     </button>
                   </div>
 
-                  {canModify && onEditItem && (
+                  {canModify && item._decrypted && (
                     <button
                       type="button"
-                      onClick={() => onEditItem(item)}
+                      onClick={() => setEditingItem(item)}
                       className="px-3 py-1.5 bg-purple-600/30 hover:bg-purple-600 text-purple-300 hover:text-white rounded-lg transition-colors flex items-center space-x-1 font-medium"
                     >
                       <EditIcon className="w-3.5 h-3.5" />
@@ -232,6 +233,15 @@ export function SharedItemsView({ onEditItem }) {
             );
           })}
         </div>
+      )}
+
+      {editingItem && (
+        <ItemModal
+          isOpen={true}
+          item={editingItem}
+          onClose={() => setEditingItem(null)}
+          onSuccess={loadSharedItems}
+        />
       )}
     </div>
   );

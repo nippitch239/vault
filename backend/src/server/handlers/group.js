@@ -12,6 +12,7 @@
 
 import crypto from 'node:crypto';
 import { getDatabase } from '../db/adapter.js';
+import { getClientIp } from '../request-context.js';
 import { authenticate } from '../middleware/auth-guard.js';
 
 function jsonResponse(statusCode, data) {
@@ -95,8 +96,16 @@ async function recordAuditLog(db, { actorUserId, actorRole = 'user', eventAction
     await db.query(
       `INSERT INTO audit_logs (actor_user_id, actor_role, event_action, event_severity, target_resource, target_resource_id, ip_address, status, details)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [actorUserId || null, actorRole || 'user', eventAction, severity, targetResource, targetResourceId, '127.0.0.1', 'SUCCESS', details]
+      [actorUserId || null, actorRole || 'user', eventAction, severity, targetResource, targetResourceId, getClientIp(), 'SUCCESS', details]
     );
+    // Also show the action in the actor's own activity log
+    if (actorUserId) {
+      await db.query(
+        `INSERT INTO activity_logs (user_id, action_type, ip_address, details)
+         VALUES ($1, $2, $3, $4)`,
+        [actorUserId, eventAction, getClientIp(), { ...details, target_resource: targetResource, target_id: targetResourceId }]
+      );
+    }
   } catch {
     // Non-blocking
   }
@@ -383,11 +392,11 @@ export async function addGroupMemberHandler(event) {
     });
   }
 
-  if (!['member', 'manager', 'admin'].includes(role)) {
+  if (!['member', 'admin'].includes(role)) {
     return jsonResponse(400, {
       status: 'fail',
       error: 'BAD_REQUEST',
-      message: 'Invalid role. Must be member, manager, or admin',
+      message: 'Invalid role. Must be member or admin',
     });
   }
 

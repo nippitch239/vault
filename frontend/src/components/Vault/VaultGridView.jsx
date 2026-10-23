@@ -150,12 +150,12 @@ export function VaultGridView({
 
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-muted-foreground shrink-0">Password:</span>
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-mono font-medium text-emerald-400 tracking-wider">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="font-mono font-medium text-emerald-400 tracking-wider break-all text-right min-w-0">
                         {isRevealed ? password || '••••••••' : '••••••••••••'}
                       </span>
                       {password && (
-                        <div className="flex items-center">
+                        <div className="flex items-center shrink-0">
                           <button
                             type="button"
                             onClick={() => onToggleReveal(id)}

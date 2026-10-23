@@ -75,6 +75,39 @@ export const ClientCrypto = {
     return await decryptData(encryptedData, mek);
   },
 
+  // Shared items use their own random Item Key: the payload is encrypted with it,
+  // and `owner_key` holds that Item Key encrypted with the owner's MEK.
+  // Recipients get the same Item Key wrapped with their RSA public key.
+  getOwnerItemKey: async (encryptedData, mek) => {
+    if (!encryptedData?.owner_key) return null;
+    const keyB64 = await decryptData(encryptedData.owner_key, mek, { rawString: true });
+    return fromBase64(keyB64);
+  },
+
+  decryptVaultItem: async (encryptedData, { mek, itemKey } = {}) => {
+    if (encryptedData?.owner_key || itemKey) {
+      const key = itemKey || (await ClientCrypto.getOwnerItemKey(encryptedData, mek));
+      return await decryptData(encryptedData, key);
+    }
+    return await decryptData(encryptedData, mek);
+  },
+
+  encryptVaultItem: async (plainPayload, existingEncryptedData, { mek, itemKey } = {}) => {
+    if (!existingEncryptedData?.owner_key) {
+      return await encryptData(plainPayload, mek);
+    }
+    const key = itemKey || (await ClientCrypto.getOwnerItemKey(existingEncryptedData, mek));
+    const encrypted = await encryptData(plainPayload, key);
+    return { ...encrypted, owner_key: existingEncryptedData.owner_key };
+  },
+
+  createSharedEnvelope: async (plainPayload, mek) => {
+    const itemKey = generateRandomBytes(32);
+    const encrypted = await encryptData(plainPayload, itemKey);
+    encrypted.owner_key = await encryptData(toBase64(itemKey), mek);
+    return { itemKey, encryptedData: encrypted };
+  },
+
   // Key Wrapping for Sharing
   wrapItemKey: async (itemKey, recipientPublicKey) => {
     return await wrapKey(itemKey, recipientPublicKey);

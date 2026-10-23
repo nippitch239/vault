@@ -45,7 +45,12 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
       api.collections
         .list()
         .then((res) => {
-          setCollections(res?.collections || []);
+          // Only collections the user can write to can receive items
+          const writable = (res?.collections || []).filter((c) =>
+            ['write', 'admin'].includes(c.effective_permission || c.effectivePermission)
+          );
+          // Items shared with me stay in the owner's vault
+          setCollections(item?._itemKey ? [] : writable);
         })
         .catch(() => {});
 
@@ -155,7 +160,10 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         const colKey = await ClientCrypto.unwrapCollectionKey(wrappedPayload, privateKey);
         encryptedData = await ClientCrypto.encryptCollectionItem(sensitivePayload, colKey);
       } else {
-        encryptedData = await ClientCrypto.encryptItem(sensitivePayload, mek);
+        encryptedData = await ClientCrypto.encryptVaultItem(sensitivePayload, item?.encrypted_data, {
+          mek,
+          itemKey: item?._itemKey,
+        });
       }
 
       // 3. Prepare metadata (unencrypted indexable attributes)
@@ -209,8 +217,11 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
       if (selectedCollectionId && savedItemId) {
         try {
           await api.collections.addItem(selectedCollectionId, { itemId: savedItemId });
-        } catch {
-          // Ignore conflict if already associated
+        } catch (addErr) {
+          // 409 = already in this collection
+          if (addErr.status !== 409) {
+            throw new Error(`บันทึกรายการแล้ว แต่เพิ่มเข้าคอลเลกชันไม่สำเร็จ: ${addErr.message}`);
+          }
         }
       }
 

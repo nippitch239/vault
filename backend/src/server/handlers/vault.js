@@ -12,6 +12,7 @@
  */
 
 import { getDatabase } from '../db/adapter.js';
+import { getClientIp } from '../request-context.js';
 import { authenticate } from '../middleware/auth-guard.js';
 
 function jsonResponse(statusCode, data) {
@@ -74,6 +75,10 @@ export function normalizeEncryptedData(encryptedData) {
     auth_tag: encryptedData.auth_tag || encryptedData.authTag,
     algorithm: encryptedData.algorithm || 'AES-256-GCM',
     key_version: encryptedData.key_version || encryptedData.keyVersion || 1,
+    // Item Key wrapped with the owner's MEK (present once an item has been shared)
+    ...(encryptedData.owner_key && typeof encryptedData.owner_key === 'object'
+      ? { owner_key: encryptedData.owner_key }
+      : {}),
   };
 }
 
@@ -288,7 +293,7 @@ export async function createVaultItemHandler(event) {
   const newItem = insertResult.rows[0];
 
   // Log user activity
-  const clientIp = event.requestContext?.http?.sourceIp || '127.0.0.1';
+  const clientIp = getClientIp();
   const userAgent = event.headers?.['user-agent'] || 'client';
 
   await db.query(
@@ -417,7 +422,7 @@ export async function updateVaultItemHandler(event) {
   const updatedItem = updateResult.rows[0];
 
   // 3. Log activity
-  const clientIp = event.requestContext?.http?.sourceIp || '127.0.0.1';
+  const clientIp = getClientIp();
   const userAgent = event.headers?.['user-agent'] || 'client';
 
   await db.query(
@@ -484,7 +489,7 @@ export async function deleteVaultItemHandler(event) {
   await db.query('DELETE FROM vault_items WHERE item_id = $1', [itemId]);
 
   // Log user activity and admin audit
-  const clientIp = event.requestContext?.http?.sourceIp || '127.0.0.1';
+  const clientIp = getClientIp();
 
   await db.query(
     `INSERT INTO activity_logs (user_id, action_type, ip_address, details)
