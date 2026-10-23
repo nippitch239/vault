@@ -15,7 +15,7 @@ if (api.collections && !api.collections.getMyKey) {
 }
 
 export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
-  const { mek, privateKey } = useAuth();
+  const { mek, privateKey, user } = useAuth();
   const { addToast } = useToast();
 
   const isEditing = Boolean(item);
@@ -141,6 +141,13 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         updatedAt: new Date().toISOString(),
       };
 
+      const originalCollectionId =
+        item?.collection_id || item?._collectionId || item?.collectionId || item?.metadata?.collection_id || '';
+      const isOwner = !item || !item.user_id || item.user_id === user?.user_id;
+      if (isEditing && !isOwner && originalCollectionId && !selectedCollectionId) {
+        throw new Error('ย้ายรายการของคนอื่นออกไปคลังส่วนตัวไม่ได้ เลือกคอลเลกชันอื่นแทน');
+      }
+
       // 2. Encrypt using collection key if collection selected, otherwise fallback to MEK
       let encryptedData;
       if (selectedCollectionId) {
@@ -213,7 +220,18 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         addToast('เพิ่มรายการรหัสผ่านใหม่สำเร็จ (Added successfully)', 'success');
       }
 
-      // 4. Associate item with collection if selected
+      // 4. Moving between collections: remove from the old one first
+      if (isEditing && originalCollectionId && originalCollectionId !== selectedCollectionId) {
+        try {
+          await api.collections.removeItem(originalCollectionId, savedItemId);
+        } catch (rmErr) {
+          if (rmErr.status !== 404) {
+            throw new Error(`บันทึกแล้ว แต่นำออกจากคอลเลกชันเดิมไม่สำเร็จ: ${rmErr.message}`);
+          }
+        }
+      }
+
+      // 5. Associate item with collection if selected
       if (selectedCollectionId && savedItemId) {
         try {
           await api.collections.addItem(selectedCollectionId, { itemId: savedItemId });

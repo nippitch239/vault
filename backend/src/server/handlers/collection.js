@@ -186,6 +186,8 @@ export function formatVaultItem(row) {
   return {
     id,
     item_id: id,
+    user_id: row.user_id,
+    vault_id: row.vault_id,
     title: row.title || metadata?.title || metadata?.name || '',
     category: row.category || row.item_type || 'LOGIN',
     item_type: row.item_type || row.category || 'login',
@@ -604,7 +606,7 @@ export async function listCollectionAccessHandler(event) {
   // Include a display name: username/email for users, group name for groups
   const accessList = await db.query(
     `SELECT ca.*,
-            COALESCE(g.name, u.username, u.email) AS target_name,
+            COALESCE(g.name, u.full_name, u.username) AS target_name,
             u.email AS target_email
      FROM collection_access ca
      LEFT JOIN users u ON ca.target_type = 'user' AND u.user_id = ca.target_id

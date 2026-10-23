@@ -13,7 +13,7 @@
 
 import { getDatabase } from '../db/adapter.js';
 import { getClientIp } from '../request-context.js';
-import { authenticate } from '../middleware/auth-guard.js';
+import { authenticate, getEffectiveCollectionPermission } from '../middleware/auth-guard.js';
 
 function jsonResponse(statusCode, data) {
   return {
@@ -358,7 +358,23 @@ export async function updateVaultItemHandler(event) {
       [itemId, user.user_id]
     );
 
-    if (shareCheck.rows.length === 0 || shareCheck.rows[0].permission_level !== 'modify') {
+    // Members with write access to a collection holding this item may also edit it
+    let canWriteViaCollection = false;
+    const itemCollections = await db.query(
+      'SELECT collection_id FROM collection_items WHERE item_id = $1',
+      [itemId]
+    );
+    for (const row of itemCollections.rows || []) {
+      const perm = await getEffectiveCollectionPermission(db, row.collection_id, user);
+      if (perm === 'write' || perm === 'admin') {
+        canWriteViaCollection = true;
+        break;
+      }
+    }
+
+    const canModifyViaShare =
+      shareCheck.rows.length > 0 && shareCheck.rows[0].permission_level === 'modify';
+    if (!canModifyViaShare && !canWriteViaCollection) {
       return jsonResponse(403, {
         status: 'fail',
         error: 'FORBIDDEN',
