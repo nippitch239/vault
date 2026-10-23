@@ -89,6 +89,8 @@ export function formatCollectionAccess(row) {
     targetId,
     target_id: targetId,
     permission,
+    ...(row.target_name ? { target_name: row.target_name, targetName: row.target_name } : {}),
+    ...(row.target_email ? { target_email: row.target_email } : {}),
     createdAt,
     created_at: createdAt,
     updatedAt,
@@ -402,6 +404,14 @@ export async function updateCollectionHandler(event) {
   );
 
   const updated = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionId]);
+  await recordAuditLog(db, {
+    actorUserId: user.user_id,
+    actorRole: user.role,
+    eventAction: 'COLLECTION_UPDATED',
+    targetResourceId: collectionId,
+    details: { name: body.name },
+  });
+
   return jsonResponse(200, {
     status: 'success',
     success: true,
@@ -441,6 +451,15 @@ export async function deleteCollectionHandler(event) {
   await db.query('DELETE FROM collection_items WHERE collection_id = $1', [collectionId]);
   await db.query('DELETE FROM collection_access WHERE collection_id = $1', [collectionId]);
   await db.query('DELETE FROM collections WHERE collection_id = $1', [collectionId]);
+
+  await recordAuditLog(db, {
+    actorUserId: user.user_id,
+    actorRole: user.role,
+    eventAction: 'COLLECTION_DELETED',
+    severity: 'WARNING',
+    targetResourceId: collectionId,
+    details: { name: res.rows[0].name },
+  });
 
   return jsonResponse(200, {
     status: 'success',
@@ -531,6 +550,14 @@ export async function grantCollectionAccessHandler(event) {
     [accessId, collectionId, targetType, targetId, normPerm, now, now]
   );
 
+  await recordAuditLog(db, {
+    actorUserId: user.user_id,
+    actorRole: user.role,
+    eventAction: 'COLLECTION_ACCESS_GRANTED',
+    targetResourceId: collectionId,
+    details: { target_type: targetType, target_id: targetId, permission },
+  });
+
   return jsonResponse(201, {
     status: 'success',
     success: true,
@@ -574,8 +601,16 @@ export async function listCollectionAccessHandler(event) {
     });
   }
 
+  // Include a display name: username/email for users, group name for groups
   const accessList = await db.query(
-    'SELECT * FROM collection_access WHERE collection_id = $1 ORDER BY created_at ASC',
+    `SELECT ca.*,
+            COALESCE(g.name, u.username, u.email) AS target_name,
+            u.email AS target_email
+     FROM collection_access ca
+     LEFT JOIN users u ON ca.target_type = 'user' AND u.user_id = ca.target_id
+     LEFT JOIN groups g ON ca.target_type = 'group' AND g.group_id = ca.target_id
+     WHERE ca.collection_id = $1
+     ORDER BY ca.created_at ASC`,
     [collectionId]
   );
 
@@ -632,6 +667,14 @@ export async function revokeCollectionAccessHandler(event) {
     'DELETE FROM collection_access WHERE collection_id = $1 AND target_type = $2 AND target_id = $3',
     [collectionId, targetType, targetId]
   );
+
+  await recordAuditLog(db, {
+    actorUserId: user.user_id,
+    actorRole: user.role,
+    eventAction: 'COLLECTION_ACCESS_REVOKED',
+    targetResourceId: collectionId,
+    details: { target_type: targetType, target_id: targetId },
+  });
 
   return jsonResponse(200, {
     status: 'success',
@@ -838,6 +881,14 @@ export async function addCollectionItemHandler(event) {
     [mapId, collectionId, itemId, now]
   );
 
+  await recordAuditLog(db, {
+    actorUserId: user.user_id,
+    actorRole: user.role,
+    eventAction: 'COLLECTION_ITEM_ADDED',
+    targetResourceId: collectionId,
+    details: { item_id: itemId },
+  });
+
   return jsonResponse(201, {
     status: 'success',
     success: true,
@@ -938,6 +989,14 @@ export async function removeCollectionItemHandler(event) {
     'DELETE FROM collection_items WHERE collection_id = $1 AND item_id = $2',
     [collectionId, itemId]
   );
+
+  await recordAuditLog(db, {
+    actorUserId: user.user_id,
+    actorRole: user.role,
+    eventAction: 'COLLECTION_ITEM_REMOVED',
+    targetResourceId: collectionId,
+    details: { item_id: itemId },
+  });
 
   return jsonResponse(200, {
     status: 'success',

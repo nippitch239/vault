@@ -887,8 +887,11 @@ export function CollectionsView() {
                           <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 uppercase font-mono border border-slate-700">
                             {tType}
                           </span>
-                          <span className="text-xs font-mono text-slate-200 truncate max-w-[200px]">
-                            {tId}
+                          <span
+                            className="text-xs text-slate-200 truncate max-w-[200px]"
+                            title={entry.target_email || tId}
+                          >
+                            {entry.target_name || entry.targetName || tId}
                           </span>
                         </div>
 
