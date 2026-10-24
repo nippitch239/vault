@@ -284,18 +284,9 @@ export async function getEffectiveCollectionPermission(db, collectionId, user, o
   }
 
   const userId = typeof user === 'string' ? user : (user.user_id || user.id || user.sub);
-  const userRole = String(
-    optionalRole || (typeof user === 'object' ? user.role : null) || 'user'
-  ).toLowerCase();
 
-  // 1. System Admin Bypass
-  if (userRole === 'admin') {
-    const collRes = await db.query(
-      'SELECT collection_id FROM collections WHERE collection_id = $1',
-      [collectionId]
-    );
-    return collRes.rows && collRes.rows.length > 0 ? 'admin' : null;
-  }
+  // No system-admin bypass: admins manage the platform (logs, monitoring),
+  // they only see collections they created or were granted access to.
 
   // 2. Atomic Single-Query Evaluation (Creator + Direct User Grant + Inherited Group Grants)
   const query = `

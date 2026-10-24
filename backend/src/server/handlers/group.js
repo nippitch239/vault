@@ -180,18 +180,14 @@ export async function listGroupsHandler(event) {
   if (errorResponse) return errorResponse;
 
   const db = getDatabase();
-  let result;
-  if (user.role === 'admin' || user.role === 'ADMIN') {
-    result = await db.query('SELECT * FROM groups ORDER BY created_at DESC');
-  } else {
-    result = await db.query(
-      `SELECT DISTINCT g.* FROM groups g
-       LEFT JOIN group_members gm ON g.group_id = gm.group_id
-       WHERE g.created_by = $1 OR gm.user_id = $1
-       ORDER BY g.created_at DESC`,
-      [user.user_id]
-    );
-  }
+  // Everyone, admins included, sees only groups they created or belong to
+  const result = await db.query(
+    `SELECT DISTINCT g.* FROM groups g
+     LEFT JOIN group_members gm ON g.group_id = gm.group_id
+     WHERE g.created_by = $1 OR gm.user_id = $1
+     ORDER BY g.created_at DESC`,
+    [user.user_id]
+  );
 
   return jsonResponse(200, {
     status: 'success',
