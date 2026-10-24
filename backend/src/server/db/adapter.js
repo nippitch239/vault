@@ -213,20 +213,38 @@ export class PostgresDatabase {
         connectionString: this.options.connectionString || process.env.DATABASE_URL,
         max: this.options.max || 2, // Serverless concurrency limit
         idleTimeoutMillis: 15000,
-        connectionTimeoutMillis: 3000,
+        connectionTimeoutMillis: 10000,
         ssl: process.env.NODE_ENV === 'production' || process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+      });
+      // An idle connection dropped by RDS (restart, failover, Lambda freeze) emits 'error' on the pool.
+      // Unhandled, it crashes the whole Lambda process ("Internal server error").
+      this.pool.on('error', (err) => {
+        console.warn('[PostgresDatabase] Idle client error, connection discarded:', err.message);
       });
     }
     return this.pool;
   }
 
-  async query(sql, params = []) {
+  async query(sql, params = [], retried = false) {
     const pool = await this.initPool();
-    const result = await pool.query(sql, params);
-    return {
-      rows: result.rows,
-      rowCount: result.rowCount ?? result.rows.length,
-    };
+    try {
+      const result = await pool.query(sql, params);
+      return {
+        rows: result.rows,
+        rowCount: result.rowCount ?? result.rows.length,
+      };
+    } catch (err) {
+      // Stale socket after a freeze or RDS restart: retry once on a fresh connection
+      const isConnectionError =
+        /Connection terminated|ECONNRESET|EPIPE|ETIMEDOUT|terminating connection|Client has encountered a connection error/i.test(
+          err.message || ''
+        );
+      if (isConnectionError && !retried) {
+        console.warn('[PostgresDatabase] Connection error, retrying once:', err.message);
+        return this.query(sql, params, true);
+      }
+      throw err;
+    }
   }
 
   async exec(ddlSql) {
