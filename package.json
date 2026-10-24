@@ -1,25 +1,32 @@
 {
   "name": "securevault",
   "version": "1.0.0",
+  "private": true,
   "description": "Secure Vault Cloud - Zero-Knowledge Cloud-Native Password Manager",
   "type": "module",
-  "main": "src/shared/crypto.js",
+  "workspaces": [
+    "shared",
+    "backend",
+    "frontend"
+  ],
   "scripts": {
     "dev": "node scripts/dev.js",
-    "test": "node --test src/shared/*.test.js src/server/server.test.js src/client/client.test.js src/client/e2e.test.js",
-    "test:shared": "node --test src/shared/*.test.js",
-    "test:server": "node --test src/server/server.test.js",
-    "test:client": "node --test src/client/client.test.js src/client/e2e.test.js",
-    "test:e2e": "node tests/test-runner.js",
-    "verify": "node scripts/verify.js",
-    "server": "node src/server/local-runner.js",
-    "client": "npm --prefix src/client run dev"
+    "build": "npm run build --workspace backend && npm run build --workspace frontend",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm test --workspaces --if-present && npm run test:integration",
+    "test:shared": "npm test --workspace shared",
+    "test:backend": "npm test --workspace backend",
+    "test:frontend": "npm test --workspace frontend",
+    "test:integration": "node --test integration/*.test.js",
+    "verify": "node scripts/verify.js"
   },
-  "dependencies": {
-    "hash-wasm": "^4.12.0"
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "eslint": "^9.17.0",
+    "globals": "^15.14.0"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.13.0"
   },
   "license": "MIT"
 }

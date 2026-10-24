@@ -1,0 +1,25 @@
+{
+  "name": "@vault/backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SecureVault REST API — AWS Lambda behind API Gateway (REST), RDS PostgreSQL",
+  "type": "module",
+  "main": "src/lambda.js",
+  "scripts": {
+    "dev": "node --watch local/local-runner.js",
+    "start": "node local/local-runner.js",
+    "build": "node scripts/build.js",
+    "migrate": "node scripts/migrate.js",
+    "test": "node --test test/*.test.js",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.716.0",
+    "@vault/shared": "1.0.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2"
+  },
+  "license": "MIT"
+}

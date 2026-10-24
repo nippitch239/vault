@@ -1,0 +1,188 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /*
+   * Design tokens — "Vault" theme: deep purple-black canvas, violet glow, pill buttons,
+   * thin translucent borders, Kanit (Thai + Latin). Inspired by the look of the Webflow
+   * "Vault" SaaS template chosen by the product owner; no template code or assets are used.
+   * Mapping and contrast notes: design/TOKENS.md. HSL triplets so opacity modifiers work.
+   */
+  :root {
+    /* Light theme (lavender-white) */
+    --background: 270 57.1% 97.3%;       /* #f8f4fc */
+    --foreground: 270 55% 7.8%;          /* #14091f */
+    --card: 0 0% 100%;
+    --card-foreground: 270 55% 7.8%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 270 55% 7.8%;
+    --primary: 276 95.4% 34.3%;          /* #6804ab */
+    --primary-foreground: 0 100% 99%;
+    --primary-glow: 273 67.1% 51.2%;     /* #8b2fd6 */
+    --secondary: 270 56.3% 93.7%;        /* #efe6f8 */
+    --secondary-foreground: 270 55% 7.8%;
+    --muted: 270 56.3% 93.7%;
+    --muted-foreground: 265 12% 39.2%;   /* #625870 */
+    --accent: 270 56.3% 93.7%;
+    --accent-foreground: 270 55% 7.8%;
+    --destructive: 348 83% 47%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 137 43.8% 93.7%;
+    --success-foreground: 135 59.5% 28%;
+    --warning: 48 89.5% 92.5%;
+    --warning-foreground: 39 100% 26%;
+    --info: 274 80% 95%;
+    --info-foreground: 276 95.4% 34.3%;
+    --error: 350 81% 95.5%;
+    --error-foreground: 348 75% 38%;
+
+    --border: 270 40.7% 89.4%;           /* #e4d9ef */
+    --input: 269 29.3% 80.6%;            /* #cdbfdc */
+    --ring: 276 95.4% 34.3%;
+    --overlay: 270 55% 7.8%;
+    --glow: 273 67.1% 51.2%;
+
+    --radius: 1.25rem;                   /* 20px cards */
+
+    --font-sans: 'Kanit', 'Noto Sans Thai', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 265 12% 39.2%;
+    --sidebar-primary: 276 95.4% 34.3%;
+    --sidebar-primary-foreground: 0 100% 99%;
+    --sidebar-accent: 270 56.3% 93.7%;
+    --sidebar-accent-foreground: 270 55% 7.8%;
+    --sidebar-border: 270 40.7% 89.4%;
+    --sidebar-ring: 276 95.4% 34.3%;
+  }
+
+  .dark {
+    /* Dark theme (default): purple-black with violet light */
+    --background: 273 100% 1.8%;         /* #050009 */
+    --foreground: 0 100% 99%;            /* #fffafa */
+    --card: 266 53.8% 5.1%;              /* #0c0614 */
+    --card-foreground: 0 100% 99%;
+    --popover: 266 51.1% 8.8%;           /* #150b22 */
+    --popover-foreground: 0 100% 99%;
+    --primary: 276 95.4% 34.3%;          /* #6804ab — white text 9.3:1 */
+    --primary-foreground: 0 100% 99%;
+    --primary-glow: 273 67.1% 51.2%;     /* #8b2fd6 */
+    --secondary: 264 45.5% 12.9%;        /* #1e1230 */
+    --secondary-foreground: 276 95.2% 91.8%; /* #eed6fe lavender */
+    --muted: 264 45.5% 12.9%;
+    --muted-foreground: 270 14% 66.3%;   /* #a99db5 — 8.1:1 */
+    --accent: 264 45.5% 12.9%;
+    --accent-foreground: 0 100% 99%;
+    --destructive: 348 83% 47%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 150 47% 9.6%;
+    --success-foreground: 145 63% 57.3%;
+    --warning: 42 68% 9.8%;
+    --warning-foreground: 44 89.9% 61%;
+    --info: 268 55% 13%;
+    --info-foreground: 271 100% 83%;
+    --error: 343 50% 11.8%;
+    --error-foreground: 350 100% 74%;
+
+    --border: 265 24.4% 17.6%;           /* #2b2238 */
+    --input: 267 22.3% 23.7%;            /* #3b2f4a */
+    --ring: 267 100% 74.3%;              /* #b77cff */
+    --overlay: 273 100% 1.8%;
+    --glow: 273 67.1% 51.2%;
+
+    --sidebar-background: 266 53.8% 5.1%;
+    --sidebar-foreground: 270 14% 66.3%;
+    --sidebar-primary: 276 95.4% 34.3%;
+    --sidebar-primary-foreground: 0 100% 99%;
+    --sidebar-accent: 264 45.5% 12.9%;
+    --sidebar-accent-foreground: 0 100% 99%;
+    --sidebar-border: 265 24.4% 17.6%;
+    --sidebar-ring: 267 100% 74.3%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+    font-weight: 300;
+    /* Violet light in the corners, like a glow behind the content */
+    background-image:
+      radial-gradient(48rem 32rem at 100% 0%, hsl(var(--glow) / 0.22), transparent 60%),
+      radial-gradient(40rem 28rem at 0% 100%, hsl(var(--glow) / 0.10), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  h1, h2, h3, h4 {
+    font-weight: 500;
+    letter-spacing: -0.005em;
+  }
+
+  strong, b {
+    font-weight: 500;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(var(--background));
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Legacy Vault compatibility aliases */
+.bg-vault-dark { background-color: hsl(var(--background)); }
+.bg-vault-card { background-color: hsl(var(--card)); }
+.border-vault-border { border-color: hsl(var(--border)); }
+.text-vault-text { color: hsl(var(--foreground)); }
+.text-vault-muted { color: hsl(var(--muted-foreground)); }
+.text-vault-accent { color: hsl(var(--primary)); }
+
+/* Vault theme helpers */
+@layer components {
+  /* Big uppercase headline with a fading gradient (landing hero) */
+  .text-gradient {
+    background: linear-gradient(90deg, hsl(var(--foreground) / 0.25), hsl(var(--foreground)) 55%, hsl(var(--foreground) / 0.85));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  /* Faint grid behind hero sections */
+  .bg-grid {
+    background-image:
+      linear-gradient(hsl(var(--foreground) / 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--foreground) / 0.04) 1px, transparent 1px);
+    background-size: 56px 56px;
+  }
+  /* Card with a thin light border and a subtle violet inner glow */
+  .card-glow {
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.06), 0 0 0 1px hsl(var(--foreground) / 0.04), 0 20px 60px -30px hsl(var(--glow) / 0.45);
+  }
+}
