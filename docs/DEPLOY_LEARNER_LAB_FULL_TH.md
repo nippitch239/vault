@@ -320,8 +320,12 @@ event นี้เรียกได้จาก console/IAM เท่านั�
 3. `/api/v1/auth/salt` → **Create method GET** → Lambda function, ✅ proxy, `securevault-api`, Authorization **NONE**
 4. `/api/v1/health` → **Create method GET** แบบเดียวกัน
 
+5. **สำคัญ:** สร้าง `{proxy+}` (Proxy resource) เพิ่มใต้ **`/api/v1`** และใต้ **`/api/v1/auth`** แต่ละตัวมี
+   `ANY` → Lambda proxy, Authorization **cognito** และ `OPTIONS` → Lambda proxy, Authorization **NONE**
+
 **ทำไม:** ก่อน login browser ต้องขอ `kdf_salt` ไปคำนวณกุญแจ ตอนนั้นยังไม่มี token
-API Gateway เลือก resource ที่เจาะจงกว่า `{proxy+}` ก่อนเสมอ path อื่นทั้งหมดยังต้องมี token
+และเมื่อมี resource `/api/v1` แล้ว API Gateway จะเดินเข้า resource นั้นและ**ไม่ย้อนกลับไปใช้ `/{proxy+}` ที่ root**
+ถ้าไม่มีข้อ 5 ทุก API อื่นจะได้ `403 Missing Authentication Token`
 
 ### 9.5 CORS ของ error จาก API Gateway
 **Gateway responses → Default 4XX → Edit** เพิ่ม header:
