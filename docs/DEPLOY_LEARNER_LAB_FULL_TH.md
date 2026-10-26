@@ -387,20 +387,13 @@ VITE_COGNITO_USER_POOL_ID=us-east-1_xxxxxxxxx
 VITE_COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
 "@ | Out-File -Encoding utf8 frontend\.env.production
 npm run build --workspace frontend
-tar.exe -a -c -f frontend-dist-cognito.zip -C frontend\dist *
+Compress-Archive -Path frontend\dist\* -DestinationPath frontend-dist-cognito.zip -Force   # ต้องรันใน PowerShell (tar ของ Git Bash สร้าง zip ไม่ได้)
 ```
 ค่าเหล่านี้เป็น public identifier ไม่ใช่ secret
 
 ### 11.2 Deploy
 **Amplify → Create new app → Deploy without Git → Drag and drop** → `frontend-dist-cognito.zip`
 - App name `securevault`, Branch `prod`
-
-### 11.3 SPA rewrite
-**Hosting → Rewrites and redirects → Manage → Add rule**
-- Source: `</^[^.]+$|\.(?!(css|gif|ico|jpg|js|png|txt|svg|woff|woff2|ttf|map|json|webp|wasm)$)([^.]+$)/>`
-- Target: `/index.html`, Type: **200 (Rewrite)**
-
-ถ้าไม่ใส่ กด refresh ที่หน้าอื่นนอกจาก `/` จะได้ 404
 
 จด **Domain** เช่น `https://prod.d1abc234.amplifyapp.com`
 
