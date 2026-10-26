@@ -141,6 +141,15 @@
   }
 }
 
+/* Native <select> popups follow the theme instead of the OS default (white list in dark mode) */
+:root { color-scheme: light; }
+.dark { color-scheme: dark; }
+select option,
+select optgroup {
+  background-color: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+}
+
 /* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 6px;

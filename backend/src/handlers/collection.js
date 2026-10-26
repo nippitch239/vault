@@ -821,7 +821,7 @@ export async function listOrgCollectionsHandler(event) {
   if (authError) return authError;
 
   let cols = [];
-  if (callerOrgRole === 'owner' || callerOrgRole === 'admin' || user.role === 'admin') {
+  if (callerOrgRole === 'owner' || callerOrgRole === 'admin') {
     const res = await db.query(
       `SELECT c.*,
               (SELECT COUNT(*) FROM collection_items ci WHERE ci.collection_id = c.collection_id) AS item_count

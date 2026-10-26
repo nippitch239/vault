@@ -414,7 +414,7 @@ export async function addMemberHandler(event) {
   }
 
   // Privilege escalation check: only owners can assign owner role
-  if (role === 'owner' && callerRole !== 'owner' && user.role !== 'admin') {
+  if (role === 'owner' && callerRole !== 'owner') {
     return forbidden('Only organization owners can grant the owner role');
   }
 
@@ -498,7 +498,7 @@ export async function updateMemberRoleHandler(event) {
   }
 
   // Admins cannot promote anyone to owner
-  if (newRole === 'owner' && callerRole !== 'owner' && user.role !== 'admin') {
+  if (newRole === 'owner' && callerRole !== 'owner') {
     return forbidden('Only organization owners can grant the owner role');
   }
 
@@ -512,7 +512,7 @@ export async function updateMemberRoleHandler(event) {
   const targetMember = targetMemberRes.rows[0];
 
   // Admins cannot modify an owner's role
-  if (targetMember.role === 'owner' && callerRole !== 'owner' && user.role !== 'admin') {
+  if (targetMember.role === 'owner' && callerRole !== 'owner') {
     return forbidden('Admins cannot modify organization owners');
   }
 
@@ -567,7 +567,7 @@ export async function removeMemberHandler(event) {
   if (authError) return authError;
 
   const isSelf = user.user_id === targetUserId;
-  if (!isSelf && callerRole === 'member' && user.role !== 'admin') {
+  if (!isSelf && callerRole === 'member') {
     return forbidden('Only organization owner or admin can remove members');
   }
 
@@ -581,7 +581,7 @@ export async function removeMemberHandler(event) {
   const targetMember = targetMemberRes.rows[0];
 
   // Admin cannot remove an owner
-  if (targetMember.role === 'owner' && callerRole === 'admin' && !isSelf && user.role !== 'admin') {
+  if (targetMember.role === 'owner' && callerRole === 'admin' && !isSelf) {
     return forbidden('Admins cannot remove organization owners');
   }
 

@@ -59,10 +59,6 @@ export async function createCollection(db, user, { name, description, wrappedKey
 }
 
 export async function listCollections(db, user) {
-  if (user.role === 'admin') {
-    // System administrators see every collection with admin rights.
-    return (await repo.listAllCollections(db)).map((collection) => ({ collection, permission: 'admin' }));
-  }
   return (await repo.listAccessibleCollections(db, user.user_id)).map(({ row, permission }) => ({ collection: row, permission }));
 }
 

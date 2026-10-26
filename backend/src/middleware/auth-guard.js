@@ -133,17 +133,8 @@ export async function getEffectiveCollectionPermissionDetails(db, collectionId, 
   }
   userRole = String(userRole).toLowerCase();
 
-  // 1. System Admin Bypass: Verify collection exists to defend against IDOR
-  if (userRole === 'admin') {
-    const collRes = await db.query(
-      'SELECT collection_id, org_id, created_by FROM collections WHERE collection_id = $1',
-      [collectionId]
-    );
-    if (!collRes.rows || collRes.rows.length === 0) {
-      return { permission: null, rank: 0, collection: null };
-    }
-    return { permission: 'manage', rank: 3, collection: collRes.rows[0] };
-  }
+  // No system-admin bypass: platform admins (Cognito group) manage logs/monitoring, they only
+  // see collections they created or were granted, like every other user.
 
   // 2. Atomic Single-Query Evaluation (Dual PostgreSQL 15+ / SQLite compatible)
   const query = `
@@ -426,20 +417,6 @@ export async function requireOrgRole(
 
   const membership = memberRes.rows && memberRes.rows.length > 0 ? memberRes.rows[0] : null;
 
-  // 3. System admin bypass
-  if (userRole === 'admin') {
-    return {
-      organization,
-      membership: membership || {
-        org_id: orgId,
-        user_id: userId,
-        role: 'admin',
-        status: 'confirmed',
-      },
-      role: membership?.role || 'admin',
-      errorResponse: null,
-    };
-  }
 
   // 4. Check membership existence (IDOR protection)
   if (!membership) {

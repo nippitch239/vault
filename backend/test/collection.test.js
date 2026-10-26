@@ -260,7 +260,8 @@ test('C8: listing collections uses a constant number of queries and the supremum
   assert.equal(ownerList.data.collections.length, 12);
   assert.ok(ownerList.data.collections.every((c) => c.effectivePermission === 'admin'));
   const adminList = await callRouter({ method: 'GET', path: '/api/v1/collections', claims: sysadmin });
-  assert.equal(adminList.data.collections.length, 12);
+  // No system-admin bypass: a platform admin with no grants sees none of them.
+  assert.equal(adminList.data.collections.length, 0);
 });
 
 test('C7: create/delete collection are atomic', async () => {

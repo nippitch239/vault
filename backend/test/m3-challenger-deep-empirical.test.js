@@ -102,7 +102,7 @@ test('Deep Probe 1: Sole Owner Demotion Invariants & Status Integrity', async ()
     claims: sysAdmin,
     body: { role: 'admin' },
   });
-  assert.equal(sysAdminDemote.statusCode, 400, 'System admin cannot demote sole owner');
+  assert.equal(sysAdminDemote.statusCode, 403, 'System admin is not an org member, so it cannot demote the owner');
 
   // 1.6 Unconfirmed/Invited Owner Status Boundary:
   // If another member has role='owner' but status='invited', confirmed owner Alice must STILL be protected!
@@ -170,7 +170,7 @@ test('Deep Probe 2: Sole Owner Removal Invariants across all vectors', async () 
     path: `/api/v1/organizations/${orgId}/members/${alice.sub}`,
     claims: sysAdmin,
   });
-  assert.equal(sysAdminRemove.statusCode, 400, 'System admin cannot remove sole owner');
+  assert.equal(sysAdminRemove.statusCode, 403, 'System admin is not an org member, so it cannot remove the owner');
 
   // Verify Alice is still confirmed owner in database
   const ownerCheck = await db.query(

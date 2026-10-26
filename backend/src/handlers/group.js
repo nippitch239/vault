@@ -192,18 +192,13 @@ export async function listGroupsHandler(event) {
   if (errorResponse) return errorResponse;
 
   const db = getDatabase();
-  let result;
-  if (user.role === 'admin' || user.role === 'ADMIN') {
-    result = await db.query('SELECT * FROM groups ORDER BY created_at DESC');
-  } else {
-    result = await db.query(
-      `SELECT DISTINCT g.* FROM groups g
-       LEFT JOIN group_members gm ON g.group_id = gm.group_id
-       WHERE g.created_by = $1 OR gm.user_id = $1
-       ORDER BY g.created_at DESC`,
-      [user.user_id]
-    );
-  }
+  const result = await db.query(
+    `SELECT DISTINCT g.* FROM groups g
+     LEFT JOIN group_members gm ON g.group_id = gm.group_id
+     WHERE g.created_by = $1 OR gm.user_id = $1
+     ORDER BY g.created_at DESC`,
+    [user.user_id]
+  );
 
   return jsonResponse(200, {
     status: 'success',
@@ -231,7 +226,7 @@ export async function getGroupHandler(event) {
   }
 
   const group = res.rows[0];
-  if (user.role !== 'admin' && group.created_by !== user.user_id) {
+  if (group.created_by !== user.user_id) {
     const mbr = await db.query(
       'SELECT group_member_id FROM group_members WHERE group_id = $1 AND user_id = $2',
       [groupId, user.user_id]
@@ -271,7 +266,7 @@ export async function updateGroupHandler(event) {
   }
 
   const group = res.rows[0];
-  if (user.role !== 'admin' && group.created_by !== user.user_id) {
+  if (group.created_by !== user.user_id) {
     const mbr = await db.query(
       'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
       [groupId, user.user_id]
@@ -331,7 +326,7 @@ export async function deleteGroupHandler(event) {
   }
 
   const group = res.rows[0];
-  if (user.role !== 'admin' && group.created_by !== user.user_id) {
+  if (group.created_by !== user.user_id) {
     return jsonResponse(403, {
       status: 'fail',
       error: 'FORBIDDEN',
@@ -380,7 +375,7 @@ export async function addGroupMemberHandler(event) {
   // Group membership grants collection permissions, so nobody may hand out a group role
   // above their own: managers add members/managers, only group admins add admins.
   let actorRank = GROUP_ROLE_RANK.admin;
-  if (user.role !== 'admin' && group.created_by !== user.user_id) {
+  if (group.created_by !== user.user_id) {
     const mbr = await db.query(
       'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
       [groupId, user.user_id]
@@ -514,7 +509,7 @@ export async function listGroupMembersHandler(event) {
   }
 
   const group = res.rows[0];
-  if (user.role !== 'admin' && group.created_by !== user.user_id) {
+  if (group.created_by !== user.user_id) {
     const mbr = await db.query(
       'SELECT group_member_id FROM group_members WHERE group_id = $1 AND user_id = $2',
       [groupId, user.user_id]
@@ -577,7 +572,7 @@ export async function removeGroupMemberHandler(event) {
     });
   }
 
-  if (user.user_id !== targetUserId && user.role !== 'admin' && group.created_by !== user.user_id) {
+  if (user.user_id !== targetUserId && group.created_by !== user.user_id) {
     const curMember = await db.query(
       'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
       [groupId, user.user_id]
@@ -775,7 +770,7 @@ export async function updateOrgGroupHandler(event) {
   const group = existingRes.rows[0];
 
   // Authorization: Org Owner/Admin, group creator, or group admin/manager
-  if (callerOrgRole !== 'owner' && callerOrgRole !== 'admin' && user.role !== 'admin' && group.created_by !== user.user_id) {
+  if (callerOrgRole !== 'owner' && callerOrgRole !== 'admin' && group.created_by !== user.user_id) {
     const curMember = await db.query(
       'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
       [groupId, user.user_id]
@@ -852,7 +847,7 @@ export async function deleteOrgGroupHandler(event) {
   }
   const group = existingRes.rows[0];
 
-  if (callerOrgRole !== 'owner' && callerOrgRole !== 'admin' && user.role !== 'admin' && group.created_by !== user.user_id) {
+  if (callerOrgRole !== 'owner' && callerOrgRole !== 'admin' && group.created_by !== user.user_id) {
     return jsonResponse(403, {
       status: 'fail',
       error: 'FORBIDDEN',
@@ -913,7 +908,7 @@ export async function addOrgGroupMemberHandler(event) {
 
   // Authorization: Org Owner/Admin, group creator, or group manager/admin
   let actorRank = 1;
-  if (callerOrgRole === 'owner' || callerOrgRole === 'admin' || user.role === 'admin' || group.created_by === user.user_id) {
+  if (callerOrgRole === 'owner' || callerOrgRole === 'admin' || group.created_by === user.user_id) {
     actorRank = 3;
   } else {
     const curMember = await db.query(
@@ -1114,7 +1109,7 @@ export async function removeOrgGroupMemberHandler(event) {
   }
 
   // Self removal is allowed; otherwise Org Owner/Admin, group creator, or group manager/admin
-  if (user.user_id !== targetUserId && callerOrgRole !== 'owner' && callerOrgRole !== 'admin' && user.role !== 'admin' && group.created_by !== user.user_id) {
+  if (user.user_id !== targetUserId && callerOrgRole !== 'owner' && callerOrgRole !== 'admin' && group.created_by !== user.user_id) {
     const curMember = await db.query(
       'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
       [groupId, user.user_id]

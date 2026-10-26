@@ -101,7 +101,7 @@ test('Challenger Invariant 1: Sole Owner Demotion Prevention across all boundary
     claims: sysAdmin,
     body: { role: 'admin' },
   });
-  assert.equal(sysAdminDemote.statusCode, 400, 'System admin cannot demote sole owner');
+  assert.equal(sysAdminDemote.statusCode, 403, 'System admin is not an org member, so it cannot demote the owner');
 
   // 1.5 Sole owner demotion with unconfirmed/suspended owner record present
   // Insert an unconfirmed (invited) owner record directly into DB to test status boundary
@@ -187,7 +187,7 @@ test('Challenger Invariant 2: Sole Owner Removal Prevention across all vectors',
     path: `/api/v1/organizations/${orgId}/members/${alice.sub}`,
     claims: sysAdmin,
   });
-  assert.equal(sysAdminRemove.statusCode, 400, 'System admin cannot remove sole owner (400)');
+  assert.equal(sysAdminRemove.statusCode, 403, 'System admin is not an org member, so it cannot remove the owner');
 
   // Verify Alice still exists in organization
   const memCheck = await db.query(
