@@ -275,10 +275,9 @@ backend ใช้ค่านี้สร้าง salt ให้ username ท�
 
 **`NODE_EXTRA_CA_CERTS` สำคัญ:** โค้ดตรวจ certificate ของ RDS จริง ไฟล์นี้มี CA ของ RDS ถ้าไม่ใส่จะต่อ DB ไม่ได้
 
-### 7.5 จำกัด concurrency (แนะนำ)
-**Configuration → Concurrency → Edit → Reserve concurrency: 10**
-กัน Lambda ขยายจน connection ของ db.t4g.micro เต็ม (10 × pool 2 = ≤ 20 connection)
-(ถ้า Learner Lab ไม่ให้ตั้ง ข้ามได้)
+### 7.5 Concurrency
+Learner Lab จำกัด concurrency ทั้งบัญชีไว้ต่ำอยู่แล้ว (~10) จึง **ไม่ต้องตั้ง reserved concurrency**
+(ถ้าตั้ง console จะ error เพราะต้องเหลือ unreserved อย่างน้อย 10) — ปริมาณ request คุมด้วย throttling ในขั้นที่ 9.7 แทน
 
 ---
 
@@ -337,6 +336,14 @@ API Gateway เลือก resource ที่เจาะจงกว่า `{p
 
 แก้ resource/method ครั้งไหนต้อง **Deploy API** ใหม่ทุกครั้ง (อัปโหลดโค้ด Lambda ไม่ต้อง)
 
+### 9.7 จำกัดปริมาณ request (throttling)
+**Stages → prod → Stage details → Edit → Throttling** ✅
+- Rate: **20** requests/sec
+- Burst: **40**
+
+**ทำไม:** เกินนี้ API Gateway ตอบ **429** เอง request ไม่ถึง Lambda/RDS จึงไม่มีทางยิงจนค่าใช้จ่ายพุ่ง
+หรือดูเหมือน DoS ไม่ว่าจะเผลอ loop ยิงหรือมีคนนอกยิงเข้ามา
+
 ---
 
 ## 10. WAF
@@ -351,6 +358,7 @@ API Gateway เลือก resource ที่เจาะจงกว่า `{p
 | | ✅ **Core rule set** → Edit → rule `SizeRestrictions_BODY` = **Count** (กัน payload ciphertext ใหญ่โดนบล็อก) |
 | | ✅ **SQL database** |
 | | ✅ **Known bad inputs** |
+| | ✅ **Rate-based rule** (Add my own rules → Rule type: Rate-based) ชื่อ `rate-limit-ip`, Rate limit **300** / 5 นาที ต่อ IP, Action **Block** |
 | Default action | **Allow** |
 | CloudWatch metrics | ✅ เปิด (ทั้ง web ACL และทุก rule) |
 | Name | `securevault-waf` |
@@ -438,11 +446,28 @@ curl.exe -s -o NUL -w "%{http_code}`n" "$API/health?id=1%27%20OR%20%271%27%3D%27
 รวมกราฟไว้หน้าเดียว: **CloudWatch → Dashboards → Create** → เพิ่ม Lambda `Invocations`/`ConcurrentExecutions`,
 ApiGateway `Count`/`Latency`, RDS `CPUUtilization`/`DatabaseConnections`, WAFV2 `AllowedRequests`/`BlockedRequests`
 
-Load test (PowerShell):
+### Load test แบบปลอดภัย (ไม่ให้บัญชีโดนปิด)
+
+กฎของ AWS อนุญาตให้ทดสอบ resource ของเราเองได้ แต่ **ห้ามยิงแบบ DoS / flood** และ Learner Lab ตรวจการใช้งานผิดปกติด้วย
+ให้ทดสอบภายในกรอบนี้:
+
+| กฎ | ค่า |
+|---|---|
+| request ต่อรอบ | **ไม่เกิน 200** |
+| ความเร็ว | **ไม่เกิน ~10 req/s** (ต่ำกว่า throttling 20 ที่ตั้งไว้) |
+| จำนวนรอบ | 1–2 รอบพอ (ใช้แคปกราฟ) |
+| เป้าหมาย | URL API ของเราเท่านั้น ห้ามยิง endpoint ของ AWS อื่นหรือของคนอื่น |
+| เครื่องมือ | curl จากเครื่องตัวเอง ห้ามใช้ EC2 หลายเครื่อง / เครื่องมือ stress test ขนาดใหญ่ |
+| ทดสอบ WAF | ส่ง payload SQLi/XSS/Log4j **ไม่กี่ครั้ง** พอให้เห็นกราฟ Blocked |
+
 ```powershell
-$jobs = 1..50 | % { Start-Job { param($u) 1..4 | % { curl.exe -s -o NUL -w "%{http_code}`n" $u } } -ArgumentList "$API/health" }
+# 200 request, 10 job x 20 ครั้ง, หน่วง 1 วินาทีต่อครั้ง ≈ 10 req/s
+$jobs = 1..10 | % { Start-Job { param($u) 1..20 | % { curl.exe -s -o NUL -w "%{http_code}`n" $u; Start-Sleep 1 } } -ArgumentList "$API/health" }
 $jobs | Wait-Job | Receive-Job | Group-Object | Select Name, Count; $jobs | Remove-Job
 ```
+ผลที่ควรได้: 200 ทั้งหมด ถ้ามี **429** แปลว่า throttling ทำงาน (ใส่ในรายงานได้ว่าระบบกันโหลดเกินได้)
+
+ทดสอบ rate-based rule ของ WAF: ไม่ต้องยิงจริงถึง 300 ครั้ง ให้ชี้ในรายงานว่าตั้งไว้ แล้วแคปหน้า rule ก็พอ
 
 ---
 
