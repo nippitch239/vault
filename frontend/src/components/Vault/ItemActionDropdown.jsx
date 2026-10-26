@@ -9,6 +9,7 @@ import {
 import { Button } from '../ui/Button.jsx';
 import {
   KeyIcon,
+  CopyIcon,
   EyeIcon,
   EyeOffIcon,
   EditIcon,
@@ -60,6 +61,7 @@ export function ItemActionDropdown({
   onToggleReveal,
   onCopyUsername,
   onCopyPassword,
+  onCopyNote,
   onEdit,
   onShare,
   onHistory,
@@ -67,7 +69,7 @@ export function ItemActionDropdown({
 }) {
   const dec = item._decrypted || {};
   const itemId = item.item_id || item.id;
-  const { username, title, locked } = itemFields(item);
+  const { username, title, notes, locked } = itemFields(item);
   const password = dec.password || '';
   const displayTitle = locked ? 'รายการที่ถอดรหัสไม่ได้' : title;
 
@@ -109,6 +111,18 @@ export function ItemActionDropdown({
             <KeyIcon className="text-muted-foreground" />
             <span>คัดลอกรหัสผ่าน</span>
             <span className="ml-auto text-xs text-muted-foreground">ล้างใน 30 วิ</span>
+          </MenuItem>
+        ) : null}
+
+        {notes && onCopyNote ? (
+          <MenuItem
+            onClick={(e) => {
+              e.stopPropagation();
+              onCopyNote(notes, itemId, title);
+            }}
+          >
+            <CopyIcon className="text-muted-foreground" />
+            <span>คัดลอกบันทึก</span>
           </MenuItem>
         ) : null}
 

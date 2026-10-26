@@ -171,21 +171,77 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_severity ON audit_logs (event_severity
 CREATE INDEX IF NOT EXISTS idx_audit_logs_details ON audit_logs USING GIN (details);
 
 -- =============================================================================
--- 8. GROUPS TABLE
+-- 8. ORGANIZATIONS TABLE
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS organizations (
+    org_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    description TEXT DEFAULT NULL,
+    created_by UUID NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_organizations_created_by FOREIGN KEY (created_by) 
+        REFERENCES users (user_id) ON DELETE CASCADE
+);
+
+-- =============================================================================
+-- 9. ORGANIZATION MEMBERS TABLE
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS organization_members (
+    org_member_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL,
+    user_id UUID NOT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member')),
+    status VARCHAR(32) NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed', 'invited', 'suspended')),
+    encrypted_org_key JSONB DEFAULT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_org_members_org FOREIGN KEY (org_id) 
+        REFERENCES organizations (org_id) ON DELETE CASCADE,
+    CONSTRAINT fk_org_members_user FOREIGN KEY (user_id) 
+        REFERENCES users (user_id) ON DELETE CASCADE,
+    CONSTRAINT uq_org_members_org_user UNIQUE (org_id, user_id)
+);
+
+-- =============================================================================
+-- 10. ORGANIZATION INVITATIONS TABLE
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS organization_invitations (
+    invitation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
+    invited_by UUID NOT NULL,
+    token VARCHAR(128) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'revoked', 'expired')),
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_org_invitations_org FOREIGN KEY (org_id) 
+        REFERENCES organizations (org_id) ON DELETE CASCADE,
+    CONSTRAINT fk_org_invitations_invited_by FOREIGN KEY (invited_by) 
+        REFERENCES users (user_id) ON DELETE CASCADE,
+    CONSTRAINT uq_org_invitations_token UNIQUE (token)
+);
+
+-- =============================================================================
+-- 11. GROUPS TABLE
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS groups (
     group_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID DEFAULT NULL,
     name VARCHAR(255) NOT NULL,
     description TEXT DEFAULT NULL,
     created_by UUID NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_groups_org FOREIGN KEY (org_id) REFERENCES organizations (org_id) ON DELETE CASCADE,
     CONSTRAINT fk_groups_created_by FOREIGN KEY (created_by) 
         REFERENCES users (user_id) ON DELETE CASCADE
 );
 
 -- =============================================================================
--- 9. GROUP MEMBERS TABLE
+-- 12. GROUP MEMBERS TABLE
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS group_members (
     group_member_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -201,28 +257,30 @@ CREATE TABLE IF NOT EXISTS group_members (
 );
 
 -- =============================================================================
--- 10. COLLECTIONS TABLE
+-- 13. COLLECTIONS TABLE
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS collections (
     collection_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID DEFAULT NULL,
     name VARCHAR(255) NOT NULL,
     description TEXT DEFAULT NULL,
     created_by UUID NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_collections_org FOREIGN KEY (org_id) REFERENCES organizations (org_id) ON DELETE CASCADE,
     CONSTRAINT fk_collections_created_by FOREIGN KEY (created_by) 
         REFERENCES users (user_id) ON DELETE CASCADE
 );
 
 -- =============================================================================
--- 11. COLLECTION ACCESS TABLE
+-- 14. COLLECTION ACCESS TABLE
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS collection_access (
     access_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     collection_id UUID NOT NULL,
     target_type VARCHAR(20) NOT NULL CHECK (target_type IN ('user', 'group')),
     target_id UUID NOT NULL,
-    permission VARCHAR(20) NOT NULL DEFAULT 'read' CHECK (permission IN ('read', 'write', 'admin')),
+    permission VARCHAR(20) NOT NULL DEFAULT 'read' CHECK (permission IN ('read', 'write', 'admin', 'manage')),
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_collection_access_collection FOREIGN KEY (collection_id) 
@@ -231,7 +289,7 @@ CREATE TABLE IF NOT EXISTS collection_access (
 );
 
 -- =============================================================================
--- 12. COLLECTION ITEMS TABLE
+-- 15. COLLECTION ITEMS TABLE
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS collection_items (
     collection_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -246,7 +304,7 @@ CREATE TABLE IF NOT EXISTS collection_items (
 );
 
 -- =============================================================================
--- 13. COLLECTION KEYS TABLE
+-- 16. COLLECTION KEYS TABLE
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS collection_keys (
     key_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -278,3 +336,39 @@ CREATE INDEX IF NOT EXISTS idx_collection_items_item_id ON collection_items (ite
 
 CREATE INDEX IF NOT EXISTS idx_collection_keys_collection_id ON collection_keys (collection_id);
 CREATE INDEX IF NOT EXISTS idx_collection_keys_user_id ON collection_keys (user_id);
+
+-- =============================================================================
+-- UPGRADES & INDEXES FOR ORGANIZATIONS & SCOPED FOREIGN KEYS
+-- =============================================================================
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
+ALTER TABLE collections ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
+
+CREATE INDEX IF NOT EXISTS idx_organizations_created_by ON organizations (created_by);
+CREATE INDEX IF NOT EXISTS idx_organizations_status ON organizations (status);
+CREATE INDEX IF NOT EXISTS idx_org_members_org_id ON organization_members (org_id);
+CREATE INDEX IF NOT EXISTS idx_org_members_user_id ON organization_members (user_id);
+CREATE INDEX IF NOT EXISTS idx_org_members_role ON organization_members (role);
+CREATE INDEX IF NOT EXISTS idx_org_invitations_org ON organization_invitations (org_id);
+CREATE INDEX IF NOT EXISTS idx_org_invitations_email ON organization_invitations (email);
+CREATE INDEX IF NOT EXISTS idx_groups_org_id ON groups (org_id);
+CREATE INDEX IF NOT EXISTS idx_collections_org_id ON collections (org_id);
+
+
+-- =============================================================================
+-- 17. FOLDERS TABLE (Personal Vault Organization — NOT access control)
+-- Folders are simple labels that a user applies to their own vault items.
+-- folder_id is referenced from vault_items.metadata JSONB (not a FK column),
+-- so deleting a folder leaves items with a stale metadata.folder_id that the
+-- client treats as "no folder" — no cascade logic required here.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS folders (
+    folder_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_folders_user FOREIGN KEY (user_id)
+        REFERENCES users (user_id) ON DELETE CASCADE,
+    CONSTRAINT uq_folders_user_name UNIQUE (user_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_folders_user_id ON folders (user_id);

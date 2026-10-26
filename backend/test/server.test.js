@@ -79,6 +79,101 @@ test('Database Adapter: an existing SQLite file gains the encrypted_item_key col
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('Database Adapter: organization_members encrypted_org_key parses as an object in SQLite', async () => {
+  const db = await resetDatabase();
+  const userId = await insertUser(db, 'org_member_user');
+  const orgRes = await db.query(
+    'INSERT INTO organizations (name, created_by) VALUES ($1, $2) RETURNING org_id',
+    ['Acme Org', userId]
+  );
+  const orgId = orgRes.rows[0].org_id;
+
+  const WRAPPED_ORG_KEY = {
+    ciphertext: 'enc_org_key_base64==',
+    algorithm: 'RSA-OAEP',
+    hash: 'SHA-256',
+  };
+
+  await db.query(
+    `INSERT INTO organization_members (org_id, user_id, role, status, encrypted_org_key)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [orgId, userId, 'owner', 'confirmed', WRAPPED_ORG_KEY]
+  );
+
+  const memberRes = await db.query(
+    'SELECT * FROM organization_members WHERE org_id = $1 AND user_id = $2',
+    [orgId, userId]
+  );
+  assert.equal(memberRes.rowCount, 1);
+  assert.equal(typeof memberRes.rows[0].encrypted_org_key, 'object');
+  assert.equal(memberRes.rows[0].encrypted_org_key.ciphertext, 'enc_org_key_base64==');
+  assert.equal(memberRes.rows[0].encrypted_org_key.algorithm, 'RSA-OAEP');
+});
+
+test('Database Adapter: existing SQLite file gains org_id columns on groups and collections', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-org-upgrade-'));
+  const file = path.join(dir, 'old_vault.sqlite');
+
+  // Simulate pre-organization schema (before organizations and org_id)
+  const oldDdl = pgToSqliteSchema(readSchema())
+    .replace(/CREATE TABLE IF NOT EXISTS organizations[\s\S]*?;\n\n/gi, '')
+    .replace(/CREATE TABLE IF NOT EXISTS organization_members[\s\S]*?;\n\n/gi, '')
+    .replace(/CREATE TABLE IF NOT EXISTS organization_invitations[\s\S]*?;\n\n/gi, '')
+    .replace(/org_id UUID DEFAULT NULL,\r?\n/gi, '')
+    .replace(/CONSTRAINT fk_groups_org[^\n]*\r?\n/gi, '')
+    .replace(/CONSTRAINT fk_collections_org[^\n]*\r?\n/gi, '')
+    .replace(/CREATE INDEX IF NOT EXISTS idx_groups_org_id[^\n]*\r?\n/gi, '')
+    .replace(/CREATE INDEX IF NOT EXISTS idx_collections_org_id[^\n]*\r?\n/gi, '');
+
+  const old = new DatabaseSync(file);
+  old.function('gen_random_uuid', () => crypto.randomUUID());
+  old.exec(oldDdl);
+  assert.ok(!old.prepare('PRAGMA table_info(groups)').all().some((c) => c.name === 'org_id'));
+  assert.ok(!old.prepare('PRAGMA table_info(collections)').all().some((c) => c.name === 'org_id'));
+  old.close();
+
+  // Open with enhanced SqliteDatabase (pre-DDL upgrade runs)
+  const upgraded = new SqliteDatabase(file);
+  await upgraded.ready;
+  const groupCols = upgraded.db.prepare('PRAGMA table_info(groups)').all().map((c) => c.name);
+  const colCols = upgraded.db.prepare('PRAGMA table_info(collections)').all().map((c) => c.name);
+  assert.ok(groupCols.includes('org_id'));
+  assert.ok(colCols.includes('org_id'));
+
+  // Reopen to verify idempotency
+  await upgraded.close();
+  const reopened = new SqliteDatabase(file);
+  await reopened.ready;
+  await reopened.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('Database Adapter: deleting organization cascades to groups and collections', async () => {
+  const db = await resetDatabase();
+  const userId = await insertUser(db, 'cascade_user');
+  const orgRes = await db.query(
+    'INSERT INTO organizations (name, created_by) VALUES ($1, $2) RETURNING org_id',
+    ['Delete Target', userId]
+  );
+  const orgId = orgRes.rows[0].org_id;
+
+  const groupRes = await db.query(
+    'INSERT INTO groups (name, org_id, created_by) VALUES ($1, $2, $3) RETURNING group_id',
+    ['Org Group', orgId, userId]
+  );
+  const collectionRes = await db.query(
+    'INSERT INTO collections (name, org_id, created_by) VALUES ($1, $2, $3) RETURNING collection_id',
+    ['Org Collection', orgId, userId]
+  );
+
+  await db.query('DELETE FROM organizations WHERE org_id = $1', [orgId]);
+
+  const groupsCheck = await db.query('SELECT * FROM groups WHERE group_id = $1', [groupRes.rows[0].group_id]);
+  const colsCheck = await db.query('SELECT * FROM collections WHERE collection_id = $1', [collectionRes.rows[0].collection_id]);
+  assert.equal(groupsCheck.rowCount, 0, 'group must be cascade-deleted');
+  assert.equal(colsCheck.rowCount, 0, 'collection must be cascade-deleted');
+});
+
 test('Milestone 1 — Data Model & Schema Layer: 6 New Tables, Queryability & Defaults', async () => {
   const db = await resetDatabase();
 

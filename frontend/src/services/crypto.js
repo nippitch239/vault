@@ -29,6 +29,9 @@ import {
   generateCollectionKey,
   wrapCollectionKey,
   unwrapCollectionKey,
+  generateOrgKey,
+  wrapOrgKey,
+  unwrapOrgKey,
 } from '@vault/shared/crypto.js';
 
 import {
@@ -96,6 +99,19 @@ export const ClientCrypto = {
   wrapItemKey: (itemKey, recipientPublicKey) => wrapCollectionKey(itemKey, recipientPublicKey),
   unwrapItemKey: (wrappedKey, recipientPrivateKey) => unwrapCollectionKey(wrappedKey, recipientPrivateKey),
 
+  // Organization Cryptography (M2: Feature 7)
+  generateOrgKey: () => {
+    return generateOrgKey();
+  },
+
+  wrapOrgKey: async (orgKey, recipientPublicKey) => {
+    return await wrapOrgKey(orgKey, recipientPublicKey);
+  },
+
+  unwrapOrgKey: async (wrappedKey, recipientPrivateKey, options) => {
+    return await unwrapOrgKey(wrappedKey, recipientPrivateKey, options);
+  },
+
   // Collections Cryptography (M2/M3: R2)
   generateCollectionKey: () => {
     return generateCollectionKey();
@@ -105,8 +121,8 @@ export const ClientCrypto = {
     return await wrapCollectionKey(collectionKey, recipientPublicKey);
   },
 
-  unwrapCollectionKey: async (wrappedKey, recipientPrivateKey) => {
-    return await unwrapCollectionKey(wrappedKey, recipientPrivateKey);
+  unwrapCollectionKey: async (wrappedKey, recipientPrivateKey, options) => {
+    return await unwrapCollectionKey(wrappedKey, recipientPrivateKey, options);
   },
 
   encryptCollectionItem: (plainPayload, collectionKey, options = {}) => encryptData(plainPayload, collectionKey, options),
@@ -139,6 +155,15 @@ export const ClientCrypto = {
   toBase64,
   fromBase64,
   CHAR_SETS,
+};
+
+export {
+  generateOrgKey,
+  wrapOrgKey,
+  unwrapOrgKey,
+  generateCollectionKey,
+  wrapCollectionKey,
+  unwrapCollectionKey,
 };
 
 export default ClientCrypto;

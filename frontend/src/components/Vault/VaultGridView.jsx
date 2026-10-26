@@ -51,6 +51,7 @@ export function VaultGridView({
   onToggleReveal,
   onCopyPassword,
   onCopyUsername,
+  onCopyNote,
   onToggleFavorite,
   onEdit,
   onShare,
@@ -66,11 +67,16 @@ export function VaultGridView({
         const dec = it._decrypted || {};
         const isRevealed = revealedIds.has(id);
         const isFav = Boolean(meta.favorite);
-        const { title, username, url, tags, locked } = itemFields(it);
+        const { title, username, url, notes, tags, locked } = itemFields(it);
         const displayTitle = locked ? LOCKED_TITLE : title;
         const password = dec.password || '';
         const colId = it._collectionId || meta.collection_id;
+        const matchedCollections = collections.filter((c) => {
+          const cid = c.collection_id || c.id;
+          return it._collectionIds ? it._collectionIds.has(cid) : cid === colId;
+        });
         const collection =
+          matchedCollections[0] ||
           it._collection ||
           (colId ? collections.find((c) => (c.collection_id || c.id) === colId) : null);
         const updated = formatUpdated(it.updated_at || it.created_at);
@@ -87,9 +93,22 @@ export function VaultGridView({
                   {locked ? <LockIcon className="size-4 text-muted-foreground" /> : title.charAt(0).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h3 className={`truncate text-sm font-strong ${locked ? 'text-muted-foreground' : ''}`} title={displayTitle}>
-                    {displayTitle}
-                  </h3>
+                  {locked ? (
+                    <h3 className="truncate text-sm font-strong text-muted-foreground" title={displayTitle}>
+                      {displayTitle}
+                    </h3>
+                  ) : (
+                    <h3 className="truncate text-sm font-strong">
+                      <button
+                        type="button"
+                        onClick={() => onEdit(it)}
+                        className="truncate max-w-full text-left font-strong text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        title={`ดูรายละเอียด ${displayTitle}`}
+                      >
+                        {displayTitle}
+                      </button>
+                    </h3>
+                  )}
                   {url && !locked ? (
                     <a
                       href={hrefOf(url)}
@@ -169,13 +188,38 @@ export function VaultGridView({
                       )}
                     </dd>
                   </div>
+                  {notes ? (
+                    <div className="flex min-h-8 items-start gap-2 pt-1 border-t border-border/40">
+                      <dt className="w-16 shrink-0 text-caption text-muted-foreground pt-0.5">บันทึก</dt>
+                      <dd className="flex min-w-0 flex-1 items-start justify-between gap-1">
+                        <span className="line-clamp-2 text-xs text-secondary-foreground break-words">{notes}</span>
+                        {onCopyNote && (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            className="shrink-0 text-muted-foreground hover:text-foreground"
+                            onClick={() => onCopyNote(notes, id, title)}
+                            aria-label={`คัดลอกบันทึกของ ${title}`}
+                          >
+                            <CopyIcon />
+                          </Button>
+                        )}
+                      </dd>
+                    </div>
+                  ) : null}
                 </dl>
               )}
 
               {/* Badges */}
               <div className="mt-3 flex flex-wrap items-center gap-1.5">
                 <CategoryBadge category={it.item_type || 'login'} />
-                {collection && <CollectionBadge name={collection.name} />}
+                {matchedCollections.length > 0 ? (
+                  matchedCollections.map((c) => (
+                    <CollectionBadge key={c.collection_id || c.id} name={c.name} />
+                  ))
+                ) : collection ? (
+                  <CollectionBadge name={collection.name} />
+                ) : null}
                 {locked && <LockedBadge />}
                 {tags.slice(0, 3).map((tag, i) => (
                   <Badge key={`${tag}-${i}`} variant="outline" className="max-w-[8rem]">
@@ -215,6 +259,7 @@ export function VaultGridView({
                     onToggleReveal={onToggleReveal}
                     onCopyUsername={onCopyUsername}
                     onCopyPassword={(pw, ttl) => onCopyPassword(pw, id, ttl || title)}
+                    onCopyNote={onCopyNote}
                     onEdit={onEdit}
                     onShare={onShare}
                     onHistory={onHistory}

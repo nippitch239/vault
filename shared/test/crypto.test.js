@@ -26,6 +26,12 @@ import {
   unwrapItemKey,
   wrapCollectionKey,
   unwrapCollectionKey,
+  generateCollectionKey,
+  generateOrgKey,
+  wrapOrgKey,
+  unwrapOrgKey,
+  importPublicKey,
+  importPrivateKey,
 } from '../crypto.js';
 
 test('Encoding Utilities: Base64 and Hex roundtrips', () => {
@@ -329,4 +335,173 @@ test('Item Key: wrapped by the Vault Key for the owner and by RSA-OAEP for a sha
   await assert.rejects(() => decryptData(encrypted, vaultKey), CryptoError);
 
   await assert.rejects(() => wrapItemKey(new Uint8Array(16), vaultKey), CryptoError);
+});
+
+test('Org Key: client-side 256-bit generation, RSA-OAEP wrapping/unwrapping roundtrip, and formats', async () => {
+  const orgKey = generateOrgKey();
+  assert.ok(orgKey instanceof Uint8Array, 'Org key must be Uint8Array');
+  assert.equal(orgKey.length, 32, 'Org key must be 32 bytes (256 bits)');
+
+  // Fresh entropy check
+  const secondOrgKey = generateOrgKey();
+  assert.notDeepEqual(orgKey, secondOrgKey, 'Successive keys must be distinct');
+
+  // Recipient key pair
+  const recipient = await generateAsymmetricKeyPair();
+
+  // Wrap Org Key
+  const wrapped = await wrapOrgKey(orgKey, recipient.publicKey);
+  assert.equal(typeof wrapped.ciphertext, 'string');
+  assert.equal(wrapped.algorithm, 'RSA-OAEP');
+  assert.equal(wrapped.hash, 'SHA-256');
+
+  // Unwrap Org Key returning Uint8Array (default)
+  const unwrappedBytes = await unwrapOrgKey(wrapped, recipient.privateKey);
+  assert.ok(unwrappedBytes instanceof Uint8Array);
+  assert.deepEqual(unwrappedBytes, orgKey);
+
+  // Unwrap with string ciphertext instead of object
+  const unwrappedFromString = await unwrapOrgKey(wrapped.ciphertext, recipient.privateKey);
+  assert.deepEqual(unwrappedFromString, orgKey);
+
+  // Wrap with Base64 string key input
+  const b64Key = toBase64(orgKey);
+  const wrappedFromB64 = await wrapOrgKey(b64Key, recipient.publicKey);
+  assert.deepEqual(await unwrapOrgKey(wrappedFromB64, recipient.privateKey), orgKey);
+
+  // Wrap & unwrap with PEM formatted keys
+  const pemPubKey = `-----BEGIN PUBLIC KEY-----\n${recipient.publicKey}\n-----END PUBLIC KEY-----`;
+  const pemPrivKey = `-----BEGIN PRIVATE KEY-----\n${recipient.privateKey}\n-----END PRIVATE KEY-----`;
+  const wrappedFromPem = await wrapOrgKey(orgKey, pemPubKey);
+  assert.deepEqual(await unwrapOrgKey(wrappedFromPem, pemPrivKey), orgKey);
+
+  // Wrap & unwrap with native CryptoKey objects
+  const pubCryptoKey = await importPublicKey(recipient.publicKey);
+  const privCryptoKey = await importPrivateKey(recipient.privateKey);
+  const wrappedFromCryptoKey = await wrapOrgKey(orgKey, pubCryptoKey);
+  assert.deepEqual(await unwrapOrgKey(wrappedFromCryptoKey, privCryptoKey), orgKey);
+
+  // Unwrap legacy wrappedKey and wrapped_key payload shapes
+  assert.deepEqual(await unwrapOrgKey({ wrappedKey: wrapped.ciphertext }, recipient.privateKey), orgKey);
+  assert.deepEqual(await unwrapOrgKey({ wrapped_key: wrapped.ciphertext }, recipient.privateKey), orgKey);
+
+  // Unwrap returning CryptoKey (options.asCryptoKey = true)
+  const unwrappedCryptoKey = await unwrapOrgKey(wrapped, recipient.privateKey, { asCryptoKey: true });
+  assert.ok(unwrappedCryptoKey && typeof unwrappedCryptoKey.type === 'string');
+  assert.equal(unwrappedCryptoKey.algorithm.name, 'AES-GCM');
+  assert.equal(unwrappedCryptoKey.type, 'secret');
+
+  // Verify unwrapped CryptoKey functions in AES-GCM encryption/decryption
+  const secretData = { message: 'Zero knowledge organization data' };
+  const encryptedPayload = await encryptData(secretData, unwrappedCryptoKey);
+  const decryptedPayload = await decryptData(encryptedPayload, unwrappedCryptoKey);
+  assert.deepEqual(decryptedPayload, secretData);
+});
+
+test('Org Key: input validation rejects invalid key length and missing ciphertext', async () => {
+  const recipient = await generateAsymmetricKeyPair();
+
+  // Rejects invalid key lengths
+  await assert.rejects(
+    () => wrapOrgKey(new Uint8Array(16), recipient.publicKey),
+    (err) => err instanceof CryptoError && err.code === 'INVALID_KEY_LENGTH'
+  );
+  await assert.rejects(
+    () => wrapOrgKey(new Uint8Array(64), recipient.publicKey),
+    (err) => err instanceof CryptoError && err.code === 'INVALID_KEY_LENGTH'
+  );
+
+  // Rejects non-binary key types
+  await assert.rejects(
+    () => wrapOrgKey(12345, recipient.publicKey),
+    (err) => err instanceof CryptoError && err.code === 'INVALID_KEY'
+  );
+  await assert.rejects(
+    () => wrapOrgKey(null, recipient.publicKey),
+    (err) => err instanceof CryptoError && err.code === 'INVALID_KEY'
+  );
+
+  // Rejects invalid recipient public key
+  await assert.rejects(
+    () => wrapOrgKey(generateOrgKey(), 'invalid-public-key'),
+    (err) => err instanceof CryptoError
+  );
+
+  // Rejects missing ciphertext in unwrapping
+  await assert.rejects(
+    () => unwrapOrgKey({}, recipient.privateKey),
+    (err) => err instanceof CryptoError && err.code === 'INVALID_WRAPPED_KEY'
+  );
+  await assert.rejects(
+    () => unwrapOrgKey(null, recipient.privateKey),
+    (err) => err instanceof CryptoError && err.code === 'INVALID_WRAPPED_KEY'
+  );
+});
+
+test('Org Key: tamper rejection and wrong RSA private key cannot unwrap', async () => {
+  const orgKey = generateOrgKey();
+  const alice = await generateAsymmetricKeyPair();
+  const bob = await generateAsymmetricKeyPair();
+
+  const wrappedForAlice = await wrapOrgKey(orgKey, alice.publicKey);
+
+  // Bob cannot unwrap Alice's wrapped Org Key
+  await assert.rejects(
+    () => unwrapOrgKey(wrappedForAlice, bob.privateKey),
+    (err) => err instanceof CryptoError && err.code === 'UNWRAP_ORG_KEY_ERROR',
+    'Bob must fail to unwrap key wrapped for Alice'
+  );
+
+  // Tampered ciphertext fails unwrapping (OAEP integrity failure)
+  const cipherBytes = fromBase64(wrappedForAlice.ciphertext);
+  cipherBytes[10] ^= 0xff; // flip bits
+  const tamperedPayload = { ...wrappedForAlice, ciphertext: toBase64(cipherBytes) };
+
+  await assert.rejects(
+    () => unwrapOrgKey(tamperedPayload, alice.privateKey),
+    (err) => err instanceof CryptoError && err.code === 'UNWRAP_ORG_KEY_ERROR',
+    'Tampered ciphertext must fail unwrapping'
+  );
+});
+
+test('Collection Key: standalone generation, wrapping, unwrapping, and tamper guards', async () => {
+  const colKey = generateCollectionKey();
+  assert.equal(colKey.length, 32);
+  const recipient = await generateAsymmetricKeyPair();
+
+  const wrapped = await wrapCollectionKey(colKey, recipient.publicKey);
+  assert.equal(wrapped.algorithm, 'RSA-OAEP');
+  assert.equal(wrapped.hash, 'SHA-256');
+
+  const unwrapped = await unwrapCollectionKey(wrapped, recipient.privateKey);
+  assert.deepEqual(unwrapped, colKey);
+
+  const unwrappedKey = await unwrapCollectionKey(wrapped, recipient.privateKey, { asCryptoKey: true });
+  assert.equal(unwrappedKey.algorithm.name, 'AES-GCM');
+
+  // Wrong private key rejection
+  const intruder = await generateAsymmetricKeyPair();
+  await assert.rejects(
+    () => unwrapCollectionKey(wrapped, intruder.privateKey),
+    (err) => err instanceof CryptoError && err.code === 'UNWRAP_COLLECTION_KEY_ERROR'
+  );
+});
+
+test('Org Key & Collection Key: interoperability and zero-knowledge invariants', async () => {
+  const secretKey = generateOrgKey();
+  const recipient = await generateAsymmetricKeyPair();
+
+  // Cross-unwrapping parity: wrapped with wrapOrgKey can be unwrapped with unwrapCollectionKey and vice-versa
+  const wrappedAsOrg = await wrapOrgKey(secretKey, recipient.publicKey);
+  const unwrappedViaCollection = await unwrapCollectionKey(wrappedAsOrg, recipient.privateKey);
+  assert.deepEqual(unwrappedViaCollection, secretKey);
+
+  const wrappedAsCollection = await wrapCollectionKey(secretKey, recipient.publicKey);
+  const unwrappedViaOrg = await unwrapOrgKey(wrappedAsCollection, recipient.privateKey);
+  assert.deepEqual(unwrappedViaOrg, secretKey);
+
+  // Zero-Knowledge Invariant: Raw key bytes NEVER appear in wrapped payload
+  const rawBase64 = toBase64(secretKey);
+  assert.ok(!JSON.stringify(wrappedAsOrg).includes(rawBase64), 'Raw key bytes must never appear in wrapped JSON');
+  assert.ok(!JSON.stringify(wrappedAsCollection).includes(rawBase64), 'Raw key bytes must never appear in wrapped JSON');
 });

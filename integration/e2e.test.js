@@ -244,12 +244,170 @@ describe('Frontend services against the local API Gateway + Cognito simulator (U
     const bobView = await itemCrypto.decryptVaultItem(listed, { collectionKey: bobCollectionKey });
     assert.deepEqual(bobView.payload, secret);
 
+    // Collection containing logins and secure notes
+    setAuthToken(sessions.alice.token);
+    const loginSecret = {
+      title: 'Database Admin',
+      username: 'dba_admin',
+      password: 'DBA_Secret_Password_99!',
+      url: 'https://db.internal',
+    };
+    const noteSecret = {
+      title: 'Infrastructure Runbook',
+      notes: 'Emergency DR procedures and contact keys',
+      tags: ['ops', 'dr'],
+    };
+    const encLogin = await itemCrypto.encryptForSave(loginSecret, { isOwner: true, mek: sessions.alice.vaultKey, targetCollectionKey: collectionKey });
+    const createdLogin = await api.vault.createItem({ ...encLogin, item_type: 'login', metadata: { collection_id: collectionId } }, vaultId);
+    await api.collections.addItem(collectionId, { itemId: createdLogin.data.item_id });
+
+    const encNote = await itemCrypto.encryptForSave(noteSecret, { isOwner: true, mek: sessions.alice.vaultKey, targetCollectionKey: collectionKey });
+    const createdNote = await api.vault.createItem({ ...encNote, item_type: 'secure_note', metadata: { collection_id: collectionId } }, vaultId);
+    await api.collections.addItem(collectionId, { itemId: createdNote.data.item_id });
+
+    // Bob retrieves and decrypts collection items
+    setAuthToken(sessions.bob.token);
+    const bobItems = (await api.collections.listItems(collectionId)).items;
+    const bobLoginItem = bobItems.find((i) => i.item_id === createdLogin.data.item_id);
+    const bobNoteItem = bobItems.find((i) => i.item_id === createdNote.data.item_id);
+
+    const decryptedLogin = await itemCrypto.decryptVaultItem(bobLoginItem, { collectionKey: bobCollectionKey });
+    assert.deepEqual(decryptedLogin.payload, loginSecret);
+    assert.equal(decryptedLogin.payload.username, 'dba_admin');
+    assert.equal(decryptedLogin.payload.password, 'DBA_Secret_Password_99!');
+
+    const decryptedNote = await itemCrypto.decryptVaultItem(bobNoteItem, { collectionKey: bobCollectionKey });
+    assert.deepEqual(decryptedNote.payload, noteSecret);
+    assert.equal(decryptedNote.payload.notes, 'Emergency DR procedures and contact keys');
+
     setAuthToken(sessions.alice.token);
     const moved = await itemCrypto.encryptForSave(secret, { isOwner: true, itemKey: bobView.itemKey, mek: sessions.alice.vaultKey });
     await api.vault.updateItem(created2.data.item_id, { ...moved, metadata: {}, version: 1 }, vaultId);
     const personal = await itemCrypto.decryptVaultItem((await api.vault.getItem(created2.data.item_id, vaultId)).data, { mek: sessions.alice.vaultKey });
     assert.deepEqual(personal.payload, secret);
     assert.deepEqual(personal.itemKey, bobView.itemKey);
+  });
+
+  test('Multi-collection assignment, cross-collection sync, and selective disassociation (R1, R2, R3)', async () => {
+    setAuthToken(sessions.alice.token);
+
+    // 1. Alice creates two distinct collections
+    const colKeyA = ClientCrypto.generateCollectionKey();
+    const createdColA = await api.collections.create({
+      name: 'Engineering Team',
+      encryptedKeyForRecipient: await ClientCrypto.wrapCollectionKey(colKeyA, sessions.alice.keyPair.publicKey),
+    });
+    const colAId = createdColA.collection.id;
+
+    const colKeyB = ClientCrypto.generateCollectionKey();
+    const createdColB = await api.collections.create({
+      name: 'DevOps & SRE',
+      encryptedKeyForRecipient: await ClientCrypto.wrapCollectionKey(colKeyB, sessions.alice.keyPair.publicKey),
+    });
+    const colBId = createdColB.collection.id;
+
+    // 2. Alice creates a reusable item template
+    const templateSecret = {
+      title: 'Shared Bastion Host Key',
+      username: 'ec2-user',
+      password: 'Bastion_Root_Key_2026!',
+      url: 'https://bastion.cloud.internal',
+      notes: 'Reusable across Eng and DevOps collections',
+    };
+
+    const enc = await itemCrypto.encryptForSave(templateSecret, {
+      isOwner: true,
+      mek: sessions.alice.vaultKey,
+      targetCollectionKey: colKeyA,
+    });
+
+    const createdItem = await api.vault.createItem(
+      {
+        ...enc,
+        item_type: 'login',
+        metadata: {
+          collection_id: colAId,
+          collection_ids: [colAId, colBId],
+        },
+      },
+      vaultId
+    );
+    const multiItemId = createdItem.data.item_id;
+
+    // 3. Link item to both Collection A and Collection B (R2: Multi-collection assignment)
+    await api.collections.addItem(colAId, { itemId: multiItemId });
+    await api.collections.addItem(colBId, { itemId: multiItemId });
+
+    // 4. Verify presence in both collections
+    const itemsInA = (await api.collections.listItems(colAId)).items;
+    const itemsInB = (await api.collections.listItems(colBId)).items;
+    assert.ok(itemsInA.some((i) => i.item_id === multiItemId), 'Item must appear in Collection A');
+    assert.ok(itemsInB.some((i) => i.item_id === multiItemId), 'Item must appear in Collection B');
+
+    // 5. Decrypt in main vault dashboard and in collection views (R1: Unviewable/locked fix)
+    const vaultItemRow = (await api.vault.getItem(multiItemId, vaultId)).data;
+    const decryptedInDashboard = await itemCrypto.decryptVaultItem(vaultItemRow, {
+      mek: sessions.alice.vaultKey,
+      collectionKeys: [colKeyA, colKeyB],
+    });
+    assert.deepEqual(decryptedInDashboard.payload, templateSecret, 'Item must decrypt in primary vault view');
+
+    const itemFromColB = itemsInB.find((i) => i.item_id === multiItemId);
+    const decryptedInColB = await itemCrypto.decryptVaultItem(itemFromColB, {
+      mek: sessions.alice.vaultKey,
+      collectionKeys: [colKeyA, colKeyB],
+    });
+    assert.deepEqual(decryptedInColB.payload, templateSecret, 'Item must decrypt in Collection B view');
+
+    // 6. Update credentials (R2: edits reflect across all referencing collections)
+    const updatedSecret = {
+      ...templateSecret,
+      password: 'Rotated_Bastion_Key_v2!',
+      notes: 'Rotated key synced across all referencing collections',
+    };
+    const updatedEnc = await itemCrypto.encryptForSave(updatedSecret, {
+      isOwner: true,
+      itemKey: decryptedInDashboard.itemKey,
+      mek: sessions.alice.vaultKey,
+      targetCollectionKey: colKeyA,
+    });
+    await api.vault.updateItem(
+      multiItemId,
+      {
+        ...updatedEnc,
+        metadata: {
+          collection_id: colAId,
+          collection_ids: [colAId, colBId],
+        },
+        version: vaultItemRow.version,
+      },
+      vaultId
+    );
+
+    // Verify updated credentials reflected in Collection B
+    const refreshedB = (await api.collections.listItems(colBId)).items.find((i) => i.item_id === multiItemId);
+    const decryptedRefreshedB = await itemCrypto.decryptVaultItem(refreshedB, {
+      mek: sessions.alice.vaultKey,
+      collectionKeys: [colKeyA, colKeyB],
+    });
+    assert.equal(decryptedRefreshedB.payload.password, 'Rotated_Bastion_Key_v2!', 'Edits must reflect in Collection B');
+
+    // 7. Remove item from Collection A (R3: selective removal leaves Collection B and vault intact)
+    await api.collections.removeItem(colAId, multiItemId);
+
+    const itemsAfterRemoveA = (await api.collections.listItems(colAId)).items;
+    assert.ok(!itemsAfterRemoveA.some((i) => i.item_id === multiItemId), 'Must be removed from Collection A');
+
+    const itemsAfterRemoveB = (await api.collections.listItems(colBId)).items;
+    assert.ok(itemsAfterRemoveB.some((i) => i.item_id === multiItemId), 'Must remain intact in Collection B');
+
+    const remainingInVault = (await api.vault.getItem(multiItemId, vaultId)).data;
+    assert.equal(remainingInVault.item_id, multiItemId, 'Must remain intact in owner personal vault');
+    const decryptedRemaining = await itemCrypto.decryptVaultItem(remainingInVault, {
+      mek: sessions.alice.vaultKey,
+      collectionKeys: [colKeyA, colKeyB],
+    });
+    assert.equal(decryptedRemaining.payload.password, 'Rotated_Bastion_Key_v2!', 'Payload intact after removal from A');
   });
 
   test('UC-6: delete item', async () => {

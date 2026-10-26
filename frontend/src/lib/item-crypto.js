@@ -30,7 +30,7 @@ export async function fetchCollectionKey(collectionId, privateKey) {
  * @param {object} item vault item row (optionally with encrypted_key_for_recipient from a share)
  * @param {{ mek?: Uint8Array, collectionKey?: Uint8Array, privateKey?: string }} keys
  */
-export async function openItemKey(item, { mek, collectionKey, privateKey } = {}) {
+export async function openItemKey(item, { mek, collectionKey, collectionKeys, privateKey } = {}) {
   if (item?.encrypted_key_for_recipient && privateKey) {
     try {
       return await ClientCrypto.unwrapItemKey(item.encrypted_key_for_recipient, privateKey);
@@ -39,7 +39,16 @@ export async function openItemKey(item, { mek, collectionKey, privateKey } = {})
     }
   }
   if (item?.encrypted_item_key) {
-    for (const key of [collectionKey, mek]) {
+    const candidateKeys = [];
+    if (collectionKey) candidateKeys.push(collectionKey);
+    if (collectionKeys) {
+      if (Array.isArray(collectionKeys)) candidateKeys.push(...collectionKeys);
+      else if (collectionKeys instanceof Map) candidateKeys.push(...collectionKeys.values());
+      else if (collectionKeys instanceof Set) candidateKeys.push(...collectionKeys);
+    }
+    if (mek) candidateKeys.push(mek);
+
+    for (const key of candidateKeys) {
       if (!key) continue;
       try {
         return await ClientCrypto.unprotectItemKey(item.encrypted_item_key, key);
@@ -71,7 +80,15 @@ export async function decryptWithAny(encryptedData, keys) {
  */
 export async function decryptVaultItem(item, keys = {}) {
   const itemKey = await openItemKey(item, keys);
-  const payload = await decryptWithAny(item?.encrypted_data, [itemKey, keys.collectionKey, keys.mek]);
+  const candidateKeys = [itemKey];
+  if (keys.collectionKey) candidateKeys.push(keys.collectionKey);
+  if (keys.collectionKeys) {
+    if (Array.isArray(keys.collectionKeys)) candidateKeys.push(...keys.collectionKeys);
+    else if (keys.collectionKeys instanceof Map) candidateKeys.push(...keys.collectionKeys.values());
+    else if (keys.collectionKeys instanceof Set) candidateKeys.push(...keys.collectionKeys);
+  }
+  if (keys.mek) candidateKeys.push(keys.mek);
+  const payload = await decryptWithAny(item?.encrypted_data, candidateKeys);
   return { payload, itemKey };
 }
 

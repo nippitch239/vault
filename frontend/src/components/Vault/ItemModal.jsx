@@ -4,12 +4,13 @@ import api from '../../services/api.js';
 import { PasswordGenerator } from '../Common/PasswordGenerator.jsx';
 import { KeyIcon, EyeIcon, EyeOffIcon, LockIcon, CloseIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
-import { Button, Input, Textarea, Select, Field, Alert, ConfirmDialog } from '../ui/index.js';
+import { Button, Input, Textarea, Select, Field, Alert, ConfirmDialog, Badge } from '../ui/index.js';
 import { CATEGORY_OPTIONS } from './CategoryBadge.jsx';
 import { buildMetadata } from '../../lib/item-fields.js';
 import { encryptForSave, fetchCollectionKey, openItemKey } from '../../lib/item-crypto.js';
 
 const PERMISSION_LABELS = { admin: 'ผู้ดูแล', write: 'แก้ไขได้', read: 'อ่านอย่างเดียว' };
+const PERMISSION_BADGE = { admin: 'info', write: 'success', read: 'outline' };
 
 const EMPTY_FORM = {
   title: '',
@@ -38,13 +39,13 @@ function ChevronIcon({ className = 'size-4' }) {
   );
 }
 
-const snapshotOf = (form, collectionId) => JSON.stringify({ ...form, collectionId });
+const snapshotOf = (form, colIds) => JSON.stringify({ ...form, colIds: Array.from(colIds || []).sort() });
 
 /**
  * Add / edit item. Despite the historical name this renders as a full page inside the
  * vault area (the dashboard shows it in place of the list); props are unchanged.
  */
-export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
+export function ItemModal({ isOpen, item = null, defaultCollectionId = '', onClose, onSuccess }) {
   const { mek, privateKey, user } = useAuth();
   const { addToast } = useToast();
 
@@ -53,7 +54,9 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
   const isOwner = !isEditing || !item.user_id || item.user_id === user?.user_id;
 
   const [collections, setCollections] = useState([]);
-  const [selectedCollectionId, setSelectedCollectionId] = useState('');
+  const [selectedCollectionIds, setSelectedCollectionIds] = useState(() => new Set(defaultCollectionId ? [defaultCollectionId] : []));
+  const [folders, setFolders] = useState([]);
+  const [selectedFolderId, setSelectedFolderId] = useState('');
 
   const [formData, setFormData] = useState(EMPTY_FORM);
 
@@ -65,7 +68,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
   const [showMore, setShowMore] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
 
-  const initialSnapshotRef = useRef(snapshotOf(EMPTY_FORM, ''));
+  const initialSnapshotRef = useRef(snapshotOf(EMPTY_FORM, defaultCollectionId ? [defaultCollectionId] : []));
   const headingRef = useRef(null);
   const titleInputRef = useRef(null);
   const passwordInputRef = useRef(null);
@@ -78,28 +81,53 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         .list()
         .then((res) => {
           if (!cancelled) {
-            setCollections((res?.collections || []).filter((c) => ['write', 'admin'].includes(c.effectivePermission)));
+            const writableCols = (res?.collections || []).filter((c) => {
+              const perm = String(c.effectivePermission || c.effective_permission || '').toLowerCase();
+              return ['write', 'admin'].includes(perm);
+            });
+            setCollections(writableCols);
+            if (!item && defaultCollectionId && !writableCols.some((c) => (c.collection_id || c.id) === defaultCollectionId)) {
+              setSelectedCollectionIds(new Set());
+              initialSnapshotRef.current = snapshotOf(EMPTY_FORM, []);
+            }
           }
         })
         .catch(() => {
           if (!cancelled) setCollections([]);
         });
 
+      // Load folders for the folder picker
+      if (api.folders) {
+        api.folders.list()
+          .then((res) => {
+            if (!cancelled) setFolders(res?.folders || res?.data || []);
+          })
+          .catch(() => {
+            if (!cancelled) setFolders([]);
+          });
+      }
+
       if (item) {
         // If editing existing item, load its decrypted fields if available
         const meta = item.metadata || {};
         const decrypted = item._decrypted || {};
-        const colId =
-          item.collection_id ||
-          item._collectionId ||
-          item.collectionId ||
-          meta.collection_id ||
-          '';
-        setSelectedCollectionId(colId);
+        const initialCols = new Set(
+          item._collectionIds
+            ? Array.from(item._collectionIds)
+            : [
+                item._collectionId,
+                item.collection_id,
+                meta.collection_id,
+                ...(Array.isArray(meta.collection_ids) ? meta.collection_ids : []),
+              ].filter(Boolean)
+        );
+        if (defaultCollectionId) initialCols.add(defaultCollectionId);
+        setSelectedCollectionIds(initialCols);
 
+        const itemCat = item.item_type ? item.item_type.toUpperCase() : (item.category || 'LOGIN');
         const next = {
           title: decrypted.title || '',
-          category: item.item_type ? item.item_type.toUpperCase() : (item.category || 'LOGIN'),
+          category: itemCat,
           url: decrypted.url || '',
           username: decrypted.username || '',
           password: decrypted.password || '',
@@ -107,15 +135,18 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
           tags: Array.isArray(decrypted.tags) ? decrypted.tags.join(', ') : '',
           favorite: Boolean(meta.favorite),
         };
+        setSelectedFolderId(meta.folder_id || '');
         setFormData(next);
-        initialSnapshotRef.current = snapshotOf(next, colId);
-        setShowMore(true);
+        initialSnapshotRef.current = snapshotOf(next, initialCols);
+        setShowMore(Boolean(initialCols.size > 0 || decrypted.notes || decrypted.tags?.length || itemCat === 'SECURE_NOTE' || itemCat === 'NOTE'));
       } else {
         // Adding new item
-        setSelectedCollectionId('');
+        const initialCols = new Set(defaultCollectionId ? [defaultCollectionId] : []);
+        setSelectedCollectionIds(initialCols);
+        setSelectedFolderId('');
         setFormData(EMPTY_FORM);
-        initialSnapshotRef.current = snapshotOf(EMPTY_FORM, '');
-        setShowMore(false);
+        initialSnapshotRef.current = snapshotOf(EMPTY_FORM, initialCols);
+        setShowMore(Boolean(initialCols.size > 0));
       }
       setShowGenerator(false);
       setShowPassword(false);
@@ -125,9 +156,9 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
     return () => {
       cancelled = true;
     };
-  }, [isOpen, item]);
+  }, [isOpen, item, defaultCollectionId]);
 
-  const isDirty = snapshotOf(formData, selectedCollectionId) !== initialSnapshotRef.current;
+  const isDirty = snapshotOf(formData, selectedCollectionIds) !== initialSnapshotRef.current;
 
   const requestClose = () => {
     if (loading) return;
@@ -160,12 +191,17 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
 
   if (!isOpen) return null;
 
+  const isNote = formData.category === 'SECURE_NOTE' || formData.category === 'NOTE';
+
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
     setFormData((prev) => ({
       ...prev,
       [name]: type === 'checkbox' ? checked : value,
     }));
+    if (name === 'category' && (value === 'SECURE_NOTE' || value === 'NOTE')) {
+      setShowMore(true);
+    }
     setError(null);
     if (fieldErrors[name]) setFieldErrors((prev) => ({ ...prev, [name]: undefined }));
   };
@@ -182,7 +218,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
     e.preventDefault();
     const errors = {};
     if (!formData.title.trim()) errors.title = 'กรุณาระบุชื่อรายการ';
-    if (!formData.password) errors.password = 'กรุณาระบุรหัสผ่าน หรือกด “สร้างรหัสผ่าน”';
+    if (!isNote && !formData.password) errors.password = 'กรุณาระบุรหัสผ่าน หรือกด “สร้างรหัสผ่าน”';
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors);
       (errors.title ? titleInputRef : passwordInputRef).current?.focus();
@@ -211,39 +247,75 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         updatedAt: new Date().toISOString(),
       };
 
-      // 2. Encrypt with the item's own Item Key. Its existing key is kept so people the item
-      //    is shared with can still read it; the key is wrapped with the collection key when
-      //    the item is in a collection, otherwise with the Vault Key.
-      const previousCollectionId = isEditing
-        ? item._collectionId || item.collection_id || item.metadata?.collection_id || ''
-        : '';
-      if ((selectedCollectionId || previousCollectionId) && !privateKey) {
+      // 2. Resolve collections and keys
+      const previousCollectionIds = new Set(
+        item?._collectionIds
+          ? Array.from(item._collectionIds)
+          : [
+              item?._collectionId,
+              item?.collection_id,
+              item?.metadata?.collection_id,
+              ...(Array.isArray(item?.metadata?.collection_ids) ? item.metadata.collection_ids : []),
+            ].filter(Boolean)
+      );
+
+      const targetColIds = Array.from(selectedCollectionIds);
+
+      let currentCollectionKey = null;
+      let targetCollectionKey = null;
+
+      if ((targetColIds.length > 0 || previousCollectionIds.size > 0) && !privateKey) {
         throw new Error('คลังรหัสผ่านถูกล็อก กรุณาปลดล็อกก่อนบันทึกรายการในคอลเลกชัน');
       }
-      const currentCollectionKey = await fetchCollectionKey(previousCollectionId, privateKey);
-      const targetCollectionKey =
-        selectedCollectionId === previousCollectionId
-          ? currentCollectionKey
-          : await fetchCollectionKey(selectedCollectionId, privateKey);
-      if (isOwner && selectedCollectionId && !targetCollectionKey) {
-        throw new Error('คุณยังไม่มีคีย์ของคอลเลกชันนี้ กรุณาให้ผู้ดูแลคอลเลกชันส่งคีย์ให้ก่อน');
+
+      for (const prevId of previousCollectionIds) {
+        try {
+          const k = await fetchCollectionKey(prevId, privateKey);
+          if (k) {
+            currentCollectionKey = k;
+            break;
+          }
+        } catch {}
       }
+
+      for (const targetId of targetColIds) {
+        try {
+          const k = await fetchCollectionKey(targetId, privateKey);
+          if (k) {
+            targetCollectionKey = k;
+            break;
+          }
+        } catch {}
+      }
+
+      if (isOwner && targetColIds.length > 0 && !targetCollectionKey) {
+        throw new Error('คุณยังไม่มีคีย์ของคอลเลกชันที่เลือก กรุณาให้ผู้ดูแลคอลเลกชันส่งคีย์ให้ก่อน');
+      }
+
       const itemKey = isEditing
         ? await openItemKey(item, { mek, collectionKey: currentCollectionKey, privateKey })
         : null;
       if (isEditing && (item.encrypted_item_key || item.encrypted_key_for_recipient) && !itemKey) {
         throw new Error('เปิดคีย์ของรายการนี้ไม่ได้ จึงบันทึกการแก้ไขไม่ได้ ลองโหลดหน้าใหม่');
       }
+
       const encrypted = await encryptForSave(sensitivePayload, {
         isOwner,
         itemKey,
         mek,
-        targetCollectionKey: selectedCollectionId ? targetCollectionKey : null,
+        targetCollectionKey: targetColIds.length > 0 ? targetCollectionKey : null,
         legacyKey: currentCollectionKey,
       });
 
       // 3. Plaintext metadata: non-sensitive flags only (title/url/username/tags are encrypted)
-      const metadata = buildMetadata({ favorite: formData.favorite, collectionId: selectedCollectionId });
+      const metadata = {
+        ...buildMetadata({
+          favorite: formData.favorite,
+          collectionId: targetColIds[0] || '',
+          collectionIds: targetColIds,
+        }),
+        ...(selectedFolderId ? { folder_id: selectedFolderId } : {}),
+      };
 
       const itemType = formData.category.toLowerCase();
       let savedItemId = null;
@@ -277,24 +349,30 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
         addToast('เพิ่มรายการแล้ว', 'success');
       }
 
-      // 4. Keep the collection link in sync with the key the Item Key is now wrapped with.
+      // 4. Synchronize collection memberships (Many-to-Many)
       let linkError = null;
-      if (savedItemId && previousCollectionId && previousCollectionId !== selectedCollectionId) {
-        try {
-          await api.collections.removeItem(previousCollectionId, savedItemId);
-        } catch (err) {
-          if (err?.status !== 404) linkError = err;
+      if (savedItemId && isOwner) {
+        for (const prevId of previousCollectionIds) {
+          if (!selectedCollectionIds.has(prevId)) {
+            try {
+              await api.collections.removeItem(prevId, savedItemId);
+            } catch (err) {
+              if (err?.status !== 404) linkError = err;
+            }
+          }
         }
-      }
-      if (savedItemId && selectedCollectionId && selectedCollectionId !== previousCollectionId) {
-        try {
-          await api.collections.addItem(selectedCollectionId, { itemId: savedItemId });
-        } catch (err) {
-          if (err?.status !== 409) linkError = err;
+        for (const nextId of selectedCollectionIds) {
+          if (!previousCollectionIds.has(nextId)) {
+            try {
+              await api.collections.addItem(nextId, { itemId: savedItemId });
+            } catch (err) {
+              if (err?.status !== 409) linkError = err;
+            }
+          }
         }
       }
       if (linkError) {
-        addToast(`บันทึกรายการแล้ว แต่ย้ายคอลเลกชันไม่สำเร็จ: ${linkError.message}`, 'error', 8000);
+        addToast(`บันทึกรายการแล้ว แต่มีปัญหาการเชื่อมโยงคอลเลกชัน: ${linkError.message}`, 'error', 8000);
       }
 
       if (onSuccess) onSuccess();
@@ -307,11 +385,9 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
   };
 
   const pageTitle = isEditing ? 'แก้ไขรายการ' : 'เพิ่มรายการ';
-  const currentCollectionMissing =
-    selectedCollectionId && !collections.some((c) => (c.collection_id || c.id) === selectedCollectionId);
   const moreSummary = [
     CATEGORY_OPTIONS.find((o) => o.value === formData.category)?.label,
-    selectedCollectionId ? 'อยู่ในคอลเลกชัน' : 'คลังส่วนตัว',
+    selectedCollectionIds.size > 0 ? `อยู่ใน ${selectedCollectionIds.size} คอลเลกชัน` : 'คลังส่วนตัว',
     formData.favorite ? 'รายการโปรด' : null,
   ]
     .filter(Boolean)
@@ -385,7 +461,7 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
           </Field>
 
           <div className="grid gap-3">
-            <Field label="รหัสผ่าน" required error={fieldErrors.password}>
+            <Field label="รหัสผ่าน" required={!isNote} error={fieldErrors.password}>
               {(props) => (
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <div className="relative flex-1">
@@ -495,28 +571,64 @@ export function ItemModal({ isOpen, item = null, onClose, onSuccess }) {
               label="คอลเลกชัน"
               hint={
                 isOwner
-                  ? 'เลือกคอลเลกชันเพื่อแชร์รายการนี้กับสมาชิกคอลเลกชัน'
-                  : 'เฉพาะเจ้าของรายการเท่านั้นที่ย้ายคอลเลกชันได้'
+                  ? 'เลือกหนึ่งหรือหลายคอลเลกชันเพื่อแชร์รายการนี้ (ใช้ซ้ำได้หลายคอลเลกชันพร้อมกัน)'
+                  : 'เฉพาะเจ้าของรายการเท่านั้นที่เปลี่ยนคอลเลกชันได้'
               }
             >
+              {() => (
+                <div className="grid gap-2 rounded-md border border-border p-3">
+                  {collections.length === 0 ? (
+                    <p className="text-caption text-muted-foreground">ไม่มีคอลเลกชันที่คุณมีสิทธิ์เขียน</p>
+                  ) : (
+                    collections.map((c) => {
+                      const cid = c.collection_id || c.id;
+                      const isChecked = selectedCollectionIds.has(cid);
+                      const perm = c.effective_permission || c.effectivePermission || 'write';
+                      return (
+                        <label
+                          key={cid}
+                          className={`flex cursor-pointer items-center gap-2.5 rounded px-2 py-1.5 text-sm transition-colors hover:bg-accent ${
+                            !isOwner ? 'opacity-60 cursor-not-allowed' : ''
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            disabled={!isOwner}
+                            onChange={(e) => {
+                              setSelectedCollectionIds((prev) => {
+                                const next = new Set(prev);
+                                if (e.target.checked) next.add(cid);
+                                else next.delete(cid);
+                                return next;
+                              });
+                            }}
+                            className="size-4 rounded border-border"
+                          />
+                          <span className="flex-1 truncate font-ui">{c.name}</span>
+                          <Badge variant={PERMISSION_BADGE[perm] || 'outline'} className="text-[10px]">
+                            {PERMISSION_LABELS[perm] || perm}
+                          </Badge>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </Field>
+
+            <Field label="โฟลเดอร์" hint="จัดกลุ่มรายการไว้ในโฟลเดอร์">
               {(props) => (
                 <Select
                   {...props}
-                  value={selectedCollectionId}
-                  onChange={(e) => setSelectedCollectionId(e.target.value)}
-                  disabled={!isOwner}
+                  value={selectedFolderId}
+                  onChange={(e) => setSelectedFolderId(e.target.value)}
                 >
-                  <option value="">คลังส่วนตัว</option>
-                  {currentCollectionMissing && (
-                    <option value={selectedCollectionId}>{item?._collection?.name || 'คอลเลกชันปัจจุบัน'}</option>
-                  )}
-                  {collections.map((c) => {
-                    const cid = c.collection_id || c.id;
-                    const perm = c.effective_permission || c.effectivePermission || 'member';
+                  <option value="">ไม่มีโฟลเดอร์</option>
+                  {folders.map((f) => {
+                    const fid = f.folder_id || f.id;
                     return (
-                      <option key={cid} value={cid}>
-                        {c.name} · {PERMISSION_LABELS[perm] || perm}
-                      </option>
+                      <option key={fid} value={fid}>{f.name}</option>
                     );
                   })}
                 </Select>

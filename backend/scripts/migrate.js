@@ -15,6 +15,6 @@ if (db.type !== 'postgres') {
   console.error('Set DATABASE_URL (or DB_SECRET_ARN + DB_HOST) to migrate a PostgreSQL database.');
   process.exit(1);
 }
-await initSchema(db);
+const stats = await initSchema(db);
 await db.close();
-console.log('Schema applied.');
+console.log('Schema applied and personal organizations migrated:', stats);

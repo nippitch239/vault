@@ -36,6 +36,8 @@ export const CRYPTO_CONSTANTS = {
   AES_GCM_TAG_LENGTH: 128, // 16 bytes tag (in bits)
   RSA_MODULUS_LENGTH: 2048,
   RSA_PUBLIC_EXPONENT: new Uint8Array([1, 0, 1]), // 65537
+  ORG_KEY_LENGTH: 32, // bytes (256 bits)
+  COLLECTION_KEY_LENGTH: 32, // bytes (256 bits)
   HKDF_INFO_MEK: 'securevault-master-encryption-key',
   HKDF_INFO_AK: 'securevault-client-authentication-key',
   HMAC_AUTH_MSG: 'securevault-auth-request',
@@ -729,7 +731,7 @@ export async function decryptPrivateKey(encryptedPrivateKeyPayload, mek) {
 // ============================================================================
 
 // ============================================================================
-// Collection keys (random 256-bit key per collection, RSA-OAEP wrapped per member)
+// Organization & Collection Keys (256-bit symmetric keys, RSA-OAEP wrapped per member)
 // ============================================================================
 
 function stripPem(key) {
@@ -751,41 +753,22 @@ function toKeyBytes(key, label) {
   return bytes;
 }
 
-/**
- * @returns {Uint8Array} fresh 32-byte collection key
- */
-export function generateCollectionKey() {
-  return generateRandomBytes(32);
-}
-
-/**
- * Wraps a collection key for one member with RSA-OAEP-SHA256.
- * @param {Uint8Array|string} collectionKey
- * @param {string|CryptoKey} recipientPublicKey SPKI base64 / PEM / CryptoKey
- * @returns {Promise<{ algorithm: 'RSA-OAEP', hash: 'SHA-256', ciphertext: string }>}
- */
-export async function wrapCollectionKey(collectionKey, recipientPublicKey) {
-  const keyBytes = toKeyBytes(collectionKey, 'Collection key');
+async function wrapSymmetricKey(key, recipientPublicKey, label, errorCode) {
+  const keyBytes = toKeyBytes(key, label);
   try {
     const pubKey =
       recipientPublicKey && typeof recipientPublicKey.type === 'string'
         ? recipientPublicKey
         : await importPublicKey(stripPem(recipientPublicKey));
     const encrypted = await subtle.encrypt({ name: 'RSA-OAEP' }, pubKey, keyBytes);
-    return { algorithm: 'RSA-OAEP', hash: 'SHA-256', ciphertext: toBase64(new Uint8Array(encrypted)) };
+    return { ciphertext: toBase64(new Uint8Array(encrypted)), algorithm: 'RSA-OAEP', hash: 'SHA-256' };
   } catch (err) {
     if (err instanceof CryptoError) throw err;
-    throw new CryptoError('Collection key wrapping failed', 'WRAP_COLLECTION_KEY_ERROR', err);
+    throw new CryptoError(`${label} wrapping failed`, errorCode, err);
   }
 }
 
-/**
- * Unwraps a member's collection key with their RSA private key.
- * @param {object|string} wrapped { ciphertext } or base64 ciphertext
- * @param {string|CryptoKey} recipientPrivateKey PKCS#8 base64 / PEM / CryptoKey
- * @returns {Promise<Uint8Array>}
- */
-export async function unwrapCollectionKey(wrapped, recipientPrivateKey) {
+async function unwrapSymmetricKey(wrapped, recipientPrivateKey, label, errorCode, options = {}) {
   const ciphertext =
     typeof wrapped === 'string' ? wrapped : wrapped?.ciphertext || wrapped?.wrappedKey || wrapped?.wrapped_key;
   if (!ciphertext) throw new CryptoError('Missing ciphertext in wrapped key payload', 'INVALID_WRAPPED_KEY');
@@ -798,11 +781,81 @@ export async function unwrapCollectionKey(wrapped, recipientPrivateKey) {
     if (decrypted.length !== 32) {
       throw new CryptoError(`Unwrapped key length mismatch: expected 32 bytes, got ${decrypted.length}`, 'INVALID_KEY_LENGTH');
     }
+    if (options?.asCryptoKey) {
+      return await subtle.importKey(
+        'raw',
+        decrypted,
+        { name: 'AES-GCM' },
+        false,
+        options.usages || ['encrypt', 'decrypt']
+      );
+    }
     return decrypted;
   } catch (err) {
     if (err instanceof CryptoError) throw err;
-    throw new CryptoError('Collection key unwrapping failed', 'UNWRAP_COLLECTION_KEY_ERROR', err);
+    throw new CryptoError(`${label} unwrapping failed`, errorCode, err);
   }
+}
+
+/**
+ * Generates a fresh random 256-bit symmetric Organization Key.
+ * @returns {Uint8Array} fresh 32-byte org key
+ */
+export function generateOrgKey() {
+  return generateRandomBytes(CRYPTO_CONSTANTS.ORG_KEY_LENGTH || 32);
+}
+
+/**
+ * Wraps an Org Key for an organization member with RSA-OAEP-SHA256.
+ * @param {Uint8Array|string} orgKey - 32-byte Org Key (Uint8Array or Base64 string)
+ * @param {string|CryptoKey} recipientPublicKey - Member's RSA-OAEP public key (SPKI base64, PEM, or CryptoKey)
+ * @returns {Promise<{ ciphertext: string, algorithm: 'RSA-OAEP', hash: 'SHA-256' }>}
+ */
+export async function wrapOrgKey(orgKey, recipientPublicKey) {
+  return wrapSymmetricKey(orgKey, recipientPublicKey, 'Org key', 'WRAP_ORG_KEY_ERROR');
+}
+
+/**
+ * Unwraps an organization member's Org Key using their RSA-OAEP private key.
+ * @param {object|string} wrapped - { ciphertext } or Base64 ciphertext string
+ * @param {string|CryptoKey} recipientPrivateKey - Member's RSA-OAEP private key (PKCS#8 base64, PEM, or CryptoKey)
+ * @param {object} [options] - Optional unwrapping options
+ * @param {boolean} [options.asCryptoKey=false] - Return AES-GCM CryptoKey instead of Uint8Array
+ * @param {Array<string>} [options.usages=['encrypt', 'decrypt']] - Key usages if returning CryptoKey
+ * @returns {Promise<Uint8Array|CryptoKey>} 32-byte Org Key (Uint8Array by default, or CryptoKey if asCryptoKey is true)
+ */
+export async function unwrapOrgKey(wrapped, recipientPrivateKey, options = {}) {
+  return unwrapSymmetricKey(wrapped, recipientPrivateKey, 'Org key', 'UNWRAP_ORG_KEY_ERROR', options);
+}
+
+/**
+ * @returns {Uint8Array} fresh 32-byte collection key
+ */
+export function generateCollectionKey() {
+  return generateRandomBytes(CRYPTO_CONSTANTS.COLLECTION_KEY_LENGTH || 32);
+}
+
+/**
+ * Wraps a collection key for one member with RSA-OAEP-SHA256.
+ * @param {Uint8Array|string} collectionKey
+ * @param {string|CryptoKey} recipientPublicKey SPKI base64 / PEM / CryptoKey
+ * @returns {Promise<{ algorithm: 'RSA-OAEP', hash: 'SHA-256', ciphertext: string }>}
+ */
+export async function wrapCollectionKey(collectionKey, recipientPublicKey) {
+  return wrapSymmetricKey(collectionKey, recipientPublicKey, 'Collection key', 'WRAP_COLLECTION_KEY_ERROR');
+}
+
+/**
+ * Unwraps a member's collection key with their RSA private key.
+ * @param {object|string} wrapped { ciphertext } or base64 ciphertext
+ * @param {string|CryptoKey} recipientPrivateKey PKCS#8 base64 / PEM / CryptoKey
+ * @param {object} [options] - Optional unwrapping options
+ * @param {boolean} [options.asCryptoKey=false] - Return AES-GCM CryptoKey instead of Uint8Array
+ * @param {Array<string>} [options.usages=['encrypt', 'decrypt']] - Key usages if returning CryptoKey
+ * @returns {Promise<Uint8Array|CryptoKey>}
+ */
+export async function unwrapCollectionKey(wrapped, recipientPrivateKey, options = {}) {
+  return unwrapSymmetricKey(wrapped, recipientPrivateKey, 'Collection key', 'UNWRAP_COLLECTION_KEY_ERROR', options);
 }
 
 /**

@@ -28,6 +28,8 @@ const JSON_COLUMNS = new Set([
   'encryptedKeyForRecipient',
   'encrypted_vault_key',
   'encrypted_item_key',
+  'encrypted_org_key',
+  'encryptedOrgKey',
   'details',
 ]);
 
@@ -62,7 +64,10 @@ const ADD_COLUMN_RE = /ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\
  */
 export function sqliteColumnUpgrades(pgDdl) {
   return [...pgDdl.matchAll(ADD_COLUMN_RE)].map(([, table, definition]) => {
-    const def = definition.replace(/::jsonb/gi, '').trim();
+    const def = definition
+      .replace(/::jsonb/gi, '')
+      .replace(/DEFAULT\s+gen_random_uuid\(\)/gi, 'DEFAULT (gen_random_uuid())')
+      .trim();
     return { table, column: def.split(/\s+/)[0], sql: `ALTER TABLE ${table} ADD COLUMN ${def}` };
   });
 }
@@ -84,6 +89,9 @@ export function translateQueryForSqlite(sql, params = []) {
     /([a-zA-Z0-9_]+)->'([a-zA-Z0-9_]+)'/g,
     "json_extract($1, '$.' || '$2')"
   );
+
+  // Translate PostgreSQL ILIKE to SQLite case-insensitive LIKE
+  translatedSql = translatedSql.replace(/\bILIKE\b/gi, 'LIKE');
 
   // 2. Translate $1, $2 parameter placeholders to ? in sequential order
   const translatedParams = [];
@@ -155,6 +163,14 @@ export class SqliteDatabase {
     this.db.function('gen_random_uuid', () => crypto.randomUUID());
     this.db.exec('PRAGMA foreign_keys = ON;');
     const ddl = readSchema();
+
+    // Pre-DDL upgrade: If an existing database has tables missing new columns,
+    // add them before executing DDL indexes to avoid "no such column" index errors.
+    for (const { table, column, sql } of sqliteColumnUpgrades(ddl)) {
+      const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
+      if (columns.length > 0 && !columns.some((c) => c.name === column)) this.db.exec(sql);
+    }
+
     this.db.exec(pgToSqliteSchema(ddl));
     for (const { table, column, sql } of sqliteColumnUpgrades(ddl)) {
       const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
@@ -347,14 +363,16 @@ export function readSchema() {
 }
 
 /**
- * Applies schema.sql (idempotent: CREATE ... IF NOT EXISTS).
+ * Applies schema.sql (idempotent: CREATE ... IF NOT EXISTS) and migrates personal organizations.
  */
 export async function initSchema(database) {
   if (database.type === 'sqlite') {
     await database.ready;
-    return;
+  } else {
+    await database.exec(readSchema());
   }
-  await database.exec(readSchema());
+  const { migratePersonalOrganizations } = await import('./migration.js');
+  return migratePersonalOrganizations(database);
 }
 
 function useSqlite() {

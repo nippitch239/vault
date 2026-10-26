@@ -15,9 +15,9 @@ export async function handler(event, context) {
   if (context) context.callbackWaitsForEmptyEventLoop = false;
 
   if (event?.vaultTask === 'migrate') {
-    await initSchema(getDatabase());
-    console.log(JSON.stringify({ level: 'info', msg: 'schema migration applied' }));
-    return { ok: true, task: 'migrate' };
+    const stats = await initSchema(getDatabase());
+    console.log(JSON.stringify({ level: 'info', msg: 'schema migration applied', ...stats }));
+    return { ok: true, task: 'migrate', ...stats };
   }
 
   return router(event, context);

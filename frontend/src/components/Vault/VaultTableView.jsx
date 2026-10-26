@@ -38,6 +38,7 @@ export function VaultTableView({
   onToggleReveal,
   onCopyPassword,
   onCopyUsername,
+  onCopyNote,
   onToggleFavorite,
   onEdit,
   onShare,
@@ -74,7 +75,12 @@ export function VaultTableView({
           const displayTitle = locked ? LOCKED_TITLE : title;
           const password = dec.password || '';
           const colId = it._collectionId || meta.collection_id;
+          const matchedCollections = collections.filter((c) => {
+            const cid = c.collection_id || c.id;
+            return it._collectionIds ? it._collectionIds.has(cid) : cid === colId;
+          });
           const collection =
+            matchedCollections[0] ||
             it._collection ||
             (colId ? collections.find((c) => (c.collection_id || c.id) === colId) : null);
 
@@ -124,7 +130,13 @@ export function VaultTableView({
                         <span className="sr-only">(เปิดในแท็บใหม่)</span>
                       </a>
                     ) : null}
-                    {collection && <CollectionBadge name={collection.name} className="max-w-[9rem]" />}
+                    {matchedCollections.length > 0 ? (
+                      matchedCollections.map((c) => (
+                        <CollectionBadge key={c.collection_id || c.id} name={c.name} className="max-w-[9rem]" />
+                      ))
+                    ) : collection ? (
+                      <CollectionBadge name={collection.name} className="max-w-[9rem]" />
+                    ) : null}
                   </div>
                 </div>
               </TableCell>
@@ -199,6 +211,7 @@ export function VaultTableView({
                   onToggleReveal={onToggleReveal}
                   onCopyUsername={onCopyUsername}
                   onCopyPassword={(pw, ttl) => onCopyPassword(pw, id, ttl || title)}
+                  onCopyNote={onCopyNote}
                   onEdit={onEdit}
                   onShare={onShare}
                   onHistory={onHistory}

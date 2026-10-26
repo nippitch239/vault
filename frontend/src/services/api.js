@@ -259,6 +259,14 @@ export const api = {
       request(`/collections/${collectionId}/items/${itemId}`, { method: 'DELETE' }),
   },
 
+  // Folders (Personal Vault Organization)
+  folders: {
+    list: () => request('/folders'),
+    create: (name) => request('/folders', { method: 'POST', body: { name } }),
+    update: (folderId, name) => request(`/folders/${folderId}`, { method: 'PUT', body: { name } }),
+    delete: (folderId) => request(`/folders/${folderId}`, { method: 'DELETE' }),
+  },
+
   // Flat Convenience Aliases
   createGroup: (groupData) => request('/groups', { method: 'POST', body: groupData }),
   listGroups: () => request('/groups'),

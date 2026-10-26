@@ -196,3 +196,107 @@ describe('API client (services/api.js)', () => {
     }
   });
 });
+
+describe('Milestone 2 — Organization & Collection Cryptographic Verification', () => {
+  let aliceKeyPair;
+  let bobKeyPair;
+
+  test('Feature 7: Organization Key (generateOrgKey, wrapOrgKey, unwrapOrgKey) Roundtrip & Security Invariants', async () => {
+    // 1. Generate keypairs for Alice (Owner) and Bob (Invited Member)
+    aliceKeyPair = await ClientCrypto.createKeyPair();
+    bobKeyPair = await ClientCrypto.createKeyPair();
+
+    // 2. Generate 256-bit Org Key
+    const orgKey = ClientCrypto.generateOrgKey();
+    assert.ok(orgKey instanceof Uint8Array, 'Org Key must be Uint8Array');
+    assert.equal(orgKey.length, 32, 'Org Key must be exactly 32 bytes (256 bits)');
+
+    // Non-repetition (CSPRNG freshness)
+    const orgKey2 = ClientCrypto.generateOrgKey();
+    assert.notDeepEqual(orgKey, orgKey2, 'Subsequent Org Key generations must be distinct');
+
+    // 3. Alice wraps Org Key for Bob using Bob's RSA-OAEP public key
+    const wrappedForBob = await ClientCrypto.wrapOrgKey(orgKey, bobKeyPair.publicKey);
+    assert.ok(wrappedForBob.ciphertext, 'Wrapped Org Key must contain base64 ciphertext');
+    assert.equal(wrappedForBob.algorithm, 'RSA-OAEP', 'Algorithm must be RSA-OAEP');
+
+    // 4. Bob unwraps with his private key
+    const recoveredByBob = await ClientCrypto.unwrapOrgKey(wrappedForBob, bobKeyPair.privateKey);
+    assert.ok(recoveredByBob instanceof Uint8Array, 'Unwrapped Org Key must be Uint8Array');
+    assert.equal(recoveredByBob.length, 32, 'Unwrapped Org Key must be 32 bytes');
+    assert.deepEqual(recoveredByBob, orgKey, 'Bob recovers identical 256-bit Org Key');
+
+    // 5. Unauthorized unwrapping attempt (Alice's private key cannot unwrap Bob's copy)
+    await assert.rejects(
+      async () => {
+        await ClientCrypto.unwrapOrgKey(wrappedForBob, aliceKeyPair.privateKey);
+      },
+      /unwrapping failed|UNWRAP_ORG_KEY_ERROR|OperationError/i,
+      'Unwrapping with wrong private key must fail'
+    );
+
+    // 6. Tamper resistance (tampering with wrapped ciphertext fails authentication)
+    const tampered = {
+      ...wrappedForBob,
+      ciphertext: wrappedForBob.ciphertext.slice(0, -4) + 'AAAA',
+    };
+    await assert.rejects(
+      async () => {
+        await ClientCrypto.unwrapOrgKey(tampered, bobKeyPair.privateKey);
+      },
+      /unwrapping failed|UNWRAP_ORG_KEY_ERROR|OperationError/i,
+      'Tampered wrapped key ciphertext must fail unwrapping'
+    );
+  });
+
+  test('Feature 8 & 9: Collection Key & Item Key Two-Tier Cryptographic Roundtrip with AAD Protection', async () => {
+    // 1. Generate Collection Key
+    const collectionKey = ClientCrypto.generateCollectionKey();
+    assert.equal(collectionKey.length, 32, 'Collection Key must be 32 bytes');
+
+    // 2. Wrap Collection Key for member (Bob)
+    const wrappedColKey = await ClientCrypto.wrapCollectionKey(collectionKey, bobKeyPair.publicKey);
+    const bobColKey = await ClientCrypto.unwrapCollectionKey(wrappedColKey, bobKeyPair.privateKey);
+    assert.deepEqual(bobColKey, collectionKey, 'Member recovers exact Collection Key');
+
+    // 3. Encrypt Item for save inside collection (simulating item-crypto.js encryptForSave)
+    const rawSecret = {
+      title: 'Postgres Production Cluster',
+      host: 'pg-prod.internal',
+      username: 'cloud_admin',
+      password: 'ProdClusterSecurePass_2026!',
+    };
+
+    const itemKey = ClientCrypto.generateItemKey();
+    assert.equal(itemKey.length, 32, 'Item Key must be 32 bytes');
+
+    // Encrypt payload with Item Key (AES-256-GCM)
+    const encryptedData = await ClientCrypto.encryptItem(rawSecret, itemKey);
+    assert.equal(encryptedData.algorithm, 'AES-256-GCM');
+
+    // Protect Item Key under Collection Key (AES-256-GCM with AAD securevault-item-key-v1)
+    const encryptedItemKey = await ClientCrypto.protectItemKey(itemKey, collectionKey);
+    assert.ok(encryptedItemKey.ciphertext);
+    assert.ok(encryptedItemKey.iv);
+    assert.ok(encryptedItemKey.authTag || encryptedItemKey.auth_tag);
+
+    // 4. Member (Bob) unprotects Item Key using Collection Key
+    const bobUnprotectedItemKey = await ClientCrypto.unprotectItemKey(encryptedItemKey, bobColKey);
+    assert.deepEqual(bobUnprotectedItemKey, itemKey, 'Bob unprotects exact Item Key via Collection Key');
+
+    // 5. Member (Bob) decrypts item payload using recovered Item Key
+    const decryptedPayload = await ClientCrypto.decryptItem(encryptedData, bobUnprotectedItemKey);
+    assert.deepEqual(decryptedPayload, rawSecret, 'Decrypted payload matches secret');
+
+    // 6. AAD Context-Binding Integrity Test:
+    // Unprotecting with wrong AAD (or swapped collection key) must fail
+    const wrongWrappingKey = ClientCrypto.generateCollectionKey();
+    await assert.rejects(
+      async () => {
+        await ClientCrypto.unprotectItemKey(encryptedItemKey, wrongWrappingKey);
+      },
+      /Decryption failed|authenticity tag/i,
+      'Unprotecting Item Key with wrong collection key must fail'
+    );
+  });
+});

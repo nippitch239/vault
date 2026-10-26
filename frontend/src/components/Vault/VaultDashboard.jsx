@@ -71,7 +71,7 @@ function FilterPill({ pressed, onClick, children }) {
   );
 }
 
-export function VaultDashboard({ initialCollectionFilter = null } = {}) {
+export function VaultDashboard({ initialCollectionFilter = null, onCollectionFilterChange = null } = {}) {
   const { mek, privateKey, isVaultUnlocked, unlockVault } = useAuth();
   const { addToast, copyPasswordWithAutoClear } = useToast();
 
@@ -104,6 +104,13 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
   useEffect(() => {
     if (initialCollectionFilter) setSelectedCollectionFilter(initialCollectionFilter);
   }, [initialCollectionFilter]);
+
+  const handleCollectionFilterChange = (filterId) => {
+    setSelectedCollectionFilter(filterId);
+    if (onCollectionFilterChange) {
+      onCollectionFilterChange(filterId === 'ALL' ? null : filterId);
+    }
+  };
 
   // Modals state
   const [activeModal, setActiveModal] = useState(null); // 'add' | 'edit' | 'delete' | 'share' | 'history'
@@ -166,8 +173,37 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
             const itemsRes = await api.collections.listItems(cid);
             for (const it of itemsRes?.items || []) {
               const iid = it.item_id || it.id;
-              const { payload } = await decryptVaultItem(it, { mek, collectionKey: colKey });
-              collectionItemsMap.set(iid, { ...it, _decrypted: payload, _collection: col, _collectionId: cid });
+              if (collectionItemsMap.has(iid)) {
+                const existing = collectionItemsMap.get(iid);
+                if (existing._collectionIds) existing._collectionIds.add(cid);
+                if (!existing._decrypted && colKey) {
+                  const { payload } = await decryptVaultItem(it, {
+                    mek,
+                    collectionKey: colKey,
+                    collectionKeys: collectionKeyCache,
+                    privateKey,
+                  });
+                  if (payload) {
+                    existing._decrypted = payload;
+                    existing._collection = col;
+                    existing._collectionId = cid;
+                  }
+                }
+              } else {
+                const { payload } = await decryptVaultItem(it, {
+                  mek,
+                  collectionKey: colKey,
+                  collectionKeys: collectionKeyCache,
+                  privateKey,
+                });
+                collectionItemsMap.set(iid, {
+                  ...it,
+                  _decrypted: payload,
+                  _collection: col,
+                  _collectionId: cid,
+                  _collectionIds: new Set([cid]),
+                });
+              }
             }
           } catch (colErr) {
             failedCollections.push(col.name || cid);
@@ -179,28 +215,52 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
         addToast(`โหลดรายการจากคอลเลกชันไม่สำเร็จ: ${failedCollections.join(', ')} ลองโหลดใหม่อีกครั้ง`, 'error', 6000);
       }
 
-      // 4. Decrypt personal items (Item Key, or legacy Vault Key / collection key)
+      // 4. Decrypt personal items (Item Key, or legacy Vault Key / collection keys)
+      const allCollectionKeys = Array.from(collectionKeyCache.values());
       const decryptedPersonal = await Promise.all(
         rawPersonal.map(async (it) => {
           const iid = it.item_id || it.id;
-          if (collectionItemsMap.has(iid)) {
-            return collectionItemsMap.get(iid);
-          }
-
-          const metaColId = it.metadata?.collection_id;
-          const { payload: decryptedPayload } = await decryptVaultItem(it, {
-            mek,
-            collectionKey: metaColId ? collectionKeyCache.get(metaColId) : null,
-          });
-
+          const metaColIds = Array.isArray(it.metadata?.collection_ids)
+            ? it.metadata.collection_ids
+            : [it.metadata?.collection_id].filter(Boolean);
+          const metaColId = metaColIds[0] || null;
           const associatedCol = metaColId
             ? loadedCollections.find((c) => (c.collection_id || c.id) === metaColId)
             : null;
+
+          if (collectionItemsMap.has(iid)) {
+            const cItem = collectionItemsMap.get(iid);
+            for (const cid of metaColIds) {
+              cItem._collectionIds = cItem._collectionIds || new Set();
+              cItem._collectionIds.add(cid);
+            }
+            if (!cItem._decrypted) {
+              const { payload: decPayload } = await decryptVaultItem(it, {
+                mek,
+                privateKey,
+                collectionKeys: allCollectionKeys,
+              });
+              if (decPayload) {
+                cItem._decrypted = decPayload;
+                if (!cItem._collection && associatedCol) {
+                  cItem._collection = associatedCol;
+                }
+              }
+            }
+            return cItem;
+          }
+
+          const { payload: decryptedPayload } = await decryptVaultItem(it, {
+            mek,
+            privateKey,
+            collectionKeys: allCollectionKeys,
+          });
 
           return {
             ...it,
             _decrypted: decryptedPayload,
             ...(associatedCol ? { _collection: associatedCol, _collectionId: metaColId } : {}),
+            _collectionIds: new Set(metaColIds),
           };
         })
       );
@@ -391,12 +451,19 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
 
       // Collection filter
       if (selectedCollectionFilter === 'PERSONAL') {
-        if (it._collectionId || it.metadata?.collection_id) {
+        const hasCol =
+          (it._collectionIds && it._collectionIds.size > 0) ||
+          Boolean(it._collectionId) ||
+          Boolean(it.metadata?.collection_id);
+        if (hasCol) {
           return false;
         }
       } else if (selectedCollectionFilter !== 'ALL') {
-        const itemColId = it._collectionId || it.metadata?.collection_id;
-        if (itemColId !== selectedCollectionFilter) {
+        const matchesCol =
+          (it._collectionIds && it._collectionIds.has(selectedCollectionFilter)) ||
+          it._collectionId === selectedCollectionFilter ||
+          it.metadata?.collection_id === selectedCollectionFilter;
+        if (!matchesCol) {
           return false;
         }
       }
@@ -426,7 +493,7 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
     setSearchQuery('');
     setSelectedCategory('ALL');
     setFilterFavorites(false);
-    setSelectedCollectionFilter('ALL');
+    handleCollectionFilterChange('ALL');
   };
 
   const openAdd = () => {
@@ -488,7 +555,19 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
 
   // Add / edit form replaces the list (UC-4 / UC-5)
   if (activeModal === 'add' || activeModal === 'edit') {
-    return <ItemModal isOpen={true} item={selectedItem} onClose={closeModal} onSuccess={loadItems} />;
+    return (
+      <ItemModal
+        isOpen={true}
+        item={selectedItem}
+        defaultCollectionId={
+          selectedCollectionFilter !== 'ALL' && selectedCollectionFilter !== 'PERSONAL'
+            ? selectedCollectionFilter
+            : ''
+        }
+        onClose={closeModal}
+        onSuccess={loadItems}
+      />
+    );
   }
 
   const viewProps = {
@@ -597,17 +676,17 @@ export function VaultDashboard({ initialCollectionFilter = null } = {}) {
           <span id="vault-collection-filter-label" className="text-caption text-muted-foreground">
             คอลเลกชัน
           </span>
-          <FilterPill pressed={selectedCollectionFilter === 'ALL'} onClick={() => setSelectedCollectionFilter('ALL')}>
+          <FilterPill pressed={selectedCollectionFilter === 'ALL'} onClick={() => handleCollectionFilterChange('ALL')}>
             ทั้งหมด
           </FilterPill>
-          <FilterPill pressed={selectedCollectionFilter === 'PERSONAL'} onClick={() => setSelectedCollectionFilter('PERSONAL')}>
+          <FilterPill pressed={selectedCollectionFilter === 'PERSONAL'} onClick={() => handleCollectionFilterChange('PERSONAL')}>
             <LockIcon />
             คลังส่วนตัว
           </FilterPill>
           {collections.map((col) => {
             const cid = col.collection_id || col.id;
             return (
-              <FilterPill key={cid} pressed={selectedCollectionFilter === cid} onClick={() => setSelectedCollectionFilter(cid)}>
+              <FilterPill key={cid} pressed={selectedCollectionFilter === cid} onClick={() => handleCollectionFilterChange(cid)}>
                 <FolderIcon />
                 <span className="truncate">{col.name}</span>
               </FilterPill>

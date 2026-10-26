@@ -23,7 +23,7 @@ import { isUuid } from '../http/validate.js';
  * notes) belongs inside encrypted_data so it never leaves the browser unencrypted.
  * @returns {{ value?: object, error?: object }}
  */
-const ALLOWED_METADATA_KEYS = new Set(['favorite', 'collection_id']);
+const ALLOWED_METADATA_KEYS = new Set(['favorite', 'collection_id', 'collection_ids', 'collectionIds', 'folder_id', 'name']);
 function sanitizeMetadata(metadata) {
   if (metadata === undefined || metadata === null) return { value: {} };
   if (typeof metadata !== 'object' || Array.isArray(metadata)) {
@@ -43,6 +43,15 @@ function sanitizeMetadata(metadata) {
   }
   if (metadata.collection_id !== undefined && metadata.collection_id !== null && !isUuid(metadata.collection_id)) {
     return { error: { error: 'INVALID_METADATA', message: 'metadata.collection_id must be a UUID' } };
+  }
+  const colIds = metadata.collection_ids ?? metadata.collectionIds;
+  if (colIds !== undefined && colIds !== null) {
+    if (!Array.isArray(colIds) || !colIds.every((id) => isUuid(id))) {
+      return { error: { error: 'INVALID_METADATA', message: 'metadata.collection_ids must be an array of UUIDs' } };
+    }
+  }
+  if (metadata.folder_id !== undefined && metadata.folder_id !== null && !isUuid(metadata.folder_id)) {
+    return { error: { error: 'INVALID_METADATA', message: 'metadata.folder_id must be a UUID' } };
   }
   return { value: { ...metadata } };
 }
@@ -309,7 +318,7 @@ export async function createVaultItemHandler(event) {
   }
 
   // Enforce Zero-Knowledge payload validation
-  const encryptedData = body.encrypted_data || body.encryptedData;
+  const encryptedData = body.encrypted_data || body.encryptedData || body.encryptedPayload;
   const payloadValidation = validateEncryptedPayload(encryptedData);
   if (!payloadValidation.valid) {
     return jsonResponse(400, {
@@ -350,15 +359,21 @@ export async function createVaultItemHandler(event) {
     [user.user_id, newItem.item_id, clientIp, userAgent, { item_type: itemType }]
   );
 
+  const itemData = {
+    item_id: newItem.item_id,
+    id: newItem.item_id,
+    vault_id: newItem.vault_id,
+    item_type: newItem.item_type,
+    version: newItem.version,
+    created_at: newItem.created_at,
+    updated_at: newItem.updated_at,
+  };
+
   return jsonResponse(201, {
     status: 'success',
     message: 'Vault item created successfully',
-    data: {
-      item_id: newItem.item_id,
-      vault_id: newItem.vault_id,
-      version: newItem.version,
-      created_at: newItem.created_at,
-    },
+    data: itemData,
+    item: itemData,
   });
 }
 
@@ -429,7 +444,7 @@ export async function updateVaultItemHandler(event) {
   }
 
   // Validate new encrypted payload
-  const encryptedData = body.encrypted_data || body.encryptedData;
+  const encryptedData = body.encrypted_data || body.encryptedData || body.encryptedPayload;
   if (encryptedData) {
     const payloadValidation = validateEncryptedPayload(encryptedData);
     if (!payloadValidation.valid) {

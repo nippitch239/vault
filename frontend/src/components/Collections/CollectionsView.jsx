@@ -4,6 +4,7 @@ import api from '../../services/api.js';
 import ClientCrypto from '../../services/crypto.js';
 import { PlusIcon, SearchIcon, EditIcon, TrashIcon, RefreshIcon, ShieldIcon, KeyIcon } from '../Common/Icons.jsx';
 import { useToast } from '../Common/Toast.jsx';
+import { CollectionDetailView } from './CollectionDetailView.jsx';
 import {
   Button,
   Badge,
@@ -39,7 +40,7 @@ const PERMISSION_HINTS = {
   admin: 'จัดการสิทธิ์ ส่งคีย์ แก้ไขและลบคอลเลกชันได้',
 };
 
-const PERMISSION_BADGE = { admin: 'info', write: 'success', read: 'outline' };
+export const PERMISSION_BADGE = { admin: 'info', write: 'success', read: 'outline' };
 
 function FolderIcon({ className = 'size-5' }) {
   return (
@@ -52,7 +53,7 @@ function FolderIcon({ className = 'size-5' }) {
 const charCount = (s) => [...(s || '')].length;
 const formatDate = (value) => (value ? new Date(value).toLocaleDateString('th-TH', { dateStyle: 'medium' }) : '—');
 
-export function CollectionsView({ onOpenCollection }) {
+export function CollectionsView() {
   const { user, privateKey, isAdmin } = useAuth();
   const { addToast } = useToast();
 
@@ -61,6 +62,7 @@ export function CollectionsView({ onOpenCollection }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCollection, setSelectedCollection] = useState(null);
 
   // Create / edit
   const [editor, setEditor] = useState(null); // { mode: 'create' | 'edit', collection? }
@@ -176,6 +178,9 @@ export function CollectionsView({ onOpenCollection }) {
       if (editor.mode === 'edit') {
         await api.collections.update(collectionIdOf(editor.collection), payload);
         addToast('บันทึกการแก้ไขคอลเลกชันแล้ว', 'success');
+        if (selectedCollection && collectionIdOf(selectedCollection) === collectionIdOf(editor.collection)) {
+          setSelectedCollection((prev) => ({ ...prev, ...payload }));
+        }
       } else {
         // Zero knowledge: a fresh 256-bit collection key, wrapped for the creator.
         const publicKey = await getUserPublicKey();
@@ -206,6 +211,9 @@ export function CollectionsView({ onOpenCollection }) {
     try {
       await api.collections.delete(collectionIdOf(deleteTarget));
       addToast(`ลบคอลเลกชัน “${deleteTarget.name}” แล้ว`, 'success');
+      if (selectedCollection && collectionIdOf(selectedCollection) === collectionIdOf(deleteTarget)) {
+        setSelectedCollection(null);
+      }
       setDeleteTarget(null);
       loadCollections();
     } catch (err) {
@@ -380,7 +388,20 @@ export function CollectionsView({ onOpenCollection }) {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      {selectedCollection ? (
+        <CollectionDetailView
+          collection={selectedCollection}
+          onBack={() => {
+            setSelectedCollection(null);
+            loadCollections();
+          }}
+          onEditCollection={openEdit}
+          onDeleteCollection={(c) => setDeleteTarget(c)}
+          onManageAccess={openAccess}
+        />
+      ) : (
+        <>
+          <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl tracking-tight">คอลเลกชัน</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
@@ -465,19 +486,27 @@ export function CollectionsView({ onOpenCollection }) {
             <p className="mb-3 text-caption text-muted-foreground">{filteredCollections.length.toLocaleString('th-TH')} คอลเลกชัน</p>
             <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
               {filteredCollections.map((col) => {
+                const colId = collectionIdOf(col);
                 const perm = String(col.effectivePermission || col.effective_permission || 'read').toLowerCase();
                 const canAdmin = perm === 'admin' || isAdmin;
                 const itemCount = Number(col.itemCount ?? col.item_count ?? 0);
                 return (
-                  <li key={collectionIdOf(col)}>
-                    <Card className="flex h-full flex-col p-5 transition-colors duration-fast hover:border-input">
+                  <li key={colId}>
+                    <Card
+                      onClick={(e) => {
+                        const targetEl = e.target?.nodeType === 1 ? e.target : e.target?.parentElement;
+                        if (targetEl?.closest?.('button, a, input, select, textarea')) return;
+                        setSelectedCollection(col);
+                      }}
+                      className="group flex h-full cursor-pointer flex-col p-5 transition-colors duration-fast hover:border-input"
+                    >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex min-w-0 items-center gap-3">
-                          <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-secondary text-muted-foreground">
+                          <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-secondary text-muted-foreground group-hover:text-foreground">
                             <FolderIcon className="size-4" />
                           </div>
                           <div className="min-w-0">
-                            <h2 className="truncate text-base" title={col.name}>
+                            <h2 className="truncate text-base font-strong group-hover:underline" title={col.name}>
                               {col.name}
                             </h2>
                             <p className="text-caption text-muted-foreground">
@@ -493,24 +522,49 @@ export function CollectionsView({ onOpenCollection }) {
                       </p>
 
                       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-                        <Button variant="secondary" size="sm" onClick={() => onOpenCollection?.(collectionIdOf(col))}>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedCollection(col);
+                          }}
+                        >
                           เปิดดูรายการ
                         </Button>
                         {canAdmin && (
                           <>
-                            <Button variant="ghost" size="sm" onClick={() => openAccess(col)}>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openAccess(col);
+                              }}
+                            >
                               <ShieldIcon />
                               จัดการสิทธิ์
                             </Button>
                             <div className="ml-auto flex items-center gap-1">
-                              <Button variant="ghost" size="icon-sm" onClick={() => openEdit(col)} aria-label={`แก้ไขคอลเลกชัน ${col.name}`}>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openEdit(col);
+                                }}
+                                aria-label={`แก้ไขคอลเลกชัน ${col.name}`}
+                              >
                                 <EditIcon />
                               </Button>
                               <Button
                                 variant="ghost"
                                 size="icon-sm"
                                 className="hover:bg-error hover:text-error-foreground"
-                                onClick={() => setDeleteTarget(col)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeleteTarget(col);
+                                }}
                                 aria-label={`ลบคอลเลกชัน ${col.name}`}
                               >
                                 <TrashIcon />
@@ -527,6 +581,8 @@ export function CollectionsView({ onOpenCollection }) {
           </>
         )}
       </section>
+        </>
+      )}
 
       {/* Create / edit */}
       <Dialog open={Boolean(editor)} onOpenChange={(open) => !open && !saving && setEditor(null)}>

@@ -64,6 +64,14 @@ import {
   addGroupMemberHandler,
   listGroupMembersHandler,
   removeGroupMemberHandler,
+  createOrgGroupHandler,
+  listOrgGroupsHandler,
+  getOrgGroupHandler,
+  updateOrgGroupHandler,
+  deleteOrgGroupHandler,
+  addOrgGroupMemberHandler,
+  listOrgGroupMembersHandler,
+  removeOrgGroupMemberHandler,
 } from './handlers/group.js';
 
 import {
@@ -81,11 +89,55 @@ import {
   addCollectionItemHandler,
   listCollectionItemsHandler,
   removeCollectionItemHandler,
+  createOrgCollectionHandler,
+  listOrgCollectionsHandler,
+  getOrgCollectionHandler,
+  updateOrgCollectionHandler,
+  deleteOrgCollectionHandler,
 } from './handlers/collection.js';
+
+import {
+  listFoldersHandler,
+  createFolderHandler,
+  updateFolderHandler,
+  deleteFolderHandler,
+} from './handlers/folder.js';
+
+import {
+  createOrganizationHandler,
+  listOrganizationsHandler,
+  getOrganizationHandler,
+  updateOrganizationHandler,
+  deleteOrganizationHandler,
+  listMembersHandler,
+  addMemberHandler,
+  updateMemberRoleHandler,
+  removeMemberHandler,
+  createInvitationHandler,
+  listInvitationsHandler,
+} from './handlers/organization.js';
 
 // Route Definitions
 // Static path pattern accepting the optional /api/v1 or /api prefix.
 const R = (staticPath) => new RegExp(`^/(?:api/v1/|api/)?${staticPath}/?$`);
+
+async function getMeRouteHandler(event) {
+  const res = await getMeHandler(event);
+  if (res?.statusCode === 200 && res?.body) {
+    try {
+      const parsed = JSON.parse(res.body);
+      if (parsed.data && typeof parsed.data === 'object') {
+        return {
+          ...res,
+          body: JSON.stringify({ ...parsed.data, ...parsed }),
+        };
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return res;
+}
 
 const routes = [
   // Health
@@ -94,7 +146,7 @@ const routes = [
   // Auth & profile (UC-1, UC-2, UC-3, UC-7 — credentials themselves live in Cognito)
   { method: 'GET', pattern: R('auth/salt'), handler: getSaltHandler, public: true },
   { method: 'POST', pattern: R('auth/session'), handler: recordSessionHandler },
-  { method: 'GET', pattern: R('users/me'), handler: getMeHandler },
+  { method: 'GET', pattern: R('users/me'), handler: getMeRouteHandler },
   { method: 'POST', pattern: R('users/me'), handler: createMeHandler },
   { method: 'PATCH', pattern: R('users/me'), handler: updateMeHandler },
   { method: 'PUT', pattern: R('users/me/keys'), handler: updateKeysHandler },
@@ -227,6 +279,214 @@ const routes = [
     handler: getMonitoringMetricsHandler,
   },
 
+  // Organizations & Memberships (M3: R1, R4)
+  {
+    method: 'DELETE',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/members\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'userId'],
+    handler: removeMemberHandler,
+  },
+  {
+    method: 'PUT',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/members\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'userId'],
+    handler: updateMemberRoleHandler,
+  },
+  {
+    method: 'POST',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/members\/?$/,
+    paramNames: ['orgId'],
+    handler: addMemberHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/members\/?$/,
+    paramNames: ['orgId'],
+    handler: listMembersHandler,
+  },
+  {
+    method: 'POST',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/invitations\/?$/,
+    paramNames: ['orgId'],
+    handler: createInvitationHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/invitations\/?$/,
+    paramNames: ['orgId'],
+    handler: listInvitationsHandler,
+  },
+
+  // Scoped Groups & Memberships (M4: Features 18, 19)
+  {
+    method: 'DELETE',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/groups\/([^/]+)\/members\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'groupId', 'userId'],
+    handler: removeOrgGroupMemberHandler,
+  },
+  {
+    method: 'POST',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/groups\/([^/]+)\/members\/?$/,
+    paramNames: ['orgId', 'groupId'],
+    handler: addOrgGroupMemberHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/groups\/([^/]+)\/members\/?$/,
+    paramNames: ['orgId', 'groupId'],
+    handler: listOrgGroupMembersHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/groups\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'groupId'],
+    handler: getOrgGroupHandler,
+  },
+  {
+    method: 'PUT',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/groups\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'groupId'],
+    handler: updateOrgGroupHandler,
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/groups\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'groupId'],
+    handler: deleteOrgGroupHandler,
+  },
+  {
+    method: 'POST',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/groups\/?$/,
+    paramNames: ['orgId'],
+    handler: createOrgGroupHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/groups\/?$/,
+    paramNames: ['orgId'],
+    handler: listOrgGroupsHandler,
+  },
+
+  // Scoped Collections (M4: Features 20, 21, 23)
+  {
+    method: 'DELETE',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/access\/([^/]+)\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'collectionId', 'targetType', 'targetId'],
+    handler: revokeCollectionAccessHandler,
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/access\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'collectionId', 'grantId'],
+    handler: revokeCollectionAccessHandler,
+  },
+  {
+    method: 'POST',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/access\/?$/,
+    paramNames: ['orgId', 'collectionId'],
+    handler: grantCollectionAccessHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/access\/?$/,
+    paramNames: ['orgId', 'collectionId'],
+    handler: listCollectionAccessHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/keys\/pending\/?$/,
+    paramNames: ['orgId', 'collectionId'],
+    handler: listPendingCollectionKeysHandler,
+  },
+  {
+    method: 'POST',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/keys\/?$/,
+    paramNames: ['orgId', 'collectionId'],
+    handler: storeCollectionKeyHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/keys\/?$/,
+    paramNames: ['orgId', 'collectionId'],
+    handler: getCollectionKeyHandler,
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/items\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'collectionId', 'itemId'],
+    handler: removeCollectionItemHandler,
+  },
+  {
+    method: 'POST',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/items\/?$/,
+    paramNames: ['orgId', 'collectionId'],
+    handler: addCollectionItemHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/items\/?$/,
+    paramNames: ['orgId', 'collectionId'],
+    handler: listCollectionItemsHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'collectionId'],
+    handler: getOrgCollectionHandler,
+  },
+  {
+    method: 'PUT',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'collectionId'],
+    handler: updateOrgCollectionHandler,
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/([^/]+)\/?$/,
+    paramNames: ['orgId', 'collectionId'],
+    handler: deleteOrgCollectionHandler,
+  },
+  {
+    method: 'POST',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/?$/,
+    paramNames: ['orgId'],
+    handler: createOrgCollectionHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/collections\/?$/,
+    paramNames: ['orgId'],
+    handler: listOrgCollectionsHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/?$/,
+    paramNames: ['orgId'],
+    handler: getOrganizationHandler,
+  },
+  {
+    method: 'PUT',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/?$/,
+    paramNames: ['orgId'],
+    handler: updateOrganizationHandler,
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/([^/]+)\/?$/,
+    paramNames: ['orgId'],
+    handler: deleteOrganizationHandler,
+  },
+  {
+    method: 'POST',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/?$/,
+    handler: createOrganizationHandler,
+  },
+  {
+    method: 'GET',
+    pattern: /^\/(?:api\/v1\/|api\/)?organizations\/?$/,
+    handler: listOrganizationsHandler,
+  },
+
   // Groups & Memberships (M3: R1)
   {
     method: 'DELETE',
@@ -280,6 +540,12 @@ const routes = [
     method: 'DELETE',
     pattern: /^\/(?:api\/v1\/|api\/)?collections\/([^/]+)\/access\/([^/]+)\/([^/]+)\/?$/,
     paramNames: ['collectionId', 'targetType', 'targetId'],
+    handler: revokeCollectionAccessHandler,
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/(?:api\/v1\/|api\/)?collections\/([^/]+)\/access\/([^/]+)\/?$/,
+    paramNames: ['collectionId', 'grantId'],
     handler: revokeCollectionAccessHandler,
   },
   {
@@ -364,6 +630,11 @@ const routes = [
     paramNames: ['collectionId'],
     handler: deleteCollectionHandler,
   },
+  // Folders (Personal Vault Organization)
+  { method: 'GET', pattern: R('folders'), handler: listFoldersHandler },
+  { method: 'POST', pattern: R('folders'), handler: createFolderHandler },
+  { method: 'PUT', pattern: /^\/(?:api\/v1\/|api\/)?folders\/([^/]+)\/?$/, paramNames: ['folderId'], handler: updateFolderHandler },
+  { method: 'DELETE', pattern: /^\/(?:api\/v1\/|api\/)?folders\/([^/]+)\/?$/, paramNames: ['folderId'], handler: deleteFolderHandler },
 ];
 
 /**
@@ -444,6 +715,9 @@ export async function router(rawEvent, context) {
   (route.paramNames || []).forEach((name, idx) => {
     pathParameters[name] = decodeURIComponent(match[idx + 1]);
   });
+  if (pathParameters.orgId && !pathParameters.id) {
+    pathParameters.id = pathParameters.orgId;
+  }
 
   let response;
   try {
