@@ -387,7 +387,7 @@ VITE_COGNITO_USER_POOL_ID=us-east-1_xxxxxxxxx
 VITE_COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
 "@ | Out-File -Encoding utf8 frontend\.env.production
 npm run build --workspace frontend
-Compress-Archive -Path frontend\dist\* -DestinationPath frontend-dist-cognito.zip -Force   # ต้องรันใน PowerShell (tar ของ Git Bash สร้าง zip ไม่ได้)
+python -c "import shutil; shutil.make_archive('frontend-dist-cognito', 'zip', 'frontend/dist')"
 ```
 ค่าเหล่านี้เป็น public identifier ไม่ใช่ secret
 
